@@ -5164,6 +5164,8 @@ void mtcmos_force_off(void)
 
 static const struct of_device_id of_match_clk_mt6893_scpsys[] = {
 	{ .compatible = "mediatek,mt6893-scpsys-clk", },
+	/* Keep the 4.19 MT6893 DT ABI working. */
+	{ .compatible = "mediatek,mt6893-scpsys", },
 	{}
 };
 

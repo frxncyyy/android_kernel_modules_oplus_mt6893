@@ -1241,7 +1241,7 @@ cpus {
 	};
 
 		scpsys: power-controller@10006000 {
-			compatible = "mediatek,mt6893-scpsys", "syscon";
+			compatible = "mediatek,mt6893-scpsys-pd", "syscon";
 			reg = <0 0x10006000 0 0x1000>;
 			#power-domain-cells = <1>;
 			clocks = <&topckgen_clk CLK_TOP_MFG_SEL>,

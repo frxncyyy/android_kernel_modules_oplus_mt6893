@@ -498,7 +498,7 @@ static const struct scp_soc_data mt6893_data = {
 
 static const struct of_device_id of_scpsys_match_tbl[] = {
 	{
-		.compatible = "mediatek,mt6893-scpsys",
+		.compatible = "mediatek,mt6893-scpsys-pd",
 		.data = &mt6893_data,
 	}, {
 		/* sentinel */
