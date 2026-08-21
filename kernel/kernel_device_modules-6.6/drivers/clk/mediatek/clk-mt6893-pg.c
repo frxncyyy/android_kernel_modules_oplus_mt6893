@@ -5007,12 +5007,12 @@ static void __iomem *find_and_iomap(char *comp_str)
 								comp_str);
 
 	if (!node) {
-		pr_debug("[CCF] PG: find node %s failed\n", comp_str);
+		pr_err("[CCF] PG: find node %s failed\n", comp_str);
 		return NULL;
 	}
 	ret = of_iomap(node, 0);
 	if (!ret) {
-		pr_debug("[CCF] iomap base %s failed\n", comp_str);
+		pr_err("[CCF] iomap base %s failed\n", comp_str);
 		return NULL;
 	}
 	return ret;
@@ -5020,7 +5020,7 @@ static void __iomem *find_and_iomap(char *comp_str)
 
 static int iomap_mm(void)
 {
-	clk_mdp_base = find_and_iomap("mediatek,mt6893-mdpsys_config");
+	clk_mdp_base = find_and_iomap("mediatek,mt6893-mdpsys");
 	if (!clk_mdp_base)
 		return -1;
 	clk_disp_base = find_and_iomap("mediatek,mt6893-mmsys");
