@@ -25,6 +25,7 @@
 #include <linux/platform_device.h>
 
 #include "mtk-eint.h"
+#include "pinctrl-mtk-common-v2.h"
 
 #define MTK_EINT_EDGE_SENSITIVE           0
 #define MTK_EINT_LEVEL_SENSITIVE          1
@@ -831,18 +832,23 @@ static const struct mtk_eint_compatible default_compat = {
 
 int mtk_eint_do_init(struct mtk_eint *eint)
 {
+	struct mtk_pinctrl *hw = eint->pctl;
 	int i, matrix_number = 0;
 	struct device_node *node;
 	unsigned int ret, size, offset;
 	unsigned int id, inst, idx, support_deb;
-
 	const phandle *ph;
+	bool legacy_binding = false;
 
 #if defined(MTK_EINT_DEBUG)
 	struct mtk_eint_pin pin;
 #endif
 
 	ph = of_get_property(eint->dev->of_node, "mediatek,eint", NULL);
+	if (!ph) {
+		ph = of_get_property(eint->dev->of_node, "reg_base_eint", NULL);
+		legacy_binding = true;
+	}
 	if (!ph) {
 		dev_err(eint->dev, "Cannot find EINT phandle in PIO node.\n");
 		return -ENODEV;
@@ -857,14 +863,18 @@ int mtk_eint_do_init(struct mtk_eint *eint)
 	ret = of_property_read_u32(node, "mediatek,total-pin-number",
 				   &eint->total_pin_number);
 	if (ret) {
-		dev_err(eint->dev,
-		       "%s cannot read total-pin-number from device node.\n",
-		       __func__);
-		return -EINVAL;
+		if (!legacy_binding) {
+			dev_err(eint->dev,
+				"%s cannot read total-pin-number from device node.\n",
+				__func__);
+			return -EINVAL;
+		}
+		eint->total_pin_number = hw->soc->npins;
 	}
 
 	dev_info(eint->dev, "%s eint total %u pins.\n", __func__,
-		eint->total_pin_number);
+		 eint->total_pin_number);
+
 
 	ret = of_property_read_u32(node, "mediatek,instance-num",
 				   &eint->instance_number);

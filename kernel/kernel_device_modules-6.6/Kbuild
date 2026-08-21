@@ -154,5 +154,5 @@ obj-y += drivers/misc/mediatek/sensor/1.0/oplus_virtual_sensor/
 endif
 
 
-obj-$(CONFIG_OPLUS_FEATURE_FP) += drivers/input/fingerprint/
+# Fingerprint BSP target is absent from this source release.
 endif

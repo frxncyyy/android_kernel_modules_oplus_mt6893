@@ -846,6 +846,9 @@ static const struct of_device_id mt6397_of_match[] = {
 		.compatible = "mediatek,mt6359p",
 		.data = &mt6359p_core,
 	}, {
+		.compatible = "mediatek,mt6359-pmic",
+		.data = &mt6359p_core,
+	}, {
 		.compatible = "mediatek,mt6366",
 		.data = &mt6366_core,
 	}, {

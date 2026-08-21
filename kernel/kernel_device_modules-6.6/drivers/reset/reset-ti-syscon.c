@@ -199,7 +199,8 @@ static int ti_syscon_reset_probe(struct platform_device *pdev)
 
 	regmap = syscon_node_to_regmap(np->parent);
 	if (IS_ERR(regmap))
-		return PTR_ERR(regmap);
+		return dev_err_probe(dev, PTR_ERR(regmap),
+				     "failed to get parent syscon regmap\n");
 
 	list = of_get_property(np, "ti,reset-bits", &size);
 	if (!list || (size / sizeof(*list)) % 7 != 0) {
@@ -236,7 +237,12 @@ static int ti_syscon_reset_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, data);
 
-	return devm_reset_controller_register(dev, &data->rcdev);
+	i = devm_reset_controller_register(dev, &data->rcdev);
+	if (i)
+		return dev_err_probe(dev, i, "failed to register reset controller\n");
+
+	dev_info(dev, "registered %d reset controls\n", nr_controls);
+	return 0;
 }
 
 static const struct of_device_id ti_syscon_reset_of_match[] = {

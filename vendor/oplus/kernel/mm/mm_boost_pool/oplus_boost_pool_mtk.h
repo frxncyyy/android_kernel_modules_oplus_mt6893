@@ -20,7 +20,7 @@
 #include <linux/shrinker.h>
 #include <linux/types.h>
 
-#include "./../mtk_page_pool.h"
+#include <mtk_page_pool.h>
 
 /**
  * struct boost_page_pool - pagepool struct

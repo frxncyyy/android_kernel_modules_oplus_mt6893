@@ -142,7 +142,7 @@ source "$(KCONFIG_EXT_PREFIX)drivers/misc/oplus/vibrator/aw8697_haptic/Kconfig"
 
 source "$(KCONFIG_EXT_PREFIX)drivers/misc/oplus/sim_detect/Kconfig"
 
-source "$(KCONFIG_EXT_PREFIX)drivers/input/fingerprint/Kconfig"
+# Fingerprint BSP target is absent from this source release.
 
 source "$(KCONFIG_EXT_PREFIX)drivers/hypervisor/guest/Kconfig"
 

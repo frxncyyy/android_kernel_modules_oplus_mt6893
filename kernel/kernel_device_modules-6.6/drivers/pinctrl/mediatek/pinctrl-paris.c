@@ -1014,20 +1014,30 @@ int mtk_paris_pinctrl_probe(struct platform_device *pdev)
 	hw->dev = &pdev->dev;
 
 	prop = of_find_property(np, "reg", NULL);
-	if (!prop)
-		return -ENXIO;
-	i = prop->length / (sizeof(unsigned int) * 4);
-	if (i < 1)
-		return -EINVAL;
-	hw->nbase = i;
-	hw->base = devm_kmalloc_array(&pdev->dev, i, sizeof(*hw->base),
-		GFP_KERNEL | __GFP_ZERO);
-	if (IS_ERR(hw->base))
-		return PTR_ERR(hw->base);
+	if (prop) {
+		hw->nbase = prop->length / (sizeof(unsigned int) * 4);
+		if (hw->nbase < 1)
+			return -EINVAL;
+	} else {
+		hw->nbase = of_count_phandle_with_args(np, "reg_bases", NULL);
+		if (hw->nbase < 1)
+			return -ENXIO;
+	}
+
+	hw->base = devm_kcalloc(&pdev->dev, hw->nbase, sizeof(*hw->base),
+				   GFP_KERNEL);
+	if (!hw->base)
+		return -ENOMEM;
+
 	for (i = 0; i < hw->nbase; i++) {
-		hw->base[i] = of_iomap(np, i);
-		if (IS_ERR(hw->base[i]))
-			return PTR_ERR(hw->base[i]);
+		struct device_node *base_np = NULL;
+
+		if (!prop)
+			base_np = of_parse_phandle(np, "reg_bases", i);
+		hw->base[i] = of_iomap(base_np ? base_np : np, prop ? i : 0);
+		of_node_put(base_np);
+		if (!hw->base[i])
+			return -ENOMEM;
 	}
 
 	if (of_find_property(hw->dev->of_node,

@@ -98,8 +98,10 @@ static const struct ufs_dev_quirk ufs_mtk_dev_fixups[] = {
 
 static const struct of_device_id ufs_mtk_of_match[] = {
 	{ .compatible = "mediatek,mt8183-ufshci-perf" },
+	{ .compatible = "mediatek,mt8183-ufshci" },
 	{},
 };
+MODULE_DEVICE_TABLE(of, ufs_mtk_of_match);
 
 /*
  * Details of UIC Errors
@@ -3707,6 +3709,7 @@ static int ufs_mtk_probe(struct platform_device *pdev)
 	}
 	/* supplier is not probed */
 	if (link->status == DL_STATE_DORMANT) {
+		dev_info(dev, "reset controller supplier is not ready, deferring\n");
 		err = -EPROBE_DEFER;
 		goto out;
 	}
@@ -3921,5 +3924,6 @@ MODULE_AUTHOR("Stanley Chu <stanley.chu@mediatek.com>");
 MODULE_AUTHOR("Peter Wang <peter.wang@mediatek.com>");
 MODULE_DESCRIPTION("MediaTek UFS Host Driver");
 MODULE_LICENSE("GPL v2");
+MODULE_SOFTDEP("pre: reset-ti-syscon");
 
 module_platform_driver(ufs_mtk_pltform);
