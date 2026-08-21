@@ -628,6 +628,46 @@ static const struct mfd_cell mt6359p_devs[] = {
 	}
 };
 
+/*
+ * MT6893 devices shipped with the pre-GKI MT6359 DT binding.  Keep this
+ * separate from the MT6359P table above: the legacy tree only describes a
+ * subset of the newer child devices and uses different compatible strings
+ * for the common AUXADC, efuse and RTC blocks.
+ */
+static const struct mfd_cell mt6359p_legacy_devs[] = {
+	{
+		.name = "pmic-oc-debug",
+		.of_compatible = "mediatek,pmic-oc-debug",
+	}, {
+		.name = "mt-pmic",
+		.of_compatible = "mediatek,mt-pmic",
+	}, {
+		.name = "mt6359-efuse",
+		.of_compatible = "mediatek,mt6359-efuse",
+	}, {
+		.name = "mt635x-auxadc",
+		.of_compatible = "mediatek,mt6359-auxadc",
+		.num_resources = ARRAY_SIZE(mt6359p_auxadc_resources),
+		.resources = mt6359p_auxadc_resources,
+	}, {
+		.name = "mtk_ts_pmic",
+		.of_compatible = "mediatek,mtk_ts_pmic",
+	}, {
+		.name = "mt6359p-regulator",
+		.of_compatible = "mediatek,mt6359p-regulator",
+		.num_resources = ARRAY_SIZE(mt6359p_regulators_resources),
+		.resources = mt6359p_regulators_resources,
+	}, {
+		.name = "mt6359p-rtc",
+		.num_resources = ARRAY_SIZE(mt6359p_rtc_resources),
+		.resources = mt6359p_rtc_resources,
+		.of_compatible = "mediatek,mt6359-rtc",
+	}, {
+		.name = "mt6359p-misc",
+		.of_compatible = "mediatek,mt6359p-misc",
+	},
+};
+
 static const struct mfd_cell mt6366_devs[] = {
 	{
 		.name = "mt-pmic",
@@ -754,6 +794,14 @@ static const struct chip_data mt6359p_core = {
 	.irq_init = mt6358_irq_init,
 };
 
+static const struct chip_data mt6359p_legacy_core = {
+	.cid_addr = MT6359P_SWCID,
+	.cid_shift = 8,
+	.cells = mt6359p_legacy_devs,
+	.cell_size = ARRAY_SIZE(mt6359p_legacy_devs),
+	.irq_init = mt6358_irq_init,
+};
+
 static const struct chip_data mt6366_core = {
 	.cid_addr = MT6358_SWCID,
 	.cid_shift = 8,
@@ -775,6 +823,7 @@ static int mt6397_probe(struct platform_device *pdev)
 	int ret;
 	unsigned int id = 0;
 	struct mt6397_chip *pmic;
+	struct device_node *legacy_child;
 	const struct chip_data *pmic_core;
 
 	pr_info("Starting main pmic probe ...\n");
@@ -798,6 +847,17 @@ static int mt6397_probe(struct platform_device *pdev)
 	if (!pmic_core) {
 		dev_dbg(&pdev->dev, "%s Could not get match data\n", __func__);
 		return -ENODEV;
+	}
+
+	legacy_child = of_get_compatible_child(pdev->dev.of_node,
+					       "mediatek,mt6359-auxadc");
+	if (!legacy_child)
+		legacy_child = of_get_compatible_child(pdev->dev.of_node,
+						       "mediatek,mt6359-rtc");
+	if (legacy_child) {
+		pmic_core = &mt6359p_legacy_core;
+		of_node_put(legacy_child);
+		dev_info(&pdev->dev, "using legacy MT6359 child bindings\n");
 	}
 
 	ret = regmap_read(pmic->regmap, pmic_core->cid_addr, &id);

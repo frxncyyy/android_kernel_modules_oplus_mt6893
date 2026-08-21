@@ -1499,6 +1499,9 @@ static const struct of_device_id mt635x_auxadc_of_match[] = {
 		.compatible = "mediatek,mt6359p-auxadc",
 		.data = &mt6359p_info,
 	}, {
+		.compatible = "mediatek,mt6359-auxadc",
+		.data = &mt6359p_info,
+	}, {
 		/* sentinel */
 	}
 };
