@@ -12,6 +12,7 @@
 #include <linux/regulator/machine.h>
 #include <linux/regulator/mt6359p-regulator.h>
 #include <linux/regulator/of_regulator.h>
+#include <linux/string.h>
 
 #define MT6359P_BUCK_MODE_AUTO		0
 #define MT6359P_BUCK_MODE_FORCE_PWM	1
@@ -876,12 +877,58 @@ static struct mt6359p_regulator_info mt6359p_regulators[] = {
 	}
 };
 
+static int mt6359p_set_legacy_of_matches(struct device *dev)
+{
+	struct device_node *node;
+	char *match;
+	int i;
+
+	if (!dev->of_node)
+		return 0;
+
+	node = of_get_child_by_name(dev->of_node, "ldo-vemc");
+	if (node) {
+		of_node_put(node);
+		return 0;
+	}
+
+	node = of_get_child_by_name(dev->of_node, "ldo_vemc");
+	if (!node)
+		return 0;
+	of_node_put(node);
+
+	for (i = 0; i < MT6359P_MAX_REGULATOR; i++) {
+		if (!strchr(mt6359p_regulators[i].desc.of_match, '-'))
+			continue;
+
+		match = devm_kstrdup(dev,
+				       mt6359p_regulators[i].desc.of_match,
+				       GFP_KERNEL);
+		if (!match)
+			return -ENOMEM;
+
+		strreplace(match, '-', '_');
+		mt6359p_regulators[i].desc.of_match = match;
+	}
+
+	dev_info(dev, "using legacy underscore regulator node names\n");
+	return 0;
+}
+
 static int mt6359p_regulator_probe(struct platform_device *pdev)
 {
 	struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
 	struct regulator_config config = {};
 	struct regulator_dev *rdev;
-	int i;
+	int i, ret;
+
+	if (!mt6397 || !mt6397->regmap)
+		return dev_err_probe(&pdev->dev, -ENODEV,
+				     "parent PMIC regmap is unavailable\n");
+
+	ret = mt6359p_set_legacy_of_matches(&pdev->dev);
+	if (ret)
+		return ret;
 
 	for (i = 0; i < MT6359P_MAX_REGULATOR; i++) {
 		config.dev = &pdev->dev;
@@ -892,12 +939,14 @@ static int mt6359p_regulator_probe(struct platform_device *pdev)
 					       &mt6359p_regulators[i].desc,
 					       &config);
 		if (IS_ERR(rdev)) {
-			dev_err(&pdev->dev, "failed to register %s\n",
-				mt6359p_regulators[i].desc.name);
-			continue;
+			return dev_err_probe(&pdev->dev, PTR_ERR(rdev),
+					     "failed to register %s\n",
+					     mt6359p_regulators[i].desc.name);
 		}
 	}
 
+	dev_info(&pdev->dev, "registered %d regulators\n",
+		 MT6359P_MAX_REGULATOR);
 	return 0;
 }
 
@@ -907,9 +956,16 @@ static const struct platform_device_id mt6359p_platform_ids[] = {
 };
 MODULE_DEVICE_TABLE(platform, mt6359p_platform_ids);
 
+static const struct of_device_id mt6359p_of_match[] = {
+	{ .compatible = "mediatek,mt6359p-regulator" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, mt6359p_of_match);
+
 static struct platform_driver mt6359p_regulator_driver = {
 	.driver = {
 		.name = "mt6359p-regulator",
+		.of_match_table = mt6359p_of_match,
 	},
 	.probe = mt6359p_regulator_probe,
 	.id_table = mt6359p_platform_ids,
