@@ -2004,6 +2004,7 @@ static void ufs_mtk_init_mcq_irq(struct ufs_hba *hba)
 	struct platform_device *pdev;
 	int i;
 	int irq;
+	int irq_count;
 
 	host->mcq_nr_intr = UFSHCD_MAX_Q_NR;
 	pdev = container_of(hba->dev, struct platform_device, dev);
@@ -2013,6 +2014,10 @@ static void ufs_mtk_init_mcq_irq(struct ufs_hba *hba)
 		host->mcq_intr_info[i].irq = MTK_MCQ_INVALID_IRQ;
 
 	if (host->caps & UFS_MTK_CAP_DISABLE_MCQ)
+		goto failed;
+
+	irq_count = platform_irq_count(pdev);
+	if (irq_count < UFSHCD_MAX_Q_NR + 1)
 		goto failed;
 
 	for (i = 0; i < host->mcq_nr_intr; i++) {
