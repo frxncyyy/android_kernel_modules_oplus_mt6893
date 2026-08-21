@@ -4484,26 +4484,29 @@ static struct subsys_ops VPU_sys_ops = {
 	.get_state = vpu_get_state_op,
 };
 
-static struct provider_clk *__clk_dbg_lookup_pvdck(const char *name)
+static struct clk *mt6893_get_pre_clk(const char *name)
 {
-	struct provider_clk *pvdck = get_all_provider_clks();
+	struct of_phandle_args clkspec = { .args_count = 1 };
+	struct device_node *node;
+	struct clk *clk;
 
-	for (; pvdck->ck != NULL; pvdck++) {
-		if (!strcmp(pvdck->ck_name, name))
-			return pvdck;
-	}
+	if (strcmp(name, "mfg_sel"))
+		return NULL;
 
-	return NULL;
-}
+	node = of_find_compatible_node(NULL, NULL,
+				       "mediatek,mt6893-topckgen");
+	if (!node)
+		return NULL;
 
-static struct clk *__clk_dbg_lookup(const char *name)
-{
-	struct provider_clk *pvdck = __clk_dbg_lookup_pvdck(name);
+	clkspec.np = node;
+	clkspec.args[0] = CLK_TOP_MFG_SEL;
+	clk = of_clk_get_from_provider(&clkspec);
+	of_node_put(node);
 
-	if (pvdck)
-		return pvdck->ck;
+	if (IS_ERR(clk))
+		return NULL;
 
-	return NULL;
+	return clk;
 }
 
 static int subsys_is_on(enum subsys_id id)
@@ -4940,11 +4943,11 @@ static int  init_clk_scpsys(struct platform_device *pdev,
 	for (i = 0; i < ARRAY_SIZE(scp_clks); i++) {
 		struct mtk_power_gate *pg = &scp_clks[i];
 
-		pre_clk = pg->pre_clk_name ? __clk_dbg_lookup(pg->pre_clk_name) : NULL;
+		pre_clk = pg->pre_clk_name ? mt6893_get_pre_clk(pg->pre_clk_name) : NULL;
 
-		pre_clk2 = pg->pre_clk2_name ? __clk_dbg_lookup(pg->pre_clk2_name) : NULL;
+		pre_clk2 = pg->pre_clk2_name ? mt6893_get_pre_clk(pg->pre_clk2_name) : NULL;
 
-		pre_clk3 = pg->pre_clk3_name ? __clk_dbg_lookup(pg->pre_clk3_name) : NULL;
+		pre_clk3 = pg->pre_clk3_name ? mt6893_get_pre_clk(pg->pre_clk3_name) : NULL;
 
 		clk = mt_clk_register_power_gate(pg->name, pg->parent_name,
 			pre_clk, pre_clk2, pre_clk3, pg->pd_id);

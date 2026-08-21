@@ -47,6 +47,4 @@ struct pg_callbacks {
 /* register new pg_callbacks and return previous pg_callbacks. */
 extern struct pg_callbacks *register_pg_callback(struct pg_callbacks *pgcb);
 void mtk_check_subsys_swcg(enum subsys_id id);
-extern struct provider_clk *get_all_provider_clks(void);
-extern struct clk *__clk_lookup(const char *name);
 #endif/* __DRV_CLK_MT6893_PG_H */
