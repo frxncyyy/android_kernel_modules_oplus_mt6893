@@ -23,7 +23,11 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/rcupdate.h>
+#include <linux/reboot.h>
 #include <linux/reset-controller.h>
+#include <linux/sched.h>
+#include <linux/string.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
 #include <linux/interrupt.h>
@@ -351,6 +355,56 @@ void mtk_wdt_set_sw_rst_status(void)
 EXPORT_SYMBOL(mtk_wdt_set_sw_rst_status);
 #endif
 
+/*
+ * DEBUG ONLY -- investigation of the ~35 s reboot on the MT6893 6.6 port.
+ *
+ * An orderly reboot on this platform always ends up in mtk_wdt_restart()
+ * issuing a SWSYSRST.  The preloader classifies that as a normal software
+ * reset (RGU STA bit30), so LK neither snapshots the RAM_CONSOLE into expdb
+ * nor preserves the DRAM ramoops region -- the reason for the reboot is lost.
+ * A forced panic alone does not help either: with CONFIG_PANIC_TIMEOUT=-1
+ * panic() takes the "panic_timeout != 0" branch and calls emergency_restart(),
+ * which lands back in the same restart handler.
+ *
+ * So panic here *and* boot with panic=0 on the command line.  panic() then
+ * falls through to its endless mdelay() loop; that loop only touches the
+ * software lockup detector, and the watchdog core's ping work never gets
+ * scheduled from it, so nothing pets the hardware watchdog.  The resulting
+ * HW timeout is an abnormal reset (RGU STA bit31), which LK does archive.
+ *
+ * The panic banner itself names the task that asked for the reboot, which is
+ * the question this probe exists to answer.
+ */
+static int mtk_wdt_force_panic_reboot(struct notifier_block *nb,
+				      unsigned long action, void *data)
+{
+	char parent_comm[TASK_COMM_LEN] = "?";
+	pid_t parent_pid = 0;
+
+	if (action != SYS_RESTART)
+		return NOTIFY_DONE;
+
+	rcu_read_lock();
+	if (current->real_parent) {
+		strscpy(parent_comm, current->real_parent->comm,
+			sizeof(parent_comm));
+		parent_pid = task_pid_nr(current->real_parent);
+	}
+	rcu_read_unlock();
+
+	panic("mtk_wdt: FORCED panic on reboot (cmd=%s) by %s[%d], parent %s[%d]",
+	      data ? (char *)data : "<none>",
+	      current->comm, task_pid_nr(current),
+	      parent_comm, parent_pid);
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block mtk_wdt_reboot_nb = {
+	.notifier_call	= mtk_wdt_force_panic_reboot,
+	.priority	= INT_MAX,
+};
+
 static int mtk_wdt_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -411,6 +465,10 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 
 	dev_info(dev, "Watchdog enabled (timeout=%d sec, nowayout=%d)\n",
 		 mtk_wdt->wdt_dev.timeout, nowayout);
+
+	/* DEBUG ONLY -- see mtk_wdt_force_panic_reboot() above. */
+	register_reboot_notifier(&mtk_wdt_reboot_nb);
+	dev_info(dev, "mtk_wdt: DEBUG force-panic-on-reboot notifier armed\n");
 
 	wdt_data = of_device_get_match_data(dev);
 	if (wdt_data) {
