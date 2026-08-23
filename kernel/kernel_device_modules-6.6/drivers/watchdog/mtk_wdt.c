@@ -26,6 +26,7 @@
 #include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/panic_notifier.h>
 #include <linux/platform_device.h>
 #include <linux/rcupdate.h>
@@ -162,10 +163,36 @@ static unsigned int dbg_secs;
  */
 #define DBG_EXPDB_PATH		"/dev/block/by-name/expdb"
 #define DBG_DUMP_MAGIC		"MTKWDT-DBGDUMP"
-#define DBG_DUMP_BYTES		(512 * 1024)
+#define DBG_DUMP_BYTES		(768 * 1024)
 #define DBG_DUMP_HDR		512
 #define DBG_DUMP_SLOT0		0x01000000ULL
 #define DBG_DUMP_SLOT1		0x01100000ULL
+
+/*
+ * The reset is issued from outside Linux, so also archive the EL3 side.  ATF
+ * keeps its console in a ring buffer inside the "mediatek,atf-log-reserved"
+ * carveout; that is what MTK's own atf_logger driver exports as /proc/atf_log.
+ * We only ever read it -- never touch atf_read_offset -- so loading atf_logger
+ * alongside stays harmless.  Layout of the control block at offset 0, from
+ * drivers/misc/mediatek/atf/atf_log.c:
+ *
+ *	u64 atf_log_addr;		0x00
+ *	u64 atf_log_size;		0x08
+ *	u32 atf_write_offset;		0x10
+ *	u32 atf_read_offset;		0x14
+ *	u64 atf_crash_log_addr;		0x18
+ *	u64 atf_crash_log_size;		0x20
+ *	u32 atf_total_write_count;	0x28
+ *	u32 atf_crash_flag;		0x2c
+ *
+ * and the ring itself starts ATF_LOG_CTRL_BUF_SIZE (512) bytes in.
+ */
+#define DBG_ATF_KEY		"mediatek,atf-log-reserved"
+#define DBG_ATF_CTRL_SIZE	512
+#define DBG_ATF_MAX		(192 * 1024)
+
+static void __iomem *dbg_atf_base;
+static u32 dbg_atf_ring_len;
 #define DBG_DUMP_START_S	10
 #define DBG_DUMP_PERIOD_S	1
 
@@ -505,6 +532,85 @@ EXPORT_SYMBOL(mtk_wdt_set_sw_rst_status);
  * If the device still comes back with STA bit30 and an empty expdb after all
  * of this, then the reset is not being issued by Linux -- look at ATF/TEE.
  */
+static void mtk_wdt_dbg_map_atf(struct device *dev)
+{
+	struct device_node *np;
+	struct reserved_mem *rmem;
+	u64 ring;
+
+	np = of_find_compatible_node(NULL, NULL, DBG_ATF_KEY);
+	if (!np) {
+		dev_info(dev, "mtk_wdt: no %s node\n", DBG_ATF_KEY);
+		return;
+	}
+	rmem = of_reserved_mem_lookup(np);
+	of_node_put(np);
+	if (!rmem) {
+		dev_info(dev, "mtk_wdt: %s has no reserved_mem\n", DBG_ATF_KEY);
+		return;
+	}
+
+	dbg_atf_base = ioremap_wc(rmem->base, rmem->size);
+	if (!dbg_atf_base) {
+		dev_info(dev, "mtk_wdt: cannot map ATF log carveout\n");
+		return;
+	}
+
+	ring = readq_relaxed(dbg_atf_base + 0x08);
+	if (!ring || ring + DBG_ATF_CTRL_SIZE > rmem->size) {
+		dev_info(dev, "mtk_wdt: ATF ring size %llu implausible for %pa\n",
+			 ring, &rmem->size);
+		iounmap(dbg_atf_base);
+		dbg_atf_base = NULL;
+		return;
+	}
+
+	dbg_atf_ring_len = ring;
+	dev_info(dev,
+		 "mtk_wdt: ATF log carveout %pa+%pa, ring %u, write %u, total %u\n",
+		 &rmem->base, &rmem->size, dbg_atf_ring_len,
+		 readl_relaxed(dbg_atf_base + 0x10),
+		 readl_relaxed(dbg_atf_base + 0x28));
+}
+
+/* newest DBG_ATF_MAX bytes of the EL3 ring, in chronological order */
+static size_t mtk_wdt_dbg_atf(char *out, size_t size)
+{
+	u32 wr, rd, total, crash, len = dbg_atf_ring_len;
+	size_t n, take, tail;
+
+	if (!dbg_atf_base || !len || size < 256)
+		return 0;
+
+	wr = readl_relaxed(dbg_atf_base + 0x10);
+	rd = readl_relaxed(dbg_atf_base + 0x14);
+	total = readl_relaxed(dbg_atf_base + 0x28);
+	crash = readl_relaxed(dbg_atf_base + 0x2c);
+
+	n = scnprintf(out, size,
+		      "\n===== ATF LOG ring=%u write=%u read=%u total_write=%u crash=%#x =====\n",
+		      len, wr, rd, total, crash);
+	if (wr >= len)
+		return n;
+
+	take = min3((size_t)len, (size_t)DBG_ATF_MAX, size - n - 1);
+	if (take <= wr) {
+		memcpy_fromio(out + n,
+			      dbg_atf_base + DBG_ATF_CTRL_SIZE + wr - take, take);
+		n += take;
+	} else {
+		tail = take - wr;
+		memcpy_fromio(out + n,
+			      dbg_atf_base + DBG_ATF_CTRL_SIZE + len - tail, tail);
+		n += tail;
+		memcpy_fromio(out + n, dbg_atf_base + DBG_ATF_CTRL_SIZE, wr);
+		n += wr;
+	}
+
+	out[n] = '\0';
+	return n;
+}
+
 static void mtk_wdt_dbg_who(char *out, size_t size)
 {
 	char parent_comm[TASK_COMM_LEN] = "?";
@@ -549,6 +655,8 @@ static void mtk_wdt_dbg_dump(const char *why)
 	kmsg_dump_rewind(&iter);
 	kmsg_dump_get_buffer(&iter, true, dbg_dump_buf + DBG_DUMP_HDR,
 			     DBG_DUMP_BYTES - DBG_DUMP_HDR, &len);
+	len += mtk_wdt_dbg_atf(dbg_dump_buf + DBG_DUMP_HDR + len,
+			       DBG_DUMP_BYTES - DBG_DUMP_HDR - len);
 
 	total = ALIGN(DBG_DUMP_HDR + len, PAGE_SIZE);
 	if (total > DBG_DUMP_BYTES)
@@ -787,6 +895,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 {
 	dbg_wdt = mtk_wdt;
 	mtk_wdt_dbg_mark(DBG_F_PROBE);
+	mtk_wdt_dbg_map_atf(dev);
 
 	register_reboot_notifier(&mtk_wdt_dbg_reboot_nb);
 	register_restart_handler(&mtk_wdt_dbg_restart_nb);
@@ -804,7 +913,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v5 armed (NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v6 armed (NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
 		 DBG_DUMP_SLOT0, DBG_DUMP_SLOT1,
