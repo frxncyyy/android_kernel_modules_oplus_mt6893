@@ -95,14 +95,44 @@ struct mtk_wdt_data {
  *              from any context (reboot notifier, panic, softirq).
  * dbg_frozen : once set, this driver stops petting the hardware watchdog,
  *              so the pending timeout is guaranteed to expire.
+ * dbg_flags  : which hooks have fired; mirrored into WDT_DBG_NONRST_REG.
+ * dbg_secs   : seconds since probe; also mirrored, so the preloader print
+ *              tells us how far the kernel got before it was reset.
  */
 static struct mtk_wdt_dev *dbg_wdt;
 static bool dbg_frozen;
+static u32 dbg_flags;
+static unsigned int dbg_secs;
 
 /* how long to wait for the hardware watchdog once the trap has fired */
 #define DBG_TRAP_TIMEOUT_S	4
 /* unconditional capture point, in case the boot survives longer than before */
 #define DBG_HANG_AFTER_S	90
+/* when to start claiming "abnormal reset" -- before the known ~29-35 s death */
+#define DBG_ARCHIVE_HINT_S	20
+
+/*
+ * TOPRGU scratch register that survives a reset; the preloader prints it as
+ * "[RGU] NONRST_REG:" on the following boot, which is a channel that works
+ * even for the clean software resets that destroy the kernel console.
+ * It reads 0x0 after every reset we have captured so far, so the low 24 bits
+ * are ours to use.  The top bits are not: on the one boot that ended in a
+ * hardware watchdog timeout (boot-tee-nqfix) the preloader reported
+ * NONRST_REG 0xA0000000 next to STA 0xE0000000, i.e. firmware mirrors the
+ * watchdog status here.  DBG_NRST_ABNORMAL replays that value on the theory
+ * that it is what makes LK archive the console into expdb.
+ */
+#define WDT_DBG_NONRST_REG	0x20
+#define DBG_NRST_MAGIC		0x00DB0000
+#define DBG_NRST_ABNORMAL	0xA0000000
+
+#define DBG_F_PROBE		0x01
+#define DBG_F_REBOOT_NB		0x02
+#define DBG_F_RESTART_NB	0x04
+#define DBG_F_PANIC_NB		0x08
+#define DBG_F_TIMER		0x10
+#define DBG_F_ARMED		0x20
+#define DBG_F_HINT		0x40
 
 static const struct mtk_wdt_data mt2712_data = {
 	.toprgu_sw_rst_num = MT2712_TOPRGU_SW_RST_NUM,
@@ -422,12 +452,29 @@ EXPORT_SYMBOL(mtk_wdt_set_sw_rst_status);
  * If the device still comes back with STA bit30 and an empty expdb after all
  * of this, then the reset is not being issued by Linux -- look at ATF/TEE.
  */
-static void mtk_wdt_dbg_trap(const char *why, const char *cmd)
+static void mtk_wdt_dbg_mark(u32 flag)
+{
+	u32 val;
+
+	if (!dbg_wdt)
+		return;
+
+	dbg_flags |= flag;
+	val = DBG_NRST_MAGIC | (min(dbg_secs, 255u) << 8) | (dbg_flags & 0xff);
+	if (dbg_flags & DBG_F_HINT)
+		val |= DBG_NRST_ABNORMAL;
+
+	iowrite32(val, dbg_wdt->wdt_base + WDT_DBG_NONRST_REG);
+}
+
+static void mtk_wdt_dbg_trap(u32 flag, const char *why, const char *cmd)
 {
 	char parent_comm[TASK_COMM_LEN] = "?";
 	pid_t parent_pid = 0;
 	void __iomem *wdt_base;
 	u32 reg;
+
+	mtk_wdt_dbg_mark(flag);
 
 	if (!dbg_wdt || dbg_frozen)
 		return;
@@ -464,6 +511,7 @@ static void mtk_wdt_dbg_trap(const char *why, const char *cmd)
 
 	pr_emerg("mtk_wdt: DBGTRAP armed, HW watchdog reset in ~%d s\n",
 		 DBG_TRAP_TIMEOUT_S);
+	mtk_wdt_dbg_mark(DBG_F_ARMED | DBG_F_HINT);
 }
 
 static void mtk_wdt_dbg_spin(void)
@@ -493,7 +541,7 @@ static int mtk_wdt_dbg_reboot_call(struct notifier_block *nb,
 		break;
 	}
 
-	mtk_wdt_dbg_trap(why, data);
+	mtk_wdt_dbg_trap(DBG_F_REBOOT_NB, why, data);
 	mtk_wdt_dbg_spin();
 
 	return NOTIFY_DONE;
@@ -503,7 +551,7 @@ static int mtk_wdt_dbg_reboot_call(struct notifier_block *nb,
 static int mtk_wdt_dbg_restart_call(struct notifier_block *nb,
 				    unsigned long action, void *data)
 {
-	mtk_wdt_dbg_trap("restart-handler", data);
+	mtk_wdt_dbg_trap(DBG_F_RESTART_NB, "restart-handler", data);
 	mtk_wdt_dbg_spin();
 
 	return NOTIFY_DONE;
@@ -513,14 +561,33 @@ static int mtk_wdt_dbg_restart_call(struct notifier_block *nb,
 static int mtk_wdt_dbg_panic_call(struct notifier_block *nb,
 				  unsigned long action, void *data)
 {
-	mtk_wdt_dbg_trap("panic", data);
+	mtk_wdt_dbg_trap(DBG_F_PANIC_NB, "panic", data);
 
 	return NOTIFY_DONE;
 }
 
+/* set up by mtk_wdt_dbg_arm(); armed only on this debug build */
+static struct timer_list mtk_wdt_dbg_timer;
+
+/*
+ * 1 Hz heartbeat.  Every tick mirrors the elapsed seconds and the hook flags
+ * into the scratch register, so the next boot's preloader print says how long
+ * this kernel lived even when the console is destroyed by the reset.  At
+ * DBG_ARCHIVE_HINT_S it also starts claiming an abnormal reset, in the hope
+ * that this is what makes LK archive the console; at DBG_HANG_AFTER_S it gives
+ * up waiting for someone else to reset us and trips the trap itself.
+ */
 static void mtk_wdt_dbg_timeout(struct timer_list *t)
 {
-	mtk_wdt_dbg_trap("suicide-timer", NULL);
+	dbg_secs++;
+
+	if (dbg_secs >= DBG_HANG_AFTER_S) {
+		mtk_wdt_dbg_trap(DBG_F_TIMER, "suicide-timer", NULL);
+		return;
+	}
+
+	mtk_wdt_dbg_mark(dbg_secs >= DBG_ARCHIVE_HINT_S ? DBG_F_HINT : 0);
+	mod_timer(&mtk_wdt_dbg_timer, jiffies + HZ);
 }
 
 static struct notifier_block mtk_wdt_dbg_reboot_nb = {
@@ -538,21 +605,22 @@ static struct notifier_block mtk_wdt_dbg_panic_nb = {
 	.priority	= INT_MAX,
 };
 
-static DEFINE_TIMER(mtk_wdt_dbg_timer, mtk_wdt_dbg_timeout);
-
 static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 {
 	dbg_wdt = mtk_wdt;
+	mtk_wdt_dbg_mark(DBG_F_PROBE);
 
 	register_reboot_notifier(&mtk_wdt_dbg_reboot_nb);
 	register_restart_handler(&mtk_wdt_dbg_restart_nb);
 	atomic_notifier_chain_register(&panic_notifier_list,
 				      &mtk_wdt_dbg_panic_nb);
-	mod_timer(&mtk_wdt_dbg_timer, jiffies + DBG_HANG_AFTER_S * HZ);
+	timer_setup(&mtk_wdt_dbg_timer, mtk_wdt_dbg_timeout, 0);
+	mod_timer(&mtk_wdt_dbg_timer, jiffies + HZ);
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v2 armed (reboot/restart/panic hooks, suicide at %d s, trap timeout %d s)\n",
-		 DBG_HANG_AFTER_S, DBG_TRAP_TIMEOUT_S);
+		 "mtk_wdt: DBGTRAP v3 armed (NONRST_REG %#x, hint at %d s, suicide at %d s, trap timeout %d s)\n",
+		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
+		 DBG_ARCHIVE_HINT_S, DBG_HANG_AFTER_S, DBG_TRAP_TIMEOUT_S);
 }
 
 static int mtk_wdt_probe(struct platform_device *pdev)
