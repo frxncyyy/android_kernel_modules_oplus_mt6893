@@ -195,6 +195,11 @@ static void __iomem *dbg_atf_base;
 static u32 dbg_atf_ring_len;
 #define DBG_DUMP_START_S	10
 #define DBG_DUMP_PERIOD_S	1
+/* tighten the sampling around the known death window */
+#define DBG_FAST_AFTER_S	27
+#define DBG_FAST_PERIOD_MS	200
+/* claimed hardware heartbeat, so the core pets the RGU every ~2 s */
+#define DBG_HEARTBEAT_MS	4000
 
 /*
  * Raw RGU registers sampled once a second into the log.  The reset we are
@@ -365,11 +370,32 @@ static void mtk_wdt_init(struct watchdog_device *wdt_dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base;
+	u32 reg;
 
 	wdt_base = mtk_wdt->wdt_base;
 
 	if (readl(wdt_base + WDT_MODE) & WDT_MODE_EN) {
 		set_bit(WDOG_HW_RUNNING, &wdt_dev->status);
+
+		/*
+		 * DEBUG ONLY -- the leading suspect for the ~31 s reset.
+		 *
+		 * LK hands the watchdog over with MODE 0x7d, i.e. IRQ_EN and
+		 * DUAL_EN set, and this driver never touches MODE when it
+		 * adopts a boot-enabled watchdog.  In dual mode the first
+		 * expiry raises the bark interrupt and the second one resets
+		 * the chip -- and the watchdog node in this DT has no
+		 * interrupts property, so nothing acknowledges the bark.
+		 * Force plain single-stage reset-on-timeout so the semantics
+		 * match what mtk_wdt_set_timeout() below assumes.
+		 */
+		reg = readl(wdt_base + WDT_MODE);
+		reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
+		reg |= WDT_MODE_EN | WDT_MODE_KEY;
+		iowrite32(reg, wdt_base + WDT_MODE);
+		pr_info("mtk_wdt: DBG forced single-stage MODE %#x -> %#x\n",
+			readl(wdt_base + WDT_MODE), reg & ~WDT_MODE_KEY);
+
 		mtk_wdt_set_timeout(wdt_dev, wdt_dev->timeout);
 	}
 }
@@ -707,7 +733,10 @@ static void mtk_wdt_dbg_dump_fn(struct work_struct *w)
 	mtk_wdt_dbg_dump("periodic");
 
 	if (!dbg_frozen)
-		schedule_delayed_work(&dbg_dump_work, DBG_DUMP_PERIOD_S * HZ);
+		schedule_delayed_work(&dbg_dump_work,
+				      dbg_secs >= DBG_FAST_AFTER_S ?
+				      msecs_to_jiffies(DBG_FAST_PERIOD_MS) :
+				      DBG_DUMP_PERIOD_S * HZ);
 }
 
 static void mtk_wdt_dbg_sample_rgu(void)
@@ -913,7 +942,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v6 armed (NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v7 armed (NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
 		 DBG_DUMP_SLOT0, DBG_DUMP_SLOT1,
@@ -961,7 +990,13 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 
 	mtk_wdt->wdt_dev.ops = &mtk_wdt_ops;
 	mtk_wdt->wdt_dev.timeout = WDT_MAX_TIMEOUT;
-	mtk_wdt->wdt_dev.max_hw_heartbeat_ms = WDT_MAX_TIMEOUT * 1000;
+	/*
+	 * DEBUG ONLY -- claim a much shorter hardware heartbeat than the 31 s
+	 * the RGU is actually programmed for, so the watchdog core pets it
+	 * every ~2 s instead of every 15.5 s.  If the ~31 s reset is the RGU
+	 * expiring, this alone makes the boot survive it.
+	 */
+	mtk_wdt->wdt_dev.max_hw_heartbeat_ms = DBG_HEARTBEAT_MS;
 	mtk_wdt->wdt_dev.min_timeout = WDT_MIN_TIMEOUT;
 	mtk_wdt->wdt_dev.parent = dev;
 
