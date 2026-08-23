@@ -20,14 +20,17 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/panic_notifier.h>
 #include <linux/platform_device.h>
 #include <linux/rcupdate.h>
 #include <linux/reboot.h>
 #include <linux/reset-controller.h>
 #include <linux/sched.h>
 #include <linux/string.h>
+#include <linux/timer.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
 #include <linux/interrupt.h>
@@ -84,6 +87,22 @@ struct mtk_wdt_dev {
 struct mtk_wdt_data {
 	int toprgu_sw_rst_num;
 };
+
+/*
+ * DEBUG ONLY -- see mtk_wdt_dbg_trap() near the bottom of this file.
+ *
+ * dbg_wdt    : the probed device, so the trap can reach the RGU registers
+ *              from any context (reboot notifier, panic, softirq).
+ * dbg_frozen : once set, this driver stops petting the hardware watchdog,
+ *              so the pending timeout is guaranteed to expire.
+ */
+static struct mtk_wdt_dev *dbg_wdt;
+static bool dbg_frozen;
+
+/* how long to wait for the hardware watchdog once the trap has fired */
+#define DBG_TRAP_TIMEOUT_S	4
+/* unconditional capture point, in case the boot survives longer than before */
+#define DBG_HANG_AFTER_S	90
 
 static const struct mtk_wdt_data mt2712_data = {
 	.toprgu_sw_rst_num = MT2712_TOPRGU_SW_RST_NUM,
@@ -194,6 +213,10 @@ static int mtk_wdt_ping(struct watchdog_device *wdt_dev)
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
 
+	/* DEBUG ONLY -- let the pending timeout run out. */
+	if (unlikely(dbg_frozen))
+		return 0;
+
 	iowrite32(WDT_RST_RELOAD, wdt_base + WDT_RST);
 	pr_info("[wdtk] kick watchdog\n");
 
@@ -246,6 +269,10 @@ static int mtk_wdt_stop(struct watchdog_device *wdt_dev)
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
 	u32 reg;
+
+	/* DEBUG ONLY -- refuse to disarm once the trap has fired. */
+	if (unlikely(dbg_frozen))
+		return 0;
 
 	reg = readl(wdt_base + WDT_MODE);
 	reg &= ~WDT_MODE_EN;
@@ -356,33 +383,57 @@ EXPORT_SYMBOL(mtk_wdt_set_sw_rst_status);
 #endif
 
 /*
- * DEBUG ONLY -- investigation of the ~35 s reboot on the MT6893 6.6 port.
+ * DEBUG ONLY -- investigation of the ~35 s reset on the MT6893 6.6 port.
  *
- * An orderly reboot on this platform always ends up in mtk_wdt_restart()
- * issuing a SWSYSRST.  The preloader classifies that as a normal software
- * reset (RGU STA bit30), so LK neither snapshots the RAM_CONSOLE into expdb
- * nor preserves the DRAM ramoops region -- the reason for the reboot is lost.
- * A forced panic alone does not help either: with CONFIG_PANIC_TIMEOUT=-1
- * panic() takes the "panic_timeout != 0" branch and calls emergency_restart(),
- * which lands back in the same restart handler.
+ * The problem is purely one of visibility.  Every 6.6 boot so far has ended in
+ * a *clean* software reset (RGU "rst from: kernel", STA bit30, BOOT_REASON 4).
+ * LK treats that as a normal reboot: it neither snapshots the console into the
+ * expdb partition nor preserves the DRAM ramoops region, so the kernel log for
+ * the interesting last second is destroyed by the very reset we want to
+ * explain.  The one boot that *did* leave a 388 KiB console behind in expdb
+ * (boot-tee-nqfix) got there by timing out the hardware watchdog -- an
+ * abnormal reset, STA bit31, which LK does archive.
  *
- * So panic here *and* boot with panic=0 on the command line.  panic() then
- * falls through to its endless mdelay() loop; that loop only touches the
- * software lockup detector, and the watchdog core's ping work never gets
- * scheduled from it, so nothing pets the hardware watchdog.  The resulting
- * HW timeout is an abnormal reset (RGU STA bit31), which LK does archive.
+ * Forcing a panic instead does not work: with panic=0 panic() hangs, but the
+ * previous experiment showed the notifier is never even reached, so whatever
+ * resets us either bypasses the reboot notifier chain or does not come from
+ * Linux at all.
  *
- * The panic banner itself names the task that asked for the reboot, which is
- * the question this probe exists to answer.
+ * So stop trying to guess the path and cover all of them.  Every hook below
+ * funnels into mtk_wdt_dbg_trap(), which
+ *
+ *   1. stops petting the hardware watchdog (dbg_frozen, honoured by
+ *      mtk_wdt_ping() and mtk_wdt_stop()),
+ *   2. reprograms the RGU for a short single-stage reset-on-timeout, and
+ *   3. names the task that got us here.
+ *
+ * The caller then spins, so nothing else can issue a clean reset first.  The
+ * watchdog fires a few seconds later, the reset is abnormal, and LK archives
+ * the console -- including the trap message and the backtrace.
+ *
+ * Hooks, in the order they can plausibly fire:
+ *
+ *   reboot notifier, INT_MAX   orderly kernel_restart()/kernel_power_off()
+ *   restart handler, prio 255  emergency_restart(), which skips the notifiers,
+ *                              and preempts PSCI (129) and mtk_wdt (128)
+ *   panic notifier             any panic, so it no longer waits ~31 s
+ *   timer, DBG_HANG_AFTER_S    unconditional capture if the boot lives longer
+ *
+ * If the device still comes back with STA bit30 and an empty expdb after all
+ * of this, then the reset is not being issued by Linux -- look at ATF/TEE.
  */
-static int mtk_wdt_force_panic_reboot(struct notifier_block *nb,
-				      unsigned long action, void *data)
+static void mtk_wdt_dbg_trap(const char *why, const char *cmd)
 {
 	char parent_comm[TASK_COMM_LEN] = "?";
 	pid_t parent_pid = 0;
+	void __iomem *wdt_base;
+	u32 reg;
 
-	if (action != SYS_RESTART)
-		return NOTIFY_DONE;
+	if (!dbg_wdt || dbg_frozen)
+		return;
+
+	dbg_frozen = true;
+	wdt_base = dbg_wdt->wdt_base;
 
 	rcu_read_lock();
 	if (current->real_parent) {
@@ -392,18 +443,117 @@ static int mtk_wdt_force_panic_reboot(struct notifier_block *nb,
 	}
 	rcu_read_unlock();
 
-	panic("mtk_wdt: FORCED panic on reboot (cmd=%s) by %s[%d], parent %s[%d]",
-	      data ? (char *)data : "<none>",
-	      current->comm, task_pid_nr(current),
-	      parent_comm, parent_pid);
+	pr_emerg("mtk_wdt: DBGTRAP via %s, cmd=%s, by %s[%d], parent %s[%d]\n",
+		 why, cmd ? cmd : "<none>",
+		 current->comm, task_pid_nr(current),
+		 parent_comm, parent_pid);
+	dump_stack();
+
+	/*
+	 * Single stage, reset on timeout: clear IRQ_EN/DUAL_EN so the expiry
+	 * resets the chip instead of raising the pretimeout interrupt (there
+	 * is no pretimeout governor configured, so that would be a no-op).
+	 */
+	iowrite32(WDT_LENGTH_TIMEOUT(DBG_TRAP_TIMEOUT_S << 6) | WDT_LENGTH_KEY,
+		  wdt_base + WDT_LENGTH);
+	iowrite32(WDT_RST_RELOAD, wdt_base + WDT_RST);
+	reg = ioread32(wdt_base + WDT_MODE);
+	reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
+	reg |= WDT_MODE_EN | WDT_MODE_KEY;
+	iowrite32(reg, wdt_base + WDT_MODE);
+
+	pr_emerg("mtk_wdt: DBGTRAP armed, HW watchdog reset in ~%d s\n",
+		 DBG_TRAP_TIMEOUT_S);
+}
+
+static void mtk_wdt_dbg_spin(void)
+{
+	pr_emerg("mtk_wdt: DBGTRAP spinning, waiting to be reset\n");
+	while (1)
+		cpu_relax();
+}
+
+static int mtk_wdt_dbg_reboot_call(struct notifier_block *nb,
+				   unsigned long action, void *data)
+{
+	const char *why;
+
+	switch (action) {
+	case SYS_RESTART:	/* == SYS_DOWN */
+		why = "reboot-notifier/restart";
+		break;
+	case SYS_HALT:
+		why = "reboot-notifier/halt";
+		break;
+	case SYS_POWER_OFF:
+		why = "reboot-notifier/poweroff";
+		break;
+	default:
+		why = "reboot-notifier/other";
+		break;
+	}
+
+	mtk_wdt_dbg_trap(why, data);
+	mtk_wdt_dbg_spin();
 
 	return NOTIFY_DONE;
 }
 
-static struct notifier_block mtk_wdt_reboot_nb = {
-	.notifier_call	= mtk_wdt_force_panic_reboot,
+/* do_kernel_restart() passes the reboot command string as the notifier data. */
+static int mtk_wdt_dbg_restart_call(struct notifier_block *nb,
+				    unsigned long action, void *data)
+{
+	mtk_wdt_dbg_trap("restart-handler", data);
+	mtk_wdt_dbg_spin();
+
+	return NOTIFY_DONE;
+}
+
+/* panic() will hang or restart on its own; just make sure the RGU is armed. */
+static int mtk_wdt_dbg_panic_call(struct notifier_block *nb,
+				  unsigned long action, void *data)
+{
+	mtk_wdt_dbg_trap("panic", data);
+
+	return NOTIFY_DONE;
+}
+
+static void mtk_wdt_dbg_timeout(struct timer_list *t)
+{
+	mtk_wdt_dbg_trap("suicide-timer", NULL);
+}
+
+static struct notifier_block mtk_wdt_dbg_reboot_nb = {
+	.notifier_call	= mtk_wdt_dbg_reboot_call,
 	.priority	= INT_MAX,
 };
+
+static struct notifier_block mtk_wdt_dbg_restart_nb = {
+	.notifier_call	= mtk_wdt_dbg_restart_call,
+	.priority	= 255,
+};
+
+static struct notifier_block mtk_wdt_dbg_panic_nb = {
+	.notifier_call	= mtk_wdt_dbg_panic_call,
+	.priority	= INT_MAX,
+};
+
+static DEFINE_TIMER(mtk_wdt_dbg_timer, mtk_wdt_dbg_timeout);
+
+static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
+{
+	dbg_wdt = mtk_wdt;
+
+	register_reboot_notifier(&mtk_wdt_dbg_reboot_nb);
+	register_restart_handler(&mtk_wdt_dbg_restart_nb);
+	atomic_notifier_chain_register(&panic_notifier_list,
+				      &mtk_wdt_dbg_panic_nb);
+	mod_timer(&mtk_wdt_dbg_timer, jiffies + DBG_HANG_AFTER_S * HZ);
+
+	dev_info(dev,
+		 "mtk_wdt: DBGTRAP v2 armed (reboot/restart/panic hooks, suicide at %d s, trap timeout %d s)\n",
+		 DBG_HANG_AFTER_S, DBG_TRAP_TIMEOUT_S);
+}
 
 static int mtk_wdt_probe(struct platform_device *pdev)
 {
@@ -466,9 +616,8 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	dev_info(dev, "Watchdog enabled (timeout=%d sec, nowayout=%d)\n",
 		 mtk_wdt->wdt_dev.timeout, nowayout);
 
-	/* DEBUG ONLY -- see mtk_wdt_force_panic_reboot() above. */
-	register_reboot_notifier(&mtk_wdt_reboot_nb);
-	dev_info(dev, "mtk_wdt: DEBUG force-panic-on-reboot notifier armed\n");
+	/* DEBUG ONLY -- see mtk_wdt_dbg_trap() above. */
+	mtk_wdt_dbg_arm(dev, mtk_wdt);
 
 	wdt_data = of_device_get_match_data(dev);
 	if (wdt_data) {
