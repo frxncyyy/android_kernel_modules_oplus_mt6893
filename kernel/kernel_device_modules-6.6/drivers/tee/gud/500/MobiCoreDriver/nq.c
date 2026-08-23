@@ -218,10 +218,19 @@ static inline bool nq_notifications_flush(void)
 
 static inline void nq_update_time(void)
 {
+#if KERNEL_VERSION(5, 8, 0) <= LINUX_VERSION_CODE
+	struct timespec64 tm1, tm2;
+	#else
 	struct timespec tm1, tm2;
+	#endif
 
+#if KERNEL_VERSION(5, 8, 0) <= LINUX_VERSION_CODE
+	ktime_get_real_ts64(&tm1);
+	ktime_get_raw_ts64(&tm2);
+	#else
 	getnstimeofday(&tm1);
 	getrawmonotonic(&tm2);
+	#endif
 	mutex_lock(&l_ctx.mcp_time_mutex);
 	l_ctx.time->wall_clock_seconds = tm1.tv_sec;
 	l_ctx.time->wall_clock_nsec    = tm1.tv_nsec;

@@ -85,7 +85,15 @@ struct notification_queue_header {
  */
 struct notification_queue {
 	struct notification_queue_header hdr;		/** Queue header */
-	struct notification notification[MIN_NQ_ELEM];	/** Elements */
+	/*
+	 * Flexible array member: the queue is allocated in the shared MCI
+	 * buffer with hdr.queue_size (NQ_NUM_ELEMS) real elements.  A trailing
+	 * fixed [MIN_NQ_ELEM] array is a fake flexible array that trips
+	 * CONFIG_UBSAN_ARRAY_BOUNDS (fatal under UBSAN_TRAP) as soon as
+	 * notification[i] is accessed for i > 0.  A true flexible array member
+	 * matches the real layout and is exempt from array-bounds checking.
+	 */
+	struct notification notification[];		/** Elements */
 };
 
 #endif /** NQ_H_ */

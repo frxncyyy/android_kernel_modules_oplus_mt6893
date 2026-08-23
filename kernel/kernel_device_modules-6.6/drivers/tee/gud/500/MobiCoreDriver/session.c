@@ -133,7 +133,16 @@ static int hash_path_and_data(struct task_struct *task, u8 *hash,
 	if (!buf)
 		return -ENOMEM;
 
-	exe_file = get_task_exe_file(task);
+	exe_file = NULL;
+	task_lock(task);
+	if (task->mm && !(task->flags & PF_KTHREAD)) {
+		rcu_read_lock();
+		exe_file = rcu_dereference(task->mm->exe_file);
+		if (exe_file && !get_file_rcu(exe_file))
+			exe_file = NULL;
+		rcu_read_unlock();
+	}
+	task_unlock(task);
 	if (!exe_file) {
 		ret = -ENOENT;
 		goto end;

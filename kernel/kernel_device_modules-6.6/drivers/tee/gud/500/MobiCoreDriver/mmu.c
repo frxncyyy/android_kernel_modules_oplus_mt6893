@@ -73,10 +73,15 @@ static inline long gup_local(struct mm_struct *mm, uintptr_t start,
 {
 	unsigned int gup_flags = 0;
 
+	gup_flags |= FOLL_LONGTERM;
 	if (write)
 		gup_flags |= FOLL_WRITE;
 
-	return get_user_pages(start, nr_pages, gup_flags, pages, NULL);
+	#if KERNEL_VERSION(6, 5, 0) > LINUX_VERSION_CODE
+	return pin_user_pages(start, nr_pages, gup_flags, pages, NULL);
+	#else
+	return pin_user_pages(start, nr_pages, gup_flags, pages);
+	#endif
 }
 
 static inline long gup_local_repeat(struct mm_struct *mm, uintptr_t start,
@@ -173,7 +178,11 @@ static void tee_mmu_delete(struct tee_mmu *mmu)
 			int i;
 
 			for (i = 0; i < nr_pages; i++, page++)
+#if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
 				put_page(*page);
+#else
+				unpin_user_page(*page);
+#endif
 
 			mmu->pages_locked -= nr_pages;
 		} else if (mmu->user) {
@@ -199,7 +208,11 @@ static void tee_mmu_delete(struct tee_mmu *mmu)
 #endif
 
 				/* pte_page() cannot return NULL */
+#if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
 				put_page(pte_page(pte));
+#else
+				unpin_user_page(pte_page(pte));
+#endif
 			}
 
 			mmu->pages_locked -= nr_pages;
