@@ -13,11 +13,14 @@
 #include <dt-bindings/reset/mt8183-resets.h>
 #include <dt-bindings/reset/mt8192-resets.h>
 #include <dt-bindings/reset/mt8195-resets.h>
+#include <linux/bio.h>
+#include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/kmsg_dump.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/notifier.h>
@@ -32,7 +35,9 @@
 #include <linux/string.h>
 #include <linux/timer.h>
 #include <linux/types.h>
+#include <linux/vmalloc.h>
 #include <linux/watchdog.h>
+#include <linux/workqueue.h>
 #include <linux/interrupt.h>
 
 #define WDT_MAX_TIMEOUT		31
@@ -133,6 +138,40 @@ static unsigned int dbg_secs;
 #define DBG_F_TIMER		0x10
 #define DBG_F_ARMED		0x20
 #define DBG_F_HINT		0x40
+
+/*
+ * DEBUG ONLY -- write the kernel log to the expdb partition ourselves.
+ *
+ * Every indirect channel has now failed.  The DRAM ramoops region is re-init'd
+ * by LK on a clean reset; the expdb console archive at 0x091000 is only written
+ * for abnormal resets; and NONRST_REG does not survive at all -- the preloader
+ * log shows it setting NONRST_REG to 0x40000000 and the next boot reading back
+ * 0x0, so the 0xA0000000 seen after the one hardware watchdog timeout must be
+ * written by firmware while handling that reset, not carried over from Linux.
+ *
+ * So stop relying on anyone else's archive and write the log to flash from
+ * here, the way MTK's own log_store driver does: resolve the expdb partition,
+ * pull the kernel ring buffer with kmsg_dump_get_buffer() and push it out with
+ * a single bio.  This needs no firmware cooperation and, because it runs
+ * periodically, it does not need to know which code issues the reset -- the
+ * snapshot on flash is at most DBG_DUMP_PERIOD_S seconds older than the death.
+ *
+ * The two slots alternate so a torn write cannot destroy the previous good
+ * snapshot.  Both sit in the unused middle of the 40 MiB partition, clear of
+ * the 0x091000 archive area and the pl_lk log at 0x2600000.
+ */
+#define DBG_EXPDB_PATH		"/dev/block/by-name/expdb"
+#define DBG_DUMP_MAGIC		"MTKWDT-DBGDUMP"
+#define DBG_DUMP_BYTES		(512 * 1024)
+#define DBG_DUMP_HDR		512
+#define DBG_DUMP_SLOT0		0x01000000ULL
+#define DBG_DUMP_SLOT1		0x01100000ULL
+#define DBG_DUMP_START_S	12
+#define DBG_DUMP_PERIOD_S	3
+
+static char *dbg_dump_buf;
+static unsigned int dbg_dump_seq;
+static struct delayed_work dbg_dump_work;
 
 static const struct mtk_wdt_data mt2712_data = {
 	.toprgu_sw_rst_num = MT2712_TOPRGU_SW_RST_NUM,
@@ -452,6 +491,103 @@ EXPORT_SYMBOL(mtk_wdt_set_sw_rst_status);
  * If the device still comes back with STA bit30 and an empty expdb after all
  * of this, then the reset is not being issued by Linux -- look at ATF/TEE.
  */
+static void mtk_wdt_dbg_who(char *out, size_t size)
+{
+	char parent_comm[TASK_COMM_LEN] = "?";
+	pid_t parent_pid = 0;
+
+	rcu_read_lock();
+	if (current->real_parent) {
+		strscpy(parent_comm, current->real_parent->comm,
+			sizeof(parent_comm));
+		parent_pid = task_pid_nr(current->real_parent);
+	}
+	rcu_read_unlock();
+
+	scnprintf(out, size, "%s[%d] parent %s[%d]",
+		  current->comm, task_pid_nr(current),
+		  parent_comm, parent_pid);
+}
+
+/* must run in process context: this sleeps on block I/O */
+static void mtk_wdt_dbg_dump(const char *why)
+{
+	static char holder;
+	struct kmsg_dump_iter iter;
+	struct block_device *bdev;
+	char who[2 * TASK_COMM_LEN + 32];
+	size_t hdr, len = 0, total;
+	unsigned int pages, i;
+	struct bio *bio;
+	loff_t off;
+	int ret;
+
+	if (!dbg_dump_buf)
+		return;
+
+	mtk_wdt_dbg_who(who, sizeof(who));
+	hdr = scnprintf(dbg_dump_buf, DBG_DUMP_HDR,
+			"%s seq=%u secs=%u flags=%#x why=%s by %s\n",
+			DBG_DUMP_MAGIC, dbg_dump_seq, dbg_secs, dbg_flags,
+			why, who);
+	memset(dbg_dump_buf + hdr, 0, DBG_DUMP_HDR - hdr);
+
+	kmsg_dump_rewind(&iter);
+	kmsg_dump_get_buffer(&iter, true, dbg_dump_buf + DBG_DUMP_HDR,
+			     DBG_DUMP_BYTES - DBG_DUMP_HDR, &len);
+
+	total = ALIGN(DBG_DUMP_HDR + len, PAGE_SIZE);
+	if (total > DBG_DUMP_BYTES)
+		total = DBG_DUMP_BYTES;
+	memset(dbg_dump_buf + DBG_DUMP_HDR + len, 0,
+	       total - DBG_DUMP_HDR - len);
+
+	bdev = blkdev_get_by_path(DBG_EXPDB_PATH, BLK_OPEN_WRITE, &holder, NULL);
+	if (IS_ERR(bdev)) {
+		pr_err("mtk_wdt: DBGDUMP cannot open %s: %ld\n",
+		       DBG_EXPDB_PATH, PTR_ERR(bdev));
+		return;
+	}
+
+	pages = total >> PAGE_SHIFT;
+	off = (dbg_dump_seq & 1) ? DBG_DUMP_SLOT1 : DBG_DUMP_SLOT0;
+
+	bio = bio_alloc(bdev, pages, REQ_OP_WRITE | REQ_SYNC | REQ_FUA,
+			GFP_KERNEL);
+	if (!bio) {
+		blkdev_put(bdev, &holder);
+		return;
+	}
+	bio->bi_iter.bi_sector = off >> SECTOR_SHIFT;
+	for (i = 0; i < pages; i++) {
+		struct page *page =
+			vmalloc_to_page(dbg_dump_buf + (i << PAGE_SHIFT));
+
+		if (bio_add_page(bio, page, PAGE_SIZE, 0) != PAGE_SIZE) {
+			pr_err("mtk_wdt: DBGDUMP bio_add_page failed at %u\n", i);
+			bio_put(bio);
+			blkdev_put(bdev, &holder);
+			return;
+		}
+	}
+
+	ret = submit_bio_wait(bio);
+	bio_put(bio);
+	blkdev_put(bdev, &holder);
+
+	pr_info("mtk_wdt: DBGDUMP seq=%u why=%s log=%zu bytes -> %#llx ret=%d\n",
+		dbg_dump_seq, why, len, off, ret);
+	dbg_dump_seq++;
+}
+
+static void mtk_wdt_dbg_dump_fn(struct work_struct *w)
+{
+	mtk_wdt_dbg_dump("periodic");
+
+	if (!dbg_frozen)
+		schedule_delayed_work(&dbg_dump_work, DBG_DUMP_PERIOD_S * HZ);
+}
+
 static void mtk_wdt_dbg_mark(u32 flag)
 {
 	u32 val;
@@ -469,8 +605,7 @@ static void mtk_wdt_dbg_mark(u32 flag)
 
 static void mtk_wdt_dbg_trap(u32 flag, const char *why, const char *cmd)
 {
-	char parent_comm[TASK_COMM_LEN] = "?";
-	pid_t parent_pid = 0;
+	char who[2 * TASK_COMM_LEN + 32];
 	void __iomem *wdt_base;
 	u32 reg;
 
@@ -482,18 +617,9 @@ static void mtk_wdt_dbg_trap(u32 flag, const char *why, const char *cmd)
 	dbg_frozen = true;
 	wdt_base = dbg_wdt->wdt_base;
 
-	rcu_read_lock();
-	if (current->real_parent) {
-		strscpy(parent_comm, current->real_parent->comm,
-			sizeof(parent_comm));
-		parent_pid = task_pid_nr(current->real_parent);
-	}
-	rcu_read_unlock();
-
-	pr_emerg("mtk_wdt: DBGTRAP via %s, cmd=%s, by %s[%d], parent %s[%d]\n",
-		 why, cmd ? cmd : "<none>",
-		 current->comm, task_pid_nr(current),
-		 parent_comm, parent_pid);
+	mtk_wdt_dbg_who(who, sizeof(who));
+	pr_emerg("mtk_wdt: DBGTRAP via %s, cmd=%s, by %s\n",
+		 why, cmd ? cmd : "<none>", who);
 	dump_stack();
 
 	/*
@@ -540,6 +666,14 @@ static int mtk_wdt_dbg_reboot_call(struct notifier_block *nb,
 		why = "reboot-notifier/other";
 		break;
 	}
+
+	/*
+	 * Still in process context and nothing has been shut down yet, so grab
+	 * a final snapshot before the trap freezes everything.  It will not
+	 * contain the DBGTRAP line, but why= in the header says how we got here.
+	 */
+	mtk_wdt_dbg_mark(DBG_F_REBOOT_NB);
+	mtk_wdt_dbg_dump(why);
 
 	mtk_wdt_dbg_trap(DBG_F_REBOOT_NB, why, data);
 	mtk_wdt_dbg_spin();
@@ -617,10 +751,21 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	timer_setup(&mtk_wdt_dbg_timer, mtk_wdt_dbg_timeout, 0);
 	mod_timer(&mtk_wdt_dbg_timer, jiffies + HZ);
 
+	dbg_dump_buf = vmalloc(DBG_DUMP_BYTES);
+	if (dbg_dump_buf) {
+		INIT_DELAYED_WORK(&dbg_dump_work, mtk_wdt_dbg_dump_fn);
+		schedule_delayed_work(&dbg_dump_work, DBG_DUMP_START_S * HZ);
+	} else {
+		dev_err(dev, "mtk_wdt: DBGDUMP buffer allocation failed\n");
+	}
+
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v3 armed (NONRST_REG %#x, hint at %d s, suicide at %d s, trap timeout %d s)\n",
+		 "mtk_wdt: DBGTRAP v4 armed (NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
-		 DBG_ARCHIVE_HINT_S, DBG_HANG_AFTER_S, DBG_TRAP_TIMEOUT_S);
+		 DBG_DUMP_SLOT0, DBG_DUMP_SLOT1,
+		 DBG_DUMP_START_S, DBG_DUMP_PERIOD_S,
+		 DBG_ARCHIVE_HINT_S, DBG_HANG_AFTER_S);
 }
 
 static int mtk_wdt_probe(struct platform_device *pdev)
