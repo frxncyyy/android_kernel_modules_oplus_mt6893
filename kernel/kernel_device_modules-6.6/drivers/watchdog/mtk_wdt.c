@@ -166,8 +166,22 @@ static unsigned int dbg_secs;
 #define DBG_DUMP_HDR		512
 #define DBG_DUMP_SLOT0		0x01000000ULL
 #define DBG_DUMP_SLOT1		0x01100000ULL
-#define DBG_DUMP_START_S	12
-#define DBG_DUMP_PERIOD_S	3
+#define DBG_DUMP_START_S	10
+#define DBG_DUMP_PERIOD_S	1
+
+/*
+ * Raw RGU registers sampled once a second into the log.  The reset we are
+ * chasing sets STA bit30, which the preloader labels "rst from: kernel", yet no
+ * Linux reboot path runs -- so watch the request registers for a subsystem
+ * (SPM, thermal, SCP, ADSP, modem, GPU-EB) raising a reset request behind our
+ * back.  Read-only, and deliberately skipping the two trigger registers
+ * WDT_RST (0x08) and WDT_SWRST (0x14).
+ */
+static const u8 dbg_rgu_off[] = {
+	0x00, 0x04, 0x0c, 0x10, 0x18, 0x1c, 0x20, 0x24,
+	0x28, 0x2c, 0x30, 0x34, 0x38, 0x3c, 0x40, 0x44,
+};
+static u32 dbg_rgu_prev[ARRAY_SIZE(dbg_rgu_off)];
 
 static char *dbg_dump_buf;
 static unsigned int dbg_dump_seq;
@@ -588,6 +602,35 @@ static void mtk_wdt_dbg_dump_fn(struct work_struct *w)
 		schedule_delayed_work(&dbg_dump_work, DBG_DUMP_PERIOD_S * HZ);
 }
 
+static void mtk_wdt_dbg_sample_rgu(void)
+{
+	char all[ARRAY_SIZE(dbg_rgu_off) * 13 + 1];
+	char chg[ARRAY_SIZE(dbg_rgu_off) * 24 + 1];
+	int i, n = 0, c = 0;
+	u32 v;
+
+	if (!dbg_wdt)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(dbg_rgu_off); i++) {
+		v = ioread32(dbg_wdt->wdt_base + dbg_rgu_off[i]);
+		n += scnprintf(all + n, sizeof(all) - n, " %02x:%08x",
+			       dbg_rgu_off[i], v);
+
+		/* 0x20 is our own heartbeat, it changes every second by design */
+		if (v != dbg_rgu_prev[i] &&
+		    dbg_rgu_off[i] != WDT_DBG_NONRST_REG)
+			c += scnprintf(chg + c, sizeof(chg) - c,
+				       " %02x:%08x->%08x",
+				       dbg_rgu_off[i], dbg_rgu_prev[i], v);
+		dbg_rgu_prev[i] = v;
+	}
+
+	pr_info("mtk_wdt: RGU t=%u%s\n", dbg_secs, all);
+	if (c)
+		pr_warn("mtk_wdt: RGU t=%u CHANGED%s\n", dbg_secs, chg);
+}
+
 static void mtk_wdt_dbg_mark(u32 flag)
 {
 	u32 val;
@@ -721,6 +764,7 @@ static void mtk_wdt_dbg_timeout(struct timer_list *t)
 	}
 
 	mtk_wdt_dbg_mark(dbg_secs >= DBG_ARCHIVE_HINT_S ? DBG_F_HINT : 0);
+	mtk_wdt_dbg_sample_rgu();
 	mod_timer(&mtk_wdt_dbg_timer, jiffies + HZ);
 }
 
@@ -760,12 +804,13 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v4 armed (NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v5 armed (NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
 		 DBG_DUMP_SLOT0, DBG_DUMP_SLOT1,
 		 DBG_DUMP_START_S, DBG_DUMP_PERIOD_S,
 		 DBG_ARCHIVE_HINT_S, DBG_HANG_AFTER_S);
+	mtk_wdt_dbg_sample_rgu();
 }
 
 static int mtk_wdt_probe(struct platform_device *pdev)
