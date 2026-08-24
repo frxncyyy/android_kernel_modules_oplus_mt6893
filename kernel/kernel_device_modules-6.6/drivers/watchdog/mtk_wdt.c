@@ -33,6 +33,7 @@
 #include <linux/reboot.h>
 #include <linux/reset-controller.h>
 #include <linux/sched.h>
+#include <linux/sizes.h>
 #include <linux/string.h>
 #include <linux/timer.h>
 #include <linux/types.h>
@@ -144,6 +145,25 @@ static unsigned int dbg_secs;
 #define DBG_NRST_MAGIC		0x00DB0000
 #define DBG_NRST_ABNORMAL	0xA0000000
 
+/*
+ * DEBUG ONLY -- boot stage, copied from 4.19's aee_hangdet.
+ *
+ * 4.19 maps TOPRGU in drivers/misc/mediatek/aee/hangdet/aee_hangdet.c and calls
+ * wdt_mark_stage(WDT_STAGE_KERNEL) once at hangdet_init(), i.e. it stamps
+ * "Linux is up" into bits 31:29 of WDT_NONRST_REG2.  6.6 never does, and this
+ * device runs Linux with those bits reading 0b010 all the way to the reset.  The
+ * write is a plain read-modify-write with no key, so it costs nothing to match
+ * 4.19 here -- and if anything outside Linux is watching for the kernel to
+ * check in, this is the check-in it is waiting for.
+ */
+#define WDT_NONRST_REG2		0x24
+#define WDT_STAGE_OFS		29
+#define WDT_STAGE_MASK		0x07
+#define WDT_STAGE_KERNEL	0x03
+
+/* live down-counter; 4.19's aee_hangdet reads it at this offset */
+#define WDT_COUNTER		0x514
+
 #define DBG_F_PROBE		0x01
 #define DBG_F_REBOOT_NB		0x02
 #define DBG_F_RESTART_NB	0x04
@@ -205,6 +225,8 @@ static unsigned int dbg_secs;
 
 static void __iomem *dbg_atf_base;
 static u32 dbg_atf_ring_len;
+static u32 dbg_atf_size;
+static phys_addr_t dbg_atf_phys;
 
 /*
  * DEBUG ONLY -- carveouts worth archiving next to the kernel log.
@@ -231,14 +253,36 @@ struct dbg_mem_region {
 	void __iomem *base;
 	phys_addr_t phys;
 	u32 size;
+	bool memremapped;
 };
 
 static struct dbg_mem_region dbg_mem_tab[] = {
 	{ "mediatek,ccci_tag_mem",  "ccci_tag",   64 * 1024 },
 	{ "mediatek,ap_md_c_smem",  "md_c_smem",  32 * 1024 },
 	{ "mediatek,ap_md_nc_smem", "md_nc_smem", 32 * 1024 },
-	{ "mediatek,log_store",     "log_store",  64 * 1024 },
+	{ "mediatek,log_store",     "log_store", 128 * 1024 },
 };
+
+/*
+ * DEBUG ONLY -- answered, and it rules the modem out.
+ *
+ * expdb-17 came back with all three MD regions mapped and archived, and the two
+ * snapshots one second apart are byte for byte identical: ccci_tag holds only
+ * LK's static handoff (md1img / MOLY.NR15.R3.TC16.S.PR2.SP.V2.P88 / the smem
+ * layout key names), while ap_md_c_smem and ap_md_nc_smem are 85-95 % zero with
+ * a sparse scatter of single bits and no CCCI structure at all -- untouched
+ * DRAM.  Nothing is writing to AP/MD shared memory, so the modem is neither
+ * running nor complaining, and there is no exception record to find.
+ *
+ * log_store FAILED to map, and the reason matters: mblock-6-log_store is the
+ * only one of the four without "no-map", so it stays in the kernel linear map
+ * and ioremap() refuses it on arm64.  Use memremap() for that case.  It is
+ * worth getting right -- log_store is MTK's own carry-over-a-reset buffer, the
+ * one LK reads back as "RAM_CONSOLE wdt_status 0x2, fiq_step 0x0, exp_type
+ * 0x0", so on the boot *after* a death it should hold the previous boot's
+ * record.  Nothing in this build touches it, so it survives all the way to our
+ * snapshot.
+ */
 #define DBG_DUMP_START_S	20
 #define DBG_DUMP_PERIOD_S	1
 /* tighten the sampling around the known death window */
@@ -275,12 +319,19 @@ static struct dbg_mem_region dbg_mem_tab[] = {
  * (SPM, thermal, SCP, ADSP, modem, GPU-EB) raising a reset request behind our
  * back.  Read-only, and deliberately skipping the two trigger registers
  * WDT_RST (0x08) and WDT_SWRST (0x14).
+ *
+ * 0x514 is WDT_COUNTER, the live down-counter.  4.19's aee_hangdet reads it by
+ * exactly this offset, so it is safe to touch, and it settles the one thing the
+ * frozen 0x00/0x04 view cannot: whether our 2 s WDT_RST=0x1971 pets actually
+ * reload the hardware, or whether the counter has been running down since LK
+ * and simply happens to reach zero at ~31 s.
  */
-static const u8 dbg_rgu_off[] = {
+static const u16 dbg_rgu_off[] = {
 	0x00, 0x04, 0x0c, 0x10, 0x18, 0x1c, 0x20, 0x24,
 	0x28, 0x2c, 0x30, 0x34, 0x38, 0x3c, 0x40, 0x44,
 	0x48, 0x4c, 0x50, 0x54, 0x58, 0x5c, 0x60, 0x64,
 	0x68, 0x6c, 0x70, 0x74, 0x78, 0x7c,
+	WDT_COUNTER,
 };
 static u32 dbg_rgu_prev[ARRAY_SIZE(dbg_rgu_off)];
 
@@ -678,6 +729,24 @@ static void mtk_wdt_dbg_unhook_req_reset(struct device *dev)
 		 (mode & WDT_REQ_THERMAL) ? "set" : "clear", irq_en);
 }
 
+/* stamp "Linux is running" into WDT_NONRST_REG2, exactly as 4.19's hangdet does */
+static void mtk_wdt_dbg_mark_stage(struct device *dev)
+{
+	void __iomem *base;
+	u32 old, new;
+
+	if (!dbg_wdt)
+		return;
+	base = dbg_wdt->wdt_base;
+	old = ioread32(base + WDT_NONRST_REG2);
+	new = (old & ~(WDT_STAGE_MASK << WDT_STAGE_OFS)) |
+	      (WDT_STAGE_KERNEL << WDT_STAGE_OFS);
+	iowrite32(new, base + WDT_NONRST_REG2);
+	dev_info(dev,
+		 "mtk_wdt: DBG boot stage NONRST_REG2 %#x -> %#x (read back %#x)\n",
+		 old, new, ioread32(base + WDT_NONRST_REG2));
+}
+
 static void mtk_wdt_dbg_map_regions(struct device *dev)
 {
 	int i;
@@ -701,9 +770,21 @@ static void mtk_wdt_dbg_map_regions(struct device *dev)
 
 		m->size = min_t(u64, rmem->size, m->max);
 		m->phys = rmem->base;
+		/*
+		 * Carveouts marked "no-map" are outside the linear map and want
+		 * ioremap(); one that is only "map non-reusable" (log_store) is
+		 * ordinary kernel RAM, which arm64's ioremap() rejects outright,
+		 * so fall back to memremap() for it.
+		 */
 		m->base = ioremap_wc(m->phys, m->size);
-		dev_info(dev, "mtk_wdt: DBG mapped %s at %pa+%#x%s\n",
-			 m->label, &m->phys, m->size, m->base ? "" : " FAILED");
+		if (!m->base) {
+			m->base = memremap(m->phys, m->size, MEMREMAP_WB);
+			m->memremapped = m->base;
+		}
+		dev_info(dev, "mtk_wdt: DBG mapped %s at %pa+%#x%s%s\n",
+			 m->label, &m->phys, m->size,
+			 m->base ? "" : " FAILED",
+			 m->memremapped ? " (memremap)" : "");
 	}
 }
 
@@ -779,11 +860,80 @@ static void mtk_wdt_dbg_map_atf(struct device *dev)
 	}
 
 	dbg_atf_ring_len = ring;
+	dbg_atf_phys = rmem->base;
+	dbg_atf_size = rmem->size;
 	dev_info(dev,
 		 "mtk_wdt: ATF log carveout %pa+%pa, ring %u, write %u, total %u\n",
 		 &rmem->base, &rmem->size, dbg_atf_ring_len,
 		 readl_relaxed(dbg_atf_base + 0x10),
 		 readl_relaxed(dbg_atf_base + 0x28));
+}
+
+/*
+ * DEBUG ONLY -- a 4 KiB-granular nonzero map of the whole atf-log-reserved
+ * carveout, plus the crash-log subregion when it has anything in it.
+ *
+ * Our snapshots are written *before* the death, so anything EL3 records *at* the
+ * death can only ever be read on the next boot -- and DRAM survives a watchdog
+ * reset, which is the entire point of these carveouts.  So this is a read of the
+ * previous boot's post-mortem, not this one's.  The debug ring occupies the
+ * first ~78 KiB and will always show up; what matters is whether any page
+ * outside it is dirty, in particular around crash_log_addr.
+ */
+static size_t mtk_wdt_dbg_atf_map(char *out, size_t size)
+{
+	u32 pages, p, off, first = U32_MAX, last = 0;
+	u64 clog, csize;
+	size_t n = 0, take;
+
+	if (!dbg_atf_base || !dbg_atf_size || size < 512)
+		return 0;
+
+	clog = readq_relaxed(dbg_atf_base + 0x18);
+	csize = readq_relaxed(dbg_atf_base + 0x20);
+	pages = min(dbg_atf_size / SZ_4K, 128u);
+
+	n += scnprintf(out + n, size - n,
+		       "===== ATF CARVEOUT %pa+%#x crash_log %#llx+%#llx map(4K,1=dirty) ",
+		       &dbg_atf_phys, dbg_atf_size, clog, csize);
+
+	for (p = 0; p < pages && size - n > 8; p++) {
+		bool dirty = false;
+
+		for (off = p * SZ_4K; off < (p + 1) * SZ_4K; off += 4) {
+			if (readl_relaxed(dbg_atf_base + off)) {
+				dirty = true;
+				break;
+			}
+		}
+		out[n++] = dirty ? '1' : '0';
+	}
+	n += scnprintf(out + n, size - n, " =====\n");
+
+	/* the crash log itself, if it is inside our mapping and not empty */
+	if (!clog || clog < dbg_atf_phys ||
+	    clog + csize > dbg_atf_phys + dbg_atf_size)
+		return n;
+
+	off = clog - dbg_atf_phys;
+	for (p = off; p + 4 <= off + csize; p += 4) {
+		if (readl_relaxed(dbg_atf_base + p)) {
+			if (first == U32_MAX)
+				first = p;
+			last = p + 4;
+		}
+	}
+	n += scnprintf(out + n, size - n,
+		       "===== ATF CRASHLOG nonzero %#x..%#x =====\n",
+		       first == U32_MAX ? 0 : first, last);
+	if (first == U32_MAX || size - n < 2)
+		return n;
+
+	take = min_t(size_t, last - first, size - n - 1);
+	memcpy_fromio(out + n, dbg_atf_base + first, take);
+	n += take;
+	out[n] = '\0';
+	return n;
 }
 
 /* newest DBG_ATF_MAX bytes of the EL3 ring, in chronological order */
@@ -803,6 +953,7 @@ static size_t mtk_wdt_dbg_atf(char *out, size_t size)
 	n = scnprintf(out, size,
 		      "\n===== ATF LOG ring=%u write=%u read=%u total_write=%u crash=%#x =====\n",
 		      len, wr, rd, total, crash);
+	n += mtk_wdt_dbg_atf_map(out + n, size - n);
 	if (wr >= len)
 		return n;
 
@@ -930,8 +1081,8 @@ static void mtk_wdt_dbg_dump_fn(struct work_struct *w)
 
 static void mtk_wdt_dbg_sample_rgu(void)
 {
-	char all[ARRAY_SIZE(dbg_rgu_off) * 13 + 1];
-	char chg[ARRAY_SIZE(dbg_rgu_off) * 24 + 1];	int i, n = 0, c = 0;
+	char all[ARRAY_SIZE(dbg_rgu_off) * 14 + 1];
+	char chg[ARRAY_SIZE(dbg_rgu_off) * 26 + 1];	int i, n = 0, c = 0;
 	u32 v;
 
 	if (!dbg_wdt)
@@ -939,14 +1090,18 @@ static void mtk_wdt_dbg_sample_rgu(void)
 
 	for (i = 0; i < ARRAY_SIZE(dbg_rgu_off); i++) {
 		v = ioread32(dbg_wdt->wdt_base + dbg_rgu_off[i]);
-		n += scnprintf(all + n, sizeof(all) - n, " %02x:%08x",
+		n += scnprintf(all + n, sizeof(all) - n, " %03x:%08x",
 			       dbg_rgu_off[i], v);
 
-		/* 0x20 is our own heartbeat, it changes every second by design */
+		/*
+		 * 0x20 is our own heartbeat and 0x514 is the live down-counter,
+		 * both change every sample by design.
+		 */
 		if (v != dbg_rgu_prev[i] &&
-		    dbg_rgu_off[i] != WDT_DBG_NONRST_REG)
+		    dbg_rgu_off[i] != WDT_DBG_NONRST_REG &&
+		    dbg_rgu_off[i] != WDT_COUNTER)
 			c += scnprintf(chg + c, sizeof(chg) - c,
-				       " %02x:%08x->%08x",
+				       " %03x:%08x->%08x",
 				       dbg_rgu_off[i], dbg_rgu_prev[i], v);
 		dbg_rgu_prev[i] = v;
 	}
@@ -1123,6 +1278,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	dbg_wdt = mtk_wdt;
 	mtk_wdt_dbg_mark(DBG_F_PROBE);
 	mtk_wdt_dbg_unhook_req_reset(dev);
+	mtk_wdt_dbg_mark_stage(dev);
 	mtk_wdt_dbg_map_atf(dev);
 	mtk_wdt_dbg_map_regions(dev);
 
@@ -1143,7 +1299,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v11 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v12 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 DBG_PROBE_STALL_MS,
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
