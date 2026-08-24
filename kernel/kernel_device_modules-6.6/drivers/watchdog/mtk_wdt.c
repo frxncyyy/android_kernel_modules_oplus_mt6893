@@ -212,8 +212,23 @@ static u32 dbg_atf_ring_len;
 static const u8 dbg_rgu_off[] = {
 	0x00, 0x04, 0x0c, 0x10, 0x18, 0x1c, 0x20, 0x24,
 	0x28, 0x2c, 0x30, 0x34, 0x38, 0x3c, 0x40, 0x44,
+	0x48, 0x4c, 0x50, 0x54, 0x58, 0x5c, 0x60, 0x64,
+	0x68, 0x6c, 0x70, 0x74, 0x78, 0x7c,
 };
 static u32 dbg_rgu_prev[ARRAY_SIZE(dbg_rgu_off)];
+
+/*
+ * DEBUG ONLY -- self-test, because the load-bearing result of the last five
+ * boots is an absence: no hook ever fires, therefore the reset is not issued
+ * by Linux.  That conclusion is only worth anything if the hooks provably
+ * work, so deliberately call kernel_restart() at DBG_SELFTEST_S and check
+ * that a snapshot with why=reboot-notifier/restart lands on flash.  It also
+ * gives a controlled reference for what a real hardware watchdog timeout
+ * looks like in the next boot's preloader RGU dump.  Set to 0 to disable.
+ */
+#define DBG_SELFTEST_S		20
+
+static struct work_struct dbg_selftest_work;
 
 static char *dbg_dump_buf;
 static unsigned int dbg_dump_seq;
@@ -742,8 +757,7 @@ static void mtk_wdt_dbg_dump_fn(struct work_struct *w)
 static void mtk_wdt_dbg_sample_rgu(void)
 {
 	char all[ARRAY_SIZE(dbg_rgu_off) * 13 + 1];
-	char chg[ARRAY_SIZE(dbg_rgu_off) * 24 + 1];
-	int i, n = 0, c = 0;
+	char chg[ARRAY_SIZE(dbg_rgu_off) * 24 + 1];	int i, n = 0, c = 0;
 	u32 v;
 
 	if (!dbg_wdt)
@@ -891,6 +905,12 @@ static struct timer_list mtk_wdt_dbg_timer;
  * that this is what makes LK archive the console; at DBG_HANG_AFTER_S it gives
  * up waiting for someone else to reset us and trips the trap itself.
  */
+static void mtk_wdt_dbg_selftest_fn(struct work_struct *w)
+{
+	pr_emerg("mtk_wdt: DBG self-test: calling kernel_restart()\n");
+	kernel_restart("mtk_wdt-selftest");
+}
+
 static void mtk_wdt_dbg_timeout(struct timer_list *t)
 {
 	dbg_secs++;
@@ -902,6 +922,10 @@ static void mtk_wdt_dbg_timeout(struct timer_list *t)
 
 	mtk_wdt_dbg_mark(dbg_secs >= DBG_ARCHIVE_HINT_S ? DBG_F_HINT : 0);
 	mtk_wdt_dbg_sample_rgu();
+
+	if (DBG_SELFTEST_S && dbg_secs == DBG_SELFTEST_S)
+		schedule_work(&dbg_selftest_work);
+
 	mod_timer(&mtk_wdt_dbg_timer, jiffies + HZ);
 }
 
@@ -932,6 +956,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 				      &mtk_wdt_dbg_panic_nb);
 	timer_setup(&mtk_wdt_dbg_timer, mtk_wdt_dbg_timeout, 0);
 	mod_timer(&mtk_wdt_dbg_timer, jiffies + HZ);
+	INIT_WORK(&dbg_selftest_work, mtk_wdt_dbg_selftest_fn);
 
 	dbg_dump_buf = vmalloc(DBG_DUMP_BYTES);
 	if (dbg_dump_buf) {
@@ -942,7 +967,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v7 armed (NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v8 armed (selftest at 20 s, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
 		 DBG_DUMP_SLOT0, DBG_DUMP_SLOT1,
