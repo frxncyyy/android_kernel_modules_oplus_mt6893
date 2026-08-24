@@ -175,7 +175,7 @@ static unsigned int dbg_secs;
  */
 #define DBG_EXPDB_PATH		"/dev/block/by-name/expdb"
 #define DBG_DUMP_MAGIC		"MTKWDT-DBGDUMP"
-#define DBG_DUMP_BYTES		(768 * 1024)
+#define DBG_DUMP_BYTES		(960 * 1024)
 #define DBG_DUMP_HDR		512
 #define DBG_DUMP_SLOT0		0x01000000ULL
 #define DBG_DUMP_SLOT1		0x01100000ULL
@@ -205,6 +205,40 @@ static unsigned int dbg_secs;
 
 static void __iomem *dbg_atf_base;
 static u32 dbg_atf_ring_len;
+
+/*
+ * DEBUG ONLY -- carveouts worth archiving next to the kernel log.
+ *
+ * LK boots the modem (the ATF log shows lk_boot_up_md at ATF 11.6 s, about a
+ * second before kernel time zero) and 4.19 picks it up with a builtin driver:
+ * its mt6893_defconfig has CONFIG_MTK_ECCCI_DRIVER=y and
+ * CONFIG_MTK_MD1_SUPPORT=25.  Here CONFIG_MTK_ECCCI_DRIVER is =m and the module
+ * is never loaded, so the modem is running with nothing on the AP side talking
+ * to it.  That fits a deadline fixed in kernel time, a software watchdog reset,
+ * and silence from both Linux and EL3 -- so archive the AP/MD shared memory and
+ * see whether the modem is complaining.
+ *
+ * Deliberately not touching atf-ramdump-reserved or the SPM/SSPM/MCUPM/SCP
+ * carveouts: those belong to EL3 and the coprocessors and are likely EMI-MPU
+ * protected, so reading them could raise a bus error or a DEVAPC violation and
+ * manufacture the very reset we are chasing.  Everything below is AP/MD shared
+ * memory or the LK log buffer, which the AP is meant to be able to read.
+ */
+struct dbg_mem_region {
+	const char *compat;
+	const char *label;
+	u32 max;
+	void __iomem *base;
+	phys_addr_t phys;
+	u32 size;
+};
+
+static struct dbg_mem_region dbg_mem_tab[] = {
+	{ "mediatek,ccci_tag_mem",  "ccci_tag",   64 * 1024 },
+	{ "mediatek,ap_md_c_smem",  "md_c_smem",  32 * 1024 },
+	{ "mediatek,ap_md_nc_smem", "md_nc_smem", 32 * 1024 },
+	{ "mediatek,log_store",     "log_store",  64 * 1024 },
+};
 #define DBG_DUMP_START_S	20
 #define DBG_DUMP_PERIOD_S	1
 /* tighten the sampling around the known death window */
@@ -611,29 +645,23 @@ EXPORT_SYMBOL(mtk_wdt_set_sw_rst_status);
  * of this, then the reset is not being issued by Linux -- look at ATF/TEE.
  */
 /*
- * DEBUG ONLY -- take the thermal request source, and anything else that can
- * only reset, out of the RGU's reset path.
+ * DEBUG ONLY -- take every subsystem request source out of the RGU's reset path.
  *
- * MTK's own 4.19 thermal driver does exactly this at init: mtk_tc.c clears
- * MTK_WDT_REQ_MODE_THERMAL from REQ_MODE and sets the matching bit in
- * REQ_IRQ_EN, so a thermal request interrupts instead of resetting.  Nothing
- * reconfigures it on this 6.6 port, because no thermal driver is loaded at all
- * -- the log is full of "android.hardware.thermal.IThermal not found" -- so
- * LK's setting stands, and LK leaves REQ_MODE at 0x3f00f6 with bit18 set.
+ * The narrower version of this, which dropped only the sources that could reset
+ * with no interrupt path (REQ_MODE & ~REQ_IRQ_EN == 0x00050002, thermal bit18
+ * among them), was verified to stick -- REQ_MODE read back as 0x3a00f4 for the
+ * whole boot -- and the reset happened anyway.  So clear the rest too and be
+ * done with the whole class.  Registers, keys and the thermal bit come from
+ * MTK's own drivers/misc/mediatek/thermal/inc/tscpu_settings.h.
  *
- * REQ_MODE & ~REQ_IRQ_EN comes out as 0x00050002 here: bits 1, 16 and 18 can
- * reset the chip with no interrupt path at all, which fits every observation
- * so far -- no Linux reboot path, no EL3 activity, no RGU register that ever
- * changes, a reset harder than a watchdog expiry, and a deadline fixed in time.
- *
- * Only reset-only sources are touched.  Dropping reset for a source that does
- * have REQ_IRQ_EN set would turn a would-be reset into an unhandled interrupt,
- * and this DT does not even wire up the watchdog's IRQ.
+ * Clearing sources that do have REQ_IRQ_EN set cannot produce an interrupt
+ * storm here: this DT gives the watchdog node no interrupts property, nothing
+ * ever calls request_irq() for it, so the line is not enabled at the GIC.
  */
 static void mtk_wdt_dbg_unhook_req_reset(struct device *dev)
 {
 	void __iomem *base;
-	u32 mode, irq_en, reset_only;
+	u32 mode, irq_en;
 
 	if (!dbg_wdt)
 		return;
@@ -641,22 +669,80 @@ static void mtk_wdt_dbg_unhook_req_reset(struct device *dev)
 
 	mode = ioread32(base + WDT_REQ_MODE);
 	irq_en = ioread32(base + WDT_REQ_IRQ_EN);
-	reset_only = mode & ~irq_en;
 
-	if (!reset_only) {
-		dev_info(dev,
-			 "mtk_wdt: DBG REQ_MODE %#x, REQ_IRQ_EN %#x, no reset-only source\n",
-			 mode, irq_en);
-		return;
-	}
-
-	iowrite32(WDT_REQ_MODE_KEY | (mode & ~reset_only), base + WDT_REQ_MODE);
+	iowrite32(WDT_REQ_MODE_KEY, base + WDT_REQ_MODE);
 
 	dev_info(dev,
-		 "mtk_wdt: DBG REQ_MODE %#x -> %#x (dropped reset-only %#x%s), REQ_IRQ_EN %#x\n",
-		 mode, ioread32(base + WDT_REQ_MODE), reset_only,
-		 (reset_only & WDT_REQ_THERMAL) ? " incl thermal bit18" : "",
-		 irq_en);
+		 "mtk_wdt: DBG REQ_MODE %#x -> %#x (all sources dropped, thermal bit18 was %s), REQ_IRQ_EN %#x\n",
+		 mode, ioread32(base + WDT_REQ_MODE),
+		 (mode & WDT_REQ_THERMAL) ? "set" : "clear", irq_en);
+}
+
+static void mtk_wdt_dbg_map_regions(struct device *dev)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(dbg_mem_tab); i++) {
+		struct dbg_mem_region *m = &dbg_mem_tab[i];
+		struct device_node *np;
+		struct reserved_mem *rmem;
+
+		np = of_find_compatible_node(NULL, NULL, m->compat);
+		if (!np) {
+			dev_info(dev, "mtk_wdt: DBG no node for %s\n", m->compat);
+			continue;
+		}
+		rmem = of_reserved_mem_lookup(np);
+		of_node_put(np);
+		if (!rmem) {
+			dev_info(dev, "mtk_wdt: DBG no rmem for %s\n", m->compat);
+			continue;
+		}
+
+		m->size = min_t(u64, rmem->size, m->max);
+		m->phys = rmem->base;
+		m->base = ioremap_wc(m->phys, m->size);
+		dev_info(dev, "mtk_wdt: DBG mapped %s at %pa+%#x%s\n",
+			 m->label, &m->phys, m->size, m->base ? "" : " FAILED");
+	}
+}
+
+/* one summary line per carveout, plus its nonzero span when there is one */
+static size_t mtk_wdt_dbg_regions(char *out, size_t size)
+{
+	size_t n = 0;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(dbg_mem_tab); i++) {
+		struct dbg_mem_region *m = &dbg_mem_tab[i];
+		u32 first = U32_MAX, last = 0, off, take;
+
+		if (!m->base || size - n < 256)
+			continue;
+
+		for (off = 0; off + 4 <= m->size; off += 4) {
+			if (readl_relaxed(m->base + off)) {
+				if (first == U32_MAX)
+					first = off;
+				last = off + 4;
+			}
+		}
+
+		n += scnprintf(out + n, size - n,
+			       "\n===== MEM %s %pa+%#x nonzero %#x..%#x =====\n",
+			       m->label, &m->phys, m->size,
+			       first == U32_MAX ? 0 : first, last);
+
+		if (first == U32_MAX)
+			continue;
+
+		take = min_t(size_t, last - first, size - n - 1);
+		memcpy_fromio(out + n, m->base + first, take);
+		n += take;
+		out[n] = '\0';
+	}
+
+	return n;
 }
 
 static void mtk_wdt_dbg_map_atf(struct device *dev)
@@ -784,6 +870,8 @@ static void mtk_wdt_dbg_dump(const char *why)
 			     DBG_DUMP_BYTES - DBG_DUMP_HDR, &len);
 	len += mtk_wdt_dbg_atf(dbg_dump_buf + DBG_DUMP_HDR + len,
 			       DBG_DUMP_BYTES - DBG_DUMP_HDR - len);
+	len += mtk_wdt_dbg_regions(dbg_dump_buf + DBG_DUMP_HDR + len,
+				   DBG_DUMP_BYTES - DBG_DUMP_HDR - len);
 
 	total = ALIGN(DBG_DUMP_HDR + len, PAGE_SIZE);
 	if (total > DBG_DUMP_BYTES)
@@ -1036,6 +1124,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	mtk_wdt_dbg_mark(DBG_F_PROBE);
 	mtk_wdt_dbg_unhook_req_reset(dev);
 	mtk_wdt_dbg_map_atf(dev);
+	mtk_wdt_dbg_map_regions(dev);
 
 	register_reboot_notifier(&mtk_wdt_dbg_reboot_nb);
 	register_restart_handler(&mtk_wdt_dbg_restart_nb);
@@ -1054,7 +1143,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v10 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v11 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 DBG_PROBE_STALL_MS,
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
