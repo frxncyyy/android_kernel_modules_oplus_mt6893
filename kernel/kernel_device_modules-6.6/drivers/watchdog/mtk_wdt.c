@@ -17,7 +17,6 @@
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -370,6 +369,7 @@ static u32 dbg_rgu_prev[ARRAY_SIZE(dbg_rgu_off)];
 #define DBG_SELFTEST_S		0
 
 static struct work_struct dbg_selftest_work;
+static struct work_struct dbg_autoreset_work;
 
 static char *dbg_dump_buf;
 static unsigned int dbg_dump_seq;
@@ -961,95 +961,22 @@ static size_t mtk_wdt_dbg_atf_map(char *out, size_t size)
 }
 
 /*
- * DEBUG ONLY -- fold the *previous* boot's console into this boot's snapshot.
+ * DEBUG ONLY -- the previous boot's console comes from pstore, but NOT from
+ * here.
  *
- * ramoops is alive and well here: the kernel log says "ramoops: using
- * 0xe0000@0x48090000" and "printk: console [ramoops-1] enabled" at 0.11 s, and
- * mblock-16-pstore is a proper nomap reservation.  So every line this kernel
- * prints is already going into a 256 KiB console record in DRAM, and after a
- * warm reset the next boot's pstore exposes it as
- * /sys/fs/pstore/console-ramoops -- init.rc mounts pstore and even chowns that
- * exact file.
+ * v15 tried to read /sys/fs/pstore/console-ramoops from this driver.  GKI says
+ * no, at insmod time: an unsigned vendor module may only use symbols on the KMI
+ * allowlist (kernel/module/main.c, is_vendor_module && !unprotected -> -EACCES),
+ * and filp_open/kernel_read are not on it.  The module then failed to load,
+ * first-stage init treats that as fatal, and the boot died at 0.65 s with
+ * "Attempted to kill init!".
  *
- * That is a whole boot's console for free, and it does not need adb or a trip
- * through recovery: read the file from here and append it to the expdb dump.
- * One expdb pull then carries two boots.  Read once, into a buffer, because
- * pstore records are unlinked as soon as anything reads and deletes them and
- * because re-reading a file on every dump would be silly.
- *
- * Nothing is lost if the previous boot ended in a power cut -- the records
- * simply will not be there and this contributes nothing.
+ * It was unnecessary anyway.  ramoops keeps the console record across a warm
+ * reset, and recovery has adb, so the previous boot's console is simply
+ *     adb pull /sys/fs/pstore/console-ramoops-0
+ * from TWRP -- no driver code, and it works for clean images too.  All this
+ * driver needs to contribute is a warm reset, below.
  */
-#define DBG_PSTORE_READ_S	20
-#define DBG_PSTORE_MAX		(320 * 1024)
-
-static const char * const dbg_pstore_files[] = {
-	"/sys/fs/pstore/console-ramoops",
-	"/sys/fs/pstore/dmesg-ramoops-0",
-};
-
-static char *dbg_pstore_buf;
-static size_t dbg_pstore_len;
-static struct work_struct dbg_pstore_work;
-static struct work_struct dbg_autoreset_work;
-
-static void mtk_wdt_dbg_pstore_fn(struct work_struct *w)
-{
-	size_t n = 0;
-	int i;
-
-	dbg_pstore_buf = vmalloc(DBG_PSTORE_MAX);
-	if (!dbg_pstore_buf)
-		return;
-
-	for (i = 0; i < ARRAY_SIZE(dbg_pstore_files); i++) {
-		const char *path = dbg_pstore_files[i];
-		size_t room, hdr;
-		struct file *f;
-		loff_t pos = 0;
-		ssize_t got;
-
-		if (DBG_PSTORE_MAX - n < 512)
-			break;
-
-		f = filp_open(path, O_RDONLY, 0);
-		if (IS_ERR(f)) {
-			pr_info("mtk_wdt: DBG pstore %s: %ld\n",
-				path, PTR_ERR(f));
-			continue;
-		}
-
-		hdr = scnprintf(dbg_pstore_buf + n, DBG_PSTORE_MAX - n,
-				"\n===== PSTORE %s =====\n", path);
-		room = DBG_PSTORE_MAX - n - hdr - 1;
-		got = kernel_read(f, dbg_pstore_buf + n + hdr, room, &pos);
-		filp_close(f, NULL);
-
-		if (got <= 0) {
-			pr_info("mtk_wdt: DBG pstore %s read %zd\n", path, got);
-			continue;
-		}
-		n += hdr + got;
-		dbg_pstore_buf[n] = '\0';
-		pr_info("mtk_wdt: DBG pstore %s: %zd bytes\n", path, got);
-	}
-
-	/* publish only once it is complete; the dump path reads these two */
-	dbg_pstore_len = n;
-}
-
-static size_t mtk_wdt_dbg_pstore(char *out, size_t size)
-{
-	size_t take = dbg_pstore_len;
-
-	if (!dbg_pstore_buf || !take || size < 2)
-		return 0;
-	if (take > size - 1)
-		take = size - 1;
-	memcpy(out, dbg_pstore_buf, take);
-	out[take] = '\0';
-	return take;
-}
 
 /* newest DBG_ATF_MAX bytes of the EL3 ring, in chronological order */
 static size_t mtk_wdt_dbg_atf(char *out, size_t size)
@@ -1133,10 +1060,7 @@ static void mtk_wdt_dbg_dump(const char *why)
 
 	kmsg_dump_rewind(&iter);
 	kmsg_dump_get_buffer(&iter, true, dbg_dump_buf + DBG_DUMP_HDR,
-			     DBG_DUMP_BYTES - DBG_DUMP_HDR - dbg_pstore_len,
-			     &len);
-	len += mtk_wdt_dbg_pstore(dbg_dump_buf + DBG_DUMP_HDR + len,
-				  DBG_DUMP_BYTES - DBG_DUMP_HDR - len);
+			     DBG_DUMP_BYTES - DBG_DUMP_HDR, &len);
 	len += mtk_wdt_dbg_atf(dbg_dump_buf + DBG_DUMP_HDR + len,
 			       DBG_DUMP_BYTES - DBG_DUMP_HDR - len);
 	len += mtk_wdt_dbg_regions(dbg_dump_buf + DBG_DUMP_HDR + len,
@@ -1419,9 +1343,6 @@ static void mtk_wdt_dbg_timeout(struct timer_list *t)
 		return;
 	}
 
-	if (DBG_PSTORE_READ_S && dbg_secs == DBG_PSTORE_READ_S)
-		schedule_work(&dbg_pstore_work);
-
 	if (DBG_AUTORESET_S && dbg_secs == DBG_AUTORESET_S)
 		schedule_work(&dbg_autoreset_work);
 
@@ -1465,7 +1386,6 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	timer_setup(&mtk_wdt_dbg_timer, mtk_wdt_dbg_timeout, 0);
 	mod_timer(&mtk_wdt_dbg_timer, jiffies + HZ);
 	INIT_WORK(&dbg_selftest_work, mtk_wdt_dbg_selftest_fn);
-	INIT_WORK(&dbg_pstore_work, mtk_wdt_dbg_pstore_fn);
 	INIT_WORK(&dbg_autoreset_work, mtk_wdt_dbg_autoreset_fn);
 
 	dbg_dump_buf = vmalloc(DBG_DUMP_BYTES);
@@ -1477,7 +1397,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v15 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v16 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 DBG_PROBE_STALL_MS,
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
@@ -1634,14 +1554,6 @@ MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 			__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
 MODULE_LICENSE("GPL");
-/*
- * DEBUG ONLY.  filp_open()/kernel_read() live in a namespace whose name is a
- * deterrent, and rightly so -- a watchdog driver has no business reading files.
- * It is imported here purely so this bring-up image can lift the previous
- * boot's console out of /sys/fs/pstore; it goes away with the rest of the
- * DBGTRAP code.
- */
-MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 MODULE_AUTHOR("Matthias Brugger <matthias.bgg@gmail.com>");
 MODULE_DESCRIPTION("Mediatek WatchDog Timer Driver");
 MODULE_VERSION(DRV_VERSION);
