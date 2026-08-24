@@ -262,9 +262,6 @@ struct dbg_mem_region {
 };
 
 static struct dbg_mem_region dbg_mem_tab[] = {
-	{ "mediatek,ccci_tag_mem",  "ccci_tag",   64 * 1024 },
-	{ "mediatek,ap_md_c_smem",  "md_c_smem",  32 * 1024 },
-	{ "mediatek,ap_md_nc_smem", "md_nc_smem", 32 * 1024 },
 	{ "mediatek,log_store",     "log_store", 128 * 1024 },
 };
 
@@ -288,13 +285,25 @@ static struct dbg_mem_region dbg_mem_tab[] = {
  * record.  Nothing in this build touches it, so it survives all the way to our
  * snapshot.
  */
-#define DBG_DUMP_START_S	20
-#define DBG_DUMP_PERIOD_S	1
-/* tighten the sampling around the known death window */
-#define DBG_FAST_AFTER_S	25
+/*
+ * Retuned for a boot that survives.  regulator_ignore_unused fixed the ~31.5 s
+ * power-off, so the job is no longer to catch a death but to bring back a full
+ * kernel log from a three-minute run -- there is still no adb, because nothing
+ * registers a UDC, so this is the only channel there is.
+ *
+ * kmsg_dump_get_buffer() returns the *newest* records that fit, so a single
+ * late snapshot would lose the head of the boot.  Hence slot0 is written once
+ * at DBG_DUMP_START_S and then left alone, while slot1 is refreshed every
+ * DBG_DUMP_PERIOD_S until DBG_DUMP_STOP_S: slot0 keeps early boot, slot1 keeps
+ * whatever is newest.  Fast mode is off; there is no window to tighten around.
+ */
+#define DBG_DUMP_START_S	8
+#define DBG_DUMP_PERIOD_S	10
+/* fast sampling was for the death window; 0 disables it */
+#define DBG_FAST_AFTER_S	0
 #define DBG_FAST_PERIOD_MS	200
-/* and stop dumping entirely once well past the old death window */
-#define DBG_DUMP_STOP_S		60
+/* stop dumping once the run is clearly long enough to be interesting */
+#define DBG_DUMP_STOP_S		240
 /* claimed hardware heartbeat, so the core pets the RGU every ~2 s */
 #define DBG_HEARTBEAT_MS	4000
 
@@ -1050,7 +1059,8 @@ static void mtk_wdt_dbg_dump(const char *why)
 	}
 
 	pages = total >> PAGE_SHIFT;
-	off = (dbg_dump_seq & 1) ? DBG_DUMP_SLOT1 : DBG_DUMP_SLOT0;
+	/* slot0 is the one-shot early snapshot, slot1 is the rolling newest */
+	off = dbg_dump_seq ? DBG_DUMP_SLOT1 : DBG_DUMP_SLOT0;
 
 	bio = bio_alloc(bdev, pages, REQ_OP_WRITE | REQ_SYNC | REQ_FUA,
 			GFP_KERNEL);
@@ -1091,7 +1101,8 @@ static void mtk_wdt_dbg_dump_fn(struct work_struct *w)
 	 */
 	if (!dbg_frozen && dbg_secs < DBG_DUMP_STOP_S)
 		schedule_delayed_work(&dbg_dump_work,
-				      dbg_secs >= DBG_FAST_AFTER_S ?
+				      (DBG_FAST_AFTER_S &&
+				       dbg_secs >= DBG_FAST_AFTER_S) ?
 				      msecs_to_jiffies(DBG_FAST_PERIOD_MS) :
 				      DBG_DUMP_PERIOD_S * HZ);
 	else if (!dbg_frozen)
@@ -1319,7 +1330,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v13 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v14 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 DBG_PROBE_STALL_MS,
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
