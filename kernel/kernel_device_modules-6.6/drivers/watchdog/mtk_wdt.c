@@ -193,13 +193,29 @@ static unsigned int dbg_secs;
 
 static void __iomem *dbg_atf_base;
 static u32 dbg_atf_ring_len;
-#define DBG_DUMP_START_S	10
+#define DBG_DUMP_START_S	20
 #define DBG_DUMP_PERIOD_S	1
 /* tighten the sampling around the known death window */
-#define DBG_FAST_AFTER_S	27
+#define DBG_FAST_AFTER_S	25
 #define DBG_FAST_PERIOD_MS	200
 /* claimed hardware heartbeat, so the core pets the RGU every ~2 s */
 #define DBG_HEARTBEAT_MS	4000
+
+/*
+ * DEBUG ONLY -- is the ~31 s reset a fixed firmware deadline, or is it caused
+ * by userspace reaching some point?
+ *
+ * First-stage init loads modules one at a time, so stalling here delays the
+ * remaining modules, UFS, the TEE and the whole of userspace by the same
+ * amount.  If the reset still lands at kernel time ~31 s while userspace has
+ * only got as far as it used to by ~21 s, the deadline belongs to firmware and
+ * has nothing to do with what the AP is doing.  If it moves out to ~41 s, then
+ * userspace is what triggers it.
+ *
+ * The stall sits after devm_watchdog_register_device(), so the watchdog core is
+ * already petting the RGU while we sleep.
+ */
+#define DBG_PROBE_STALL_MS	10000
 
 /*
  * Raw RGU registers sampled once a second into the log.  The reset we are
@@ -225,8 +241,12 @@ static u32 dbg_rgu_prev[ARRAY_SIZE(dbg_rgu_off)];
  * that a snapshot with why=reboot-notifier/restart lands on flash.  It also
  * gives a controlled reference for what a real hardware watchdog timeout
  * looks like in the next boot's preloader RGU dump.  Set to 0 to disable.
+ *
+ * Done, and it passed: expdb-14 slot1 came back with
+ * "seq=11 flags=0x43 why=reboot-notifier/restart", so the hooks are wired up
+ * and the absence of them firing at ~31 s is a real result.  Off again now.
  */
-#define DBG_SELFTEST_S		20
+#define DBG_SELFTEST_S		0
 
 static struct work_struct dbg_selftest_work;
 
@@ -967,13 +987,21 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v8 armed (selftest at 20 s, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v9 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
+		 DBG_PROBE_STALL_MS,
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
 		 DBG_DUMP_SLOT0, DBG_DUMP_SLOT1,
 		 DBG_DUMP_START_S, DBG_DUMP_PERIOD_S,
 		 DBG_ARCHIVE_HINT_S, DBG_HANG_AFTER_S);
 	mtk_wdt_dbg_sample_rgu();
+
+	if (DBG_PROBE_STALL_MS) {
+		dev_info(dev, "mtk_wdt: DBG stalling probe for %d ms\n",
+			 DBG_PROBE_STALL_MS);
+		msleep(DBG_PROBE_STALL_MS);
+		dev_info(dev, "mtk_wdt: DBG stall done\n");
+	}
 }
 
 static int mtk_wdt_probe(struct platform_device *pdev)
