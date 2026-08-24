@@ -74,6 +74,18 @@
 #define WDT_SWSYSRST		0x18U
 #define WDT_SWSYS_RST_KEY	0x88000000
 
+/*
+ * Subsystem reset-request routing.  Names, offsets and keys come from MTK's
+ * own thermal driver header, drivers/misc/mediatek/thermal/inc/tscpu_settings.h
+ * -- REQ_MODE selects which request sources reset the chip, REQ_IRQ_EN which
+ * ones raise an interrupt instead, and bit18 is the thermal source.
+ */
+#define WDT_REQ_MODE		0x30
+#define WDT_REQ_IRQ_EN		0x34
+#define WDT_REQ_MODE_KEY	0x33000000
+#define WDT_REQ_IRQ_KEY		0x44000000
+#define WDT_REQ_THERMAL		BIT(18)
+
 #define DRV_NAME		"mtk-wdt"
 #define DRV_VERSION		"1.0"
 
@@ -214,8 +226,13 @@ static u32 dbg_atf_ring_len;
  *
  * The stall sits after devm_watchdog_register_device(), so the watchdog core is
  * already petting the RGU while we sleep.
+ *
+ * Answered: every userspace landmark moved by +10.1 s (e2fsck 5.77 -> 15.85,
+ * apexd 6.87 -> 16.98, servicemanager 8.06 -> 18.16, Trustonic 13.94 -> 24.05)
+ * while the last snapshot stayed at 31.36 -> 31.47.  So the deadline is fixed
+ * in kernel time and has nothing to do with what userspace is doing.  Off now.
  */
-#define DBG_PROBE_STALL_MS	10000
+#define DBG_PROBE_STALL_MS	0
 
 /*
  * Raw RGU registers sampled once a second into the log.  The reset we are
@@ -593,6 +610,55 @@ EXPORT_SYMBOL(mtk_wdt_set_sw_rst_status);
  * If the device still comes back with STA bit30 and an empty expdb after all
  * of this, then the reset is not being issued by Linux -- look at ATF/TEE.
  */
+/*
+ * DEBUG ONLY -- take the thermal request source, and anything else that can
+ * only reset, out of the RGU's reset path.
+ *
+ * MTK's own 4.19 thermal driver does exactly this at init: mtk_tc.c clears
+ * MTK_WDT_REQ_MODE_THERMAL from REQ_MODE and sets the matching bit in
+ * REQ_IRQ_EN, so a thermal request interrupts instead of resetting.  Nothing
+ * reconfigures it on this 6.6 port, because no thermal driver is loaded at all
+ * -- the log is full of "android.hardware.thermal.IThermal not found" -- so
+ * LK's setting stands, and LK leaves REQ_MODE at 0x3f00f6 with bit18 set.
+ *
+ * REQ_MODE & ~REQ_IRQ_EN comes out as 0x00050002 here: bits 1, 16 and 18 can
+ * reset the chip with no interrupt path at all, which fits every observation
+ * so far -- no Linux reboot path, no EL3 activity, no RGU register that ever
+ * changes, a reset harder than a watchdog expiry, and a deadline fixed in time.
+ *
+ * Only reset-only sources are touched.  Dropping reset for a source that does
+ * have REQ_IRQ_EN set would turn a would-be reset into an unhandled interrupt,
+ * and this DT does not even wire up the watchdog's IRQ.
+ */
+static void mtk_wdt_dbg_unhook_req_reset(struct device *dev)
+{
+	void __iomem *base;
+	u32 mode, irq_en, reset_only;
+
+	if (!dbg_wdt)
+		return;
+	base = dbg_wdt->wdt_base;
+
+	mode = ioread32(base + WDT_REQ_MODE);
+	irq_en = ioread32(base + WDT_REQ_IRQ_EN);
+	reset_only = mode & ~irq_en;
+
+	if (!reset_only) {
+		dev_info(dev,
+			 "mtk_wdt: DBG REQ_MODE %#x, REQ_IRQ_EN %#x, no reset-only source\n",
+			 mode, irq_en);
+		return;
+	}
+
+	iowrite32(WDT_REQ_MODE_KEY | (mode & ~reset_only), base + WDT_REQ_MODE);
+
+	dev_info(dev,
+		 "mtk_wdt: DBG REQ_MODE %#x -> %#x (dropped reset-only %#x%s), REQ_IRQ_EN %#x\n",
+		 mode, ioread32(base + WDT_REQ_MODE), reset_only,
+		 (reset_only & WDT_REQ_THERMAL) ? " incl thermal bit18" : "",
+		 irq_en);
+}
+
 static void mtk_wdt_dbg_map_atf(struct device *dev)
 {
 	struct device_node *np;
@@ -968,6 +1034,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 {
 	dbg_wdt = mtk_wdt;
 	mtk_wdt_dbg_mark(DBG_F_PROBE);
+	mtk_wdt_dbg_unhook_req_reset(dev);
 	mtk_wdt_dbg_map_atf(dev);
 
 	register_reboot_notifier(&mtk_wdt_dbg_reboot_nb);
@@ -987,7 +1054,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v9 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v10 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 DBG_PROBE_STALL_MS,
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
