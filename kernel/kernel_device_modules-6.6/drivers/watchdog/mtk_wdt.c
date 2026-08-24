@@ -125,8 +125,13 @@ static unsigned int dbg_secs;
 
 /* how long to wait for the hardware watchdog once the trap has fired */
 #define DBG_TRAP_TIMEOUT_S	4
-/* unconditional capture point, in case the boot survives longer than before */
-#define DBG_HANG_AFTER_S	90
+/*
+ * Unconditional capture point.  Off now: the ~31.5 s death is understood
+ * (regulator_late_cleanup() disabling MT6359 VS1 at late_initcall + 30 s) and
+ * this image is meant to keep running afterwards, so a self-inflicted watchdog
+ * reset at 90 s would only get in the way.
+ */
+#define DBG_HANG_AFTER_S	0
 /* when to start claiming "abnormal reset" -- before the known ~29-35 s death */
 #define DBG_ARCHIVE_HINT_S	20
 
@@ -288,6 +293,8 @@ static struct dbg_mem_region dbg_mem_tab[] = {
 /* tighten the sampling around the known death window */
 #define DBG_FAST_AFTER_S	25
 #define DBG_FAST_PERIOD_MS	200
+/* and stop dumping entirely once well past the old death window */
+#define DBG_DUMP_STOP_S		60
 /* claimed hardware heartbeat, so the core pets the RGU every ~2 s */
 #define DBG_HEARTBEAT_MS	4000
 
@@ -709,6 +716,14 @@ EXPORT_SYMBOL(mtk_wdt_set_sw_rst_status);
  * storm here: this DT gives the watchdog node no interrupts property, nothing
  * ever calls request_irq() for it, so the line is not enabled at the GIC.
  */
+/*
+ * Read-only again.  Clearing REQ_MODE turned out to be a dead end -- expdb-17
+ * showed 0x3f00f6 -> 0x0 with the death unmoved -- and the real cause is now
+ * known to be regulator_late_cleanup() taking MT6359's VS1 down at
+ * late_initcall + 30 s, which is not a TOPRGU event at all.  Leaving REQ_MODE
+ * alone matters because bit18 is the thermal hardware-protection reset: this
+ * image is meant to survive past 31 s, so that protection has to stay armed.
+ */
 static void mtk_wdt_dbg_unhook_req_reset(struct device *dev)
 {
 	void __iomem *base;
@@ -721,12 +736,9 @@ static void mtk_wdt_dbg_unhook_req_reset(struct device *dev)
 	mode = ioread32(base + WDT_REQ_MODE);
 	irq_en = ioread32(base + WDT_REQ_IRQ_EN);
 
-	iowrite32(WDT_REQ_MODE_KEY, base + WDT_REQ_MODE);
-
 	dev_info(dev,
-		 "mtk_wdt: DBG REQ_MODE %#x -> %#x (all sources dropped, thermal bit18 was %s), REQ_IRQ_EN %#x\n",
-		 mode, ioread32(base + WDT_REQ_MODE),
-		 (mode & WDT_REQ_THERMAL) ? "set" : "clear", irq_en);
+		 "mtk_wdt: DBG REQ_MODE %#x left alone (thermal bit18 %s), REQ_IRQ_EN %#x\n",
+		 mode, (mode & WDT_REQ_THERMAL) ? "set" : "clear", irq_en);
 }
 
 /* stamp "Linux is running" into WDT_NONRST_REG2, exactly as 4.19's hangdet does */
@@ -1072,11 +1084,19 @@ static void mtk_wdt_dbg_dump_fn(struct work_struct *w)
 {
 	mtk_wdt_dbg_dump("periodic");
 
-	if (!dbg_frozen)
+	/*
+	 * This image is expected to live past the old ~31.5 s death, so stop
+	 * writing a megabyte to flash five times a second once we are clearly
+	 * past the window of interest.
+	 */
+	if (!dbg_frozen && dbg_secs < DBG_DUMP_STOP_S)
 		schedule_delayed_work(&dbg_dump_work,
 				      dbg_secs >= DBG_FAST_AFTER_S ?
 				      msecs_to_jiffies(DBG_FAST_PERIOD_MS) :
 				      DBG_DUMP_PERIOD_S * HZ);
+	else if (!dbg_frozen)
+		pr_info("mtk_wdt: DBGDUMP stopping periodic dumps at %u s\n",
+			dbg_secs);
 }
 
 static void mtk_wdt_dbg_sample_rgu(void)
@@ -1244,7 +1264,7 @@ static void mtk_wdt_dbg_timeout(struct timer_list *t)
 {
 	dbg_secs++;
 
-	if (dbg_secs >= DBG_HANG_AFTER_S) {
+	if (DBG_HANG_AFTER_S && dbg_secs >= DBG_HANG_AFTER_S) {
 		mtk_wdt_dbg_trap(DBG_F_TIMER, "suicide-timer", NULL);
 		return;
 	}
@@ -1299,7 +1319,7 @@ static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 	}
 
 	dev_info(dev,
-		 "mtk_wdt: DBGTRAP v12 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
+		 "mtk_wdt: DBGTRAP v13 armed (stall %d ms, NONRST_REG %#x, dump to " DBG_EXPDB_PATH
 		 " %#llx/%#llx from %d s every %d s, hint at %d s, suicide at %d s)\n",
 		 DBG_PROBE_STALL_MS,
 		 ioread32(mtk_wdt->wdt_base + WDT_DBG_NONRST_REG),
