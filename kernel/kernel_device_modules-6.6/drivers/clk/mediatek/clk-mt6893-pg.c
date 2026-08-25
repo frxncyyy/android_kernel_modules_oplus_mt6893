@@ -4901,8 +4901,19 @@ struct mtk_power_gate {
 struct mtk_power_gate scp_clks[] = {
 	//PGATE(SCP_SYS_MD1, "PG_MD1", NULL, NULL, SYS_MD1),
 	//PGATE(SCP_SYS_CONN, "PG_CONN", NULL, NULL, SYS_CONN),
-	//PGATE(SCP_SYS_MDP, "PG_MDP", NULL, "mdp_sel", SYS_MDP),
-	//PGATE(SCP_SYS_DIS, "PG_DIS", NULL, "disp_sel", SYS_DIS),
+	/* op6893 6.6 bring-up: MDP and DIS were left commented out by the
+	 * vendor, presumably because their 6.6 DTS drives those two domains
+	 * through genpd instead.  The 4.19 DTB we boot still expresses them the
+	 * old way -- every SMI larb/common and both MM IOMMUs carry
+	 * "clocks = <&scpsys SCP_SYS_DIS>" (index 20) or SCP_SYS_MDP (19) --
+	 * so with these two lines commented out alloc_clk_data() left
+	 * clks[19]/clks[20] as ERR_PTR(-ENOENT) and every one of those probes
+	 * died on "CLK0:scp-dis get failed".  The sequence data
+	 * (DIS_PWR_STA_MASK/DIS_sys_ops and enable_subsys_hwcg(SYS_DIS), which
+	 * un-gates SMI_COMMON/GALS/INFRA/IOMMU) is complete in this file.
+	 */
+	PGATE(SCP_SYS_MDP, "PG_MDP", NULL, "mdp_sel", SYS_MDP),
+	PGATE(SCP_SYS_DIS, "PG_DIS", NULL, "disp_sel", SYS_DIS),
 	PGATE(SCP_SYS_MFG0, "PG_MFG0", NULL, "mfg_sel", SYS_MFG0),
 	PGATE(SCP_SYS_MFG1, "PG_MFG1", "PG_MFG0", NULL, SYS_MFG1),
 	PGATE(SCP_SYS_MFG2, "PG_MFG2", "PG_MFG1", NULL, SYS_MFG2),
