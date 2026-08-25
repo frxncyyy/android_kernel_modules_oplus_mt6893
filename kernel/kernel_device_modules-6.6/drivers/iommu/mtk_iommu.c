@@ -2788,6 +2788,9 @@ static const struct mtk_iommu_ops mtk_iommu_export_ops = {
 	.set_pm_ops		= mtk_iommu_pm_ops_set,
 };
 
+/* defined below the per-SoC platform data it selects from */
+static const struct mtk_iommu_plat_data *mtk_iommu_legacy_plat_data(struct device *dev);
+
 static int mtk_iommu_probe(struct platform_device *pdev)
 {
 	struct mtk_iommu_data   *data;
@@ -2811,6 +2814,11 @@ static int mtk_iommu_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	data->dev = dev;
 	data->plat_data = of_device_get_match_data(dev);
+	if (!data->plat_data) {
+		data->plat_data = mtk_iommu_legacy_plat_data(dev);
+		if (!data->plat_data)
+			return -ENODEV;
+	}
 
 	if (!atomic_cmpxchg(&init_once_flag, 0, 1)) {
 		for (i = 0; i < PGTBALE_NUM; i++)
@@ -2957,6 +2965,15 @@ static int mtk_iommu_probe(struct platform_device *pdev)
 out:
 	if (MTK_IOMMU_HAS_FLAG(data->plat_data, HAS_BCLK)) {
 		data->bclk = devm_clk_get(dev, "bclk");
+		if (PTR_ERR_OR_ZERO(data->bclk) == -ENOENT) {
+			/* op6893 6.6 bring-up: the 4.19 DTB names the M4U
+			 * clocks "disp-infra-ck"/"disp-iommu-ck"/"power" and has
+			 * no "bclk" at all -- 4.19's mtk_iommu_v2.c just walked
+			 * clock-names generically.  Index 0 is this IOMMU's own
+			 * gate, which is what bclk is used for here.
+			 */
+			data->bclk = devm_clk_get(dev, NULL);
+		}
 		if (IS_ERR(data->bclk)) {
 			dev_err(dev, "%s,get clk failed\n", __func__);
 			return PTR_ERR(data->bclk);
@@ -3044,6 +3061,26 @@ out:
 
 	/* Get smi-common dev from the last larb. */
 	smicomm_node = of_parse_phandle(larbnode, "mediatek,smi-supply", 0);
+	if (!smicomm_node) {
+		/* op6893 6.6 bring-up: the 4.19 DT ABI never links a LARB to its
+		 * SMI common -- there is no "mediatek,smi-supply" anywhere in
+		 * the DTB, the association is implicit in the hardware topology.
+		 * Look the common up by compatible instead, picking the one that
+		 * belongs to this IOMMU.  Without this the DISP M4U probe died
+		 * with -EINVAL, iommu_device_register() never ran, and
+		 * mtk_drm_kms_init() deferred forever on iommu_present().
+		 */
+		const char *comm_compat = NULL;
+
+		if (data->plat_data->iommu_id == DISP_IOMMU)
+			comm_compat = "mediatek,smi_common";
+		else if (data->plat_data->iommu_id == MDP_IOMMU)
+			comm_compat = "mediatek,mdp_smi_common";
+
+		if (comm_compat)
+			smicomm_node = of_find_compatible_node(NULL, NULL,
+							       comm_compat);
+	}
 	if (!smicomm_node) {
 		dev_err(dev, "%s, can't find smicomm_node phase1\n", __func__);
 		return -EINVAL;
@@ -3867,6 +3904,39 @@ static const struct mtk_iommu_plat_data mt6893_data_iommu3 = {
 	.iova_region_nr  = ARRAY_SIZE(mt6873_multi_dom),
 };
 
+/*
+ * op6893 6.6 bring-up: the 4.19 DTB we boot gives all four M4Us the single
+ * legacy compatible "mediatek,iommu_v0" and tells them apart with
+ * "cell-index", which is how 4.19's drivers/iommu/mtk_iommu_v2.c matched them.
+ * This driver already carries complete MT6893 platform data but only matches
+ * the newer per-instance "mediatek,mt6893-iommu0".."iommu3" spellings, so
+ * nothing probed, iommu_device_register() never ran, and mtk_drm_kms_init()
+ * deferred forever on iommu_present() -- which is why /dev/dri was never
+ * created even with every display component bound.
+ *
+ * Only the two MM instances are mapped.  cell-index 2/3 are the APU M4Us
+ * (LINK_WITH_APU); the APU power domain is not brought up in this tree, so
+ * leave them unprobed rather than touching their registers.
+ */
+static const struct mtk_iommu_plat_data * const mt6893_legacy_iommu_data[] = {
+	&mt6893_data_iommu0, &mt6893_data_iommu1, NULL, NULL,
+};
+
+static const struct mtk_iommu_plat_data *mtk_iommu_legacy_plat_data(struct device *dev)
+{
+	u32 cell_index;
+
+	if (!of_machine_is_compatible("mediatek,MT6893") ||
+	    of_property_read_u32(dev->of_node, "cell-index", &cell_index) ||
+	    cell_index >= ARRAY_SIZE(mt6893_legacy_iommu_data) ||
+	    !mt6893_legacy_iommu_data[cell_index]) {
+		dev_info(dev, "no platform data for legacy iommu node, skip\n");
+		return NULL;
+	}
+
+	return mt6893_legacy_iommu_data[cell_index];
+}
+
 static const struct mtk_iommu_plat_data mt6895_data_disp = {
 	.m4u_plat	= M4U_MT6895,
 	.flags          = HAS_SUB_COMM | OUT_ORDER_WR_EN | GET_DOM_ID_LEGACY |
@@ -4269,6 +4339,10 @@ static const struct of_device_id mtk_iommu_of_ids[] = {
 	{ .compatible = "mediatek,mt6893-iommu1", .data = &mt6893_data_iommu1},
 	{ .compatible = "mediatek,mt6893-iommu2", .data = &mt6893_data_iommu2},
 	{ .compatible = "mediatek,mt6893-iommu3", .data = &mt6893_data_iommu3},
+	/* op6893 6.6 bring-up: legacy 4.19 spelling, see
+	 * mt6893_legacy_iommu_data[]
+	 */
+	{ .compatible = "mediatek,iommu_v0"},
 	{ .compatible = "mediatek,mt6895-disp-iommu", .data = &mt6895_data_disp},
 	{ .compatible = "mediatek,mt6895-mdp-iommu", .data = &mt6895_data_mdp},
 	{ .compatible = "mediatek,mt6895-apu-iommu0", .data = &mt6895_data_apu0},
