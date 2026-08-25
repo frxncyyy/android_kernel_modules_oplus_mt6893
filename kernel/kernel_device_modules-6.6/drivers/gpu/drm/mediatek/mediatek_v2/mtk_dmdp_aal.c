@@ -562,10 +562,19 @@ static int disp_mdp_aal_probe(struct platform_device *pdev)
 	aal_node = of_find_compatible_node(NULL, NULL, "mediatek,disp_aal0");
 	if (of_property_read_u32(aal_node, "mtk-dre30-support",
 		&priv->primary_data->dre30_support)) {
-		DDPMSG("comp_id: %d, mtk_dre30_support = %d\n",
+		/* op6893 6.6 bring-up: the 4.19 DTB we boot describes DRE3 with
+		 * the older "aal_dre3" phandle and carries no
+		 * "mtk-dre30-support" anywhere, so this read always fails.
+		 * Failing the probe leaves DMDP_AAL0/1 unbound, and because both
+		 * are in mediatek-drm's component match list the master never
+		 * binds -- mtk_drm_kms_init() never runs and /dev/dri is never
+		 * created.  disp_aal_probe() only logs the same missing property
+		 * and continues, and the 4.19 dmdp_aal driver has no DRE30
+		 * support at all, so default to "unsupported" instead.
+		 */
+		priv->primary_data->dre30_support = 0;
+		DDPMSG("comp_id: %d, no mtk-dre30-support, assuming %d\n",
 			comp_id, priv->primary_data->dre30_support);
-		ret = -EINVAL;
-		goto error_primary;
 	}
 
 	priv->data = of_device_get_match_data(dev);
