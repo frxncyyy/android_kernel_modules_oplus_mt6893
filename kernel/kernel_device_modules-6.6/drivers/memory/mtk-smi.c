@@ -3574,6 +3574,12 @@ static const struct of_device_id mtk_smi_larb_of_ids[] = {
 		.data = &mtk_smi_larb_mt6893
 	},
 	{
+		/* op6893 6.6 bring-up: legacy 4.19 spelling, see
+		 * mtk_smi_larb_probe() for how the platform data is picked.
+		 */
+		.compatible = "mediatek,smi_larb",
+	},
+	{
 		.compatible = "mediatek,mt6983-smi-larb",
 		.data = &mtk_smi_larb_mt6983
 	},
@@ -3766,6 +3772,21 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	larb->larb_gen = of_device_get_match_data(dev);
+	if (!larb->larb_gen) {
+		/* op6893 6.6 bring-up: the 4.19 DTB we boot names every LARB
+		 * "mediatek,smi_larb0".."mediatek,smi_larb16" plus the generic
+		 * "mediatek,smi_larb", not the per-SoC "mediatek,mt6893-smi-larb"
+		 * this driver matches, so no LARB probed at all.  The knock-on
+		 * effects were subtle: mtk_iommu could not find its LARB devices
+		 * and the display components logged "need larb device" and
+		 * "deferred probe timeout, ignoring dependency".  The generic
+		 * compatible carries no SoC identity, so key the platform data
+		 * off the machine instead.
+		 */
+		if (!of_machine_is_compatible("mediatek,MT6893"))
+			return -ENODEV;
+		larb->larb_gen = &mtk_smi_larb_mt6893;
+	}
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	larb->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(larb->base))
@@ -5328,6 +5349,12 @@ static const struct of_device_id mtk_smi_common_of_ids[] = {
 		.data = &mtk_smi_common_mt6893,
 	},
 	{
+		/* op6893 6.6 bring-up: legacy 4.19 spelling, see
+		 * mtk_smi_common_probe() for how the platform data is picked.
+		 */
+		.compatible = "mediatek,smi_common",
+	},
+	{
 		.compatible = "mediatek,mt6983-smi-common",
 		.data = &mtk_smi_common_mt6983,
 	},
@@ -5432,6 +5459,17 @@ static int mtk_smi_common_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	common->dev = dev;
 	common->plat = of_device_get_match_data(dev);
+	if (!common->plat) {
+		/* see mtk_smi_larb_probe(): the 4.19 DTB describes the main
+		 * common, both disp sub-commons, the mdp common/sub-commons and
+		 * the sysram common with the generic "mediatek,smi_common".
+		 * One plat data covers all of them on mt6893; the instance is
+		 * selected from "mediatek,smi-id" further down.
+		 */
+		if (!of_machine_is_compatible("mediatek,MT6893"))
+			return -ENODEV;
+		common->plat = &mtk_smi_common_mt6893;
+	}
 	atomic_set(&common->ref_count, 0);
 
 	ret = of_property_count_strings(dev->of_node, "clock-names");
