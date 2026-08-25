@@ -1,0 +1,3 @@
+# Build-tree symlink created by the op6893 6.6 bring-up scripts; it points at
+# ../android_kernel_oneplus_mt6833 (the common kernel) and must not be tracked.
+/kernel-6.6

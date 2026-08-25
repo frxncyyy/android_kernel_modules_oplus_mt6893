@@ -582,8 +582,17 @@ void ssusb_set_noise_still_tr(struct ssusb_mtk *ssusb);
 void ssusb_set_ldm_resp_delay(struct ssusb_mtk *ssusb);
 void ssusb_vsvoter_set(struct ssusb_mtk *ssusb);
 void ssusb_vsvoter_clr(struct ssusb_mtk *ssusb);
+#if IS_ENABLED(CONFIG_DEVICE_MODULES_USB_MTU3_HOST) || \
+	IS_ENABLED(CONFIG_DEVICE_MODULES_USB_MTU3_DUAL_ROLE)
 void ssusb_set_host_low_speed_bypass(struct ssusb_mtk *ssusb);
 void ssusb_clear_host_low_speed_bypass(struct ssusb_mtk *ssusb);
+#else
+/* op6893 6.6 bring-up: gadget-only build has no mtu3_host.o. These host
+ * low-speed quirk helpers touch host_base only, so stub them out. Revert
+ * with the gadget-only config when restoring DUAL_ROLE. */
+static inline void ssusb_set_host_low_speed_bypass(struct ssusb_mtk *ssusb) {}
+static inline void ssusb_clear_host_low_speed_bypass(struct ssusb_mtk *ssusb) {}
+#endif
 struct usb_request *mtu3_alloc_request(struct usb_ep *ep, gfp_t gfp_flags);
 void mtu3_free_request(struct usb_ep *ep, struct usb_request *req);
 void mtu3_req_complete(struct mtu3_ep *mep,

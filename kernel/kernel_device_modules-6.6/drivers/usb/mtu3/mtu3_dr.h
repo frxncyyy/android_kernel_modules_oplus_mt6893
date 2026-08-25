@@ -136,7 +136,7 @@ static inline void ssusb_otg_switch_exit(struct ssusb_mtk *ssusb)
 static inline void ssusb_mode_switch(struct ssusb_mtk *ssusb, int to_host)
 {}
 
-void ssusb_set_mode(struct otg_switch_mtk *otg_sx, enum usb_role role)
+static inline void ssusb_set_mode(struct otg_switch_mtk *otg_sx, enum usb_role role)
 {}
 
 static inline int ssusb_set_vbus(struct otg_switch_mtk *otg_sx, int is_on)

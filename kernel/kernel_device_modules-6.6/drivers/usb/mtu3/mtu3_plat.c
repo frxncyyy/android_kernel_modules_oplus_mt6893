@@ -1453,6 +1453,19 @@ static int mtu3_probe(struct platform_device *pdev)
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
+	/*
+	 * op6893 6.6 bring-up (boot-only): mirror the 4.19 baseline, where mtu3
+	 * is builtin and has no runtime-PM suspend path at all -- it holds its
+	 * power domain from probe onward.  On 6.6 the driver gained
+	 * SET_RUNTIME_PM_OPS(mtu3_runtime_suspend=mtu3_suspend_common), whose
+	 * autosuspend (2 s after probe) gates the USB infra clocks / genpd and,
+	 * when mtu3 is loaded from the first-stage ramdisk, races
+	 * ufshcd_async_scan into a fatal synchronous external abort (console-24).
+	 * Forbidding runtime suspend keeps the domain up exactly like 4.19 and
+	 * removes that race, so the module can load first-stage.  Revert together
+	 * with the early-modules.list entries before any non-debug daily image.
+	 */
+	pm_runtime_forbid(dev);
 	if (ssusb_pm_runtime_forbid(ssusb)) {
 		pm_runtime_forbid(dev);
 		dev_info(dev, "pm_runtime forbid\n");
