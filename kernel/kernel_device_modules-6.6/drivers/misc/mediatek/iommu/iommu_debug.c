@@ -831,6 +831,19 @@ int mtk_iommu_register_fault_callback(int port,
 	enum mtk_iommu_type type = is_vpu ? APU_IOMMU : MM_IOMMU;
 	int i, idx, idx_list[] = {-1, -1};
 
+	/* op6893 6.6 bring-up: this is EXPORT_SYMBOL_GPL and other drivers
+	 * (mtk_ddp_comp_init() in mediatek-drm) call it unconditionally, but
+	 * m4u_data is only set up in mtk_iommu_dbg_probe().  Our DTB carries no
+	 * "mediatek,mt6893-iommu-debug" node, so the driver never probes and the
+	 * first caller dereferenced NULL->plat_data and panicked the kernel.
+	 * Degrade to "no translation-fault callbacks" instead.
+	 */
+	if (!m4u_data || !m4u_data->plat_data) {
+		pr_info("%s: iommu debug not probed, skip port=%d\n",
+			__func__, port);
+		return -ENODEV;
+	}
+
 	if (mtk_iommu_port_idx(port, type, idx_list)) {
 		pr_info("%s fail, port=%d\n", __func__, port);
 		return -1;
@@ -856,6 +869,10 @@ int mtk_iommu_unregister_fault_callback(int port, bool is_vpu)
 {
 	enum mtk_iommu_type type = is_vpu ? APU_IOMMU : MM_IOMMU;
 	int i, idx, idx_list[] = {-1, -1};
+
+	/* see mtk_iommu_register_fault_callback() */
+	if (!m4u_data || !m4u_data->plat_data)
+		return -ENODEV;
 
 	if (mtk_iommu_port_idx(port, type, idx_list)) {
 		pr_info("%s fail, port=%d\n", __func__, port);
