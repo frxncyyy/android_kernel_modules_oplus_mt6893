@@ -1,6 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0
 ccflags-y += -I$(DEVICE_MODULES_PATH)/drivers/misc/mediatek/include/mt-plat
 
+# op6893 6.6 bring-up: drivers/gpu/drm/oplus is a symlink into
+# vendor/oplus/kernel_device_modules-6.6, so the "../mediatek/mediatek_v2/..."
+# includes the stock oplus_panel sources use cannot resolve (following the
+# symlink lands in the vendor tree, which has no mediatek/ directory).  Add the
+# real mediatek_v2 dir to the search path so panels living under
+# ../oplus/oplus_panel/ can include its headers by plain name.
+ccflags-y += -I$(DEVICE_MODULES_PATH)/drivers/gpu/drm/mediatek/mediatek_v2
+
 ifneq ($(filter y m, $(CONFIG_MTK_MME_SUPPORT)),)
 ccflags-y += -I$(DEVICE_MODULES_PATH)/drivers/misc/mediatek/mme
 endif
@@ -52,6 +60,7 @@ obj-$(CONFIG_DRM_PANEL_OPLUS23053_BOE_ILI9883C_DPHY_VDO) += ../oplus/oplus_panel
 obj-$(CONFIG_DRM_PANEL_OPLUS23053_TRULY_TD4160_DPHY_VDO) += ../oplus/oplus_panel/oplus23053_td4160_truly_dsi_vdo.o
 obj-$(CONFIG_DRM_PANEL_OPLUS23687_SAMSUNG_AMS667FK02_S6E8FC3_FHDP_DSI_VDO) += ../oplus/oplus_panel/oplus23687_samsung_ams667fk02_s6e8fc3_fhdp_dsi_vdo.o
 obj-$(CONFIG_DRM_PANEL_OPLUS22610_SAMSUNG_AMS643AG01_1080P_DSI_CMD) += ../oplus/oplus_panel/oplus22610_samsung_ams643ag01_1080p_dsi_cmd.o
+obj-$(CONFIG_DRM_PANEL_OPLUS20615_SAMSUNG_AMS643YE01_PVT_1080P_DSI_CMD) += ../oplus/oplus_panel/oplus20615_samsung_ams643ye01_pvt_1080p_dsi_cmd.o
 obj-$(CONFIG_DRM_PANEL_OPLUS22629_TIANMA_ILI7838A_T7_PLUS_FHD_DSI_CMD) += ../oplus/oplus_panel/oplus22629_tianma_ili7838a_t7_plus_fhd_dsi_cmd.o
 obj-$(CONFIG_DRM_PANEL_OPLUS22612_TIANMA_ILI7838A_FHD_DSI_CMD) += ../oplus/oplus_panel/oplus22612_tianma_ili7838a_fhd_dsi_cmd.o
 obj-$(CONFIG_DRM_PANEL_OPLUS22612_TIANMA_ILI7838A_T7_PLUS_FHD_DSI_CMD) += ../oplus/oplus_panel/oplus22612_tianma_ili7838a_t7_plus_fhd_dsi_cmd.o

@@ -1088,6 +1088,20 @@ config DRM_PANEL_OPLUS22610_SAMSUNG_AMS643AG01_1080P_DSI_CMD
           24-bits RGB per pixel. It provides a MIPI DSI interface
           to host.
 
+config DRM_PANEL_OPLUS20615_SAMSUNG_AMS643YE01_PVT_1080P_DSI_CMD
+        tristate "oplus20615 samsung ams643ye01 pvt 1080p dsi cmd"
+        depends on OF
+        depends on DRM_MIPI_DSI
+        depends on BACKLIGHT_CLASS_DEVICE
+        help
+          Say Y here if you want to enable support for the OnePlus 9R /
+          oplus20615 (MT6893) production panel, Samsung AMS643YE01 in
+          command mode.  1080x2400, 60/120 Hz, DSC single port, 24-bits
+          RGB per pixel over MIPI DSI.  Matches the DT compatible
+          "oplus20615_samsung_ams643ye01_pvt_1080p_dsi_cmd" (panel9@0
+          under dsi@1400e000), which is the variant the bootloader
+          selects via the "lcm=" kernel command line argument.
+
 config DRM_PANEL_OPLUS22629_TIANMA_ILI7838A_T7_PLUS_FHD_DSI_CMD
         tristate "oplus22629 TM T7 plus FHD DPHY cmd mode panel"
         depends on OF
