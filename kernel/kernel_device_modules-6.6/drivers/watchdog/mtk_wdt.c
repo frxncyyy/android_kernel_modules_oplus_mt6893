@@ -303,9 +303,14 @@ static struct dbg_mem_region dbg_mem_tab[] = {
 #define DBG_FAST_AFTER_S	0
 #define DBG_FAST_PERIOD_MS	200
 /* stop dumping just before the auto reset takes the final snapshot */
-#define DBG_DUMP_STOP_S		170
-/* and then warm-reset, so the next boot inherits this boot's console */
-#define DBG_AUTORESET_S		175
+#define DBG_DUMP_STOP_S		290
+/* and then warm-reset, so the next boot inherits this boot's console.
+ * Disabled (0) now that adb is up: with a live shell we can reboot on demand
+ * (adb reboot) and pull dmesg/logcat directly, so the forced periodic reset is
+ * just a nuisance for long display bring-up sessions. The rest of DBGTRAP
+ * (periodic pstore dumps, reboot/panic notifiers, normal RGU petting) stays
+ * active. Re-raise to ~300 for an adb-less image that needs the pstore fallback. */
+#define DBG_AUTORESET_S		0
 /* claimed hardware heartbeat, so the core pets the RGU every ~2 s */
 #define DBG_HEARTBEAT_MS	4000
 
