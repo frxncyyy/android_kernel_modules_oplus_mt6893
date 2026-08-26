@@ -1941,8 +1941,18 @@ static int lcm_probe(struct mipi_dsi_device *dsi)
 		return PTR_ERR(ctx->reset_gpio);
 	}
 	devm_gpiod_put(dev, ctx->reset_gpio);
-	ctx->prepared = true;
-	ctx->enabled = true;
+	/* op6893 6.6 bring-up: the 4.19 source marks the panel as already
+	 * prepared+enabled here, assuming LK left it lit.  lcm_prepare() and
+	 * lcm_enable() then both take their "if (ctx->prepared/enabled)
+	 * return 0" early exit on the first modeset, so the init DCS sequence
+	 * is never sent: the panel keeps showing whatever LK left in its GRAM
+	 * and ignores the pixel stream the DSI is now producing.  This is the
+	 * panel-side twin of the mtk_dsi_probe() handover that
+	 * CONFIG_MTK_DISP_NO_LK disables -- start "off" so the kernel really
+	 * initialises the panel.
+	 */
+	ctx->prepared = false;
+	ctx->enabled = false;
 
 	/* 6.6: drm_panel_init() takes dev/funcs/connector_type and
 	 * drm_panel_add() returns void.
