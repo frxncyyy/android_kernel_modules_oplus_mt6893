@@ -811,6 +811,20 @@ void report_custom_iommu_fault(
 	u32 fault_id, enum mtk_iommu_type type,
 	int id)
 {
+	/* op6893 6.6 bring-up: our DTB has no "mediatek,mt6893-iommu-debug"
+	 * node, so mtk_iommu_dbg_probe() never runs and m4u_data stays NULL.
+	 * mtk_iommu_isr() still calls this on a real translation fault; without
+	 * this guard report_custom_fault() dereferences m4u_data->plat_data
+	 * (NULL+0x18) and turns a recoverable IOMMU fault into a reset -- which
+	 * masks the actual fault (an unmapped display IOVA) and reboots the
+	 * device.  Log the fault and return instead.
+	 */
+	if (!m4u_data || !m4u_data->plat_data) {
+		pr_info("%s: iommu debug not probed; fault iova=0x%llx pa=0x%llx id=0x%x type=%d\n",
+			__func__, fault_iova, fault_pa, fault_id, type);
+		return;
+	}
+
 	report_custom_fault(fault_iova, fault_pa, fault_id, type, id);
 }
 EXPORT_SYMBOL_GPL(report_custom_iommu_fault);
