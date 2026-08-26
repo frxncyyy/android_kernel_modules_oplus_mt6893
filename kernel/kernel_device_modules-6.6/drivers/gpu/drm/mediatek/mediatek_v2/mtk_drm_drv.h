@@ -26,7 +26,25 @@
 #else
 #define MAX_CONNECTOR 3
 #endif
-//#define CONFIG_MTK_DISP_NO_LK
+/* op6893 6.6 bring-up: do not adopt the bootloader's display.
+ *
+ * mtk_dsi_probe() assumes LK already lit DSI0 -- with no "atag,videolfb" in
+ * /chosen, mtk_disp_num_from_atag() returns 0 and the "(== 0 && DSI0)" branch
+ * fires -- and marks the DSI *and* the panel as already up:
+ *
+ *	dsi->output_en = true;
+ *	dsi->panel->prepared = true;  dsi->panel->enabled = true;
+ *
+ * mtk_output_dsi_enable() then takes its "dsi is initialized" early exit on
+ * every modeset, so drm_panel_prepare()/lcm_prepare() never run: no panel init
+ * DCS is ever sent and the DSI is never programmed.  The result is a CRTC that
+ * reports enabled and page-flips happily while the panel keeps displaying the
+ * frame LK left in its GRAM -- confirmed with a dumb-buffer modeset test.
+ *
+ * Defining this makes the driver initialise DSI and panel itself and stop
+ * trying to inherit/free LK's framebuffer.
+ */
+#define CONFIG_MTK_DISP_NO_LK
 //#define DRM_BYPASS_PQ
 //#define DRM_OVL_SELF_PATTERN
 //#define MTK_DSI1_SUPPORT_DSC1
