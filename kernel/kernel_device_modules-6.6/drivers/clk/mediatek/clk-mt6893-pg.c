@@ -4297,11 +4297,38 @@ static int VEN_CORE1_sys_disable_op(struct subsys *sys)
 }
 static int MDP_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_mdp(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see DIS_sys_disable_op(). */
+	pr_info_once("%s: bring-up: MDP MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int DIS_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_dis(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: powering the display domain *down* hangs.
+	 * spm_mtcmos_ctrl_dis(STA_POWER_DOWN) spins forever on the very first
+	 * bus-protect handshake --
+	 *
+	 *   [clkmgr] SYS_DIS MTCMOS BUS hang at pdn flow step 0
+	 *   spm_mtcmos_ctrl_dis+0x24c / DIS_sys_disable_op / pg_unprepare
+	 *   mtk_drm_top_clk_disable_unprepare / mtk_drm_idlemgr_disable_crtc
+	 *
+	 * INFRA_TOPAXI_PROTECTEN_MM_STA1 never acks DIS_PROT_STEP1_0_MASK,
+	 * ram_console_update() WARNs in the loop and the device resets.  The
+	 * ack needs every master behind the protected MM path to have drained,
+	 * and in this tree only 4 of 21 SMI LARBs bind and the mminfra/mmqos
+	 * side is only partly up, so it never completes.
+	 *
+	 * Power-*up* works and display comes up fine, so keep the domain on
+	 * for the whole session instead: return success without touching SPM.
+	 * The clock framework then believes it is off, which is harmless.
+	 *
+	 * This is a bring-up crutch like regulator_ignore_unused -- it costs
+	 * display-idle power and must be reverted once the pdn flow is
+	 * understood (or once genpd/mtk-scpsys owns these domains).
+	 */
+	pr_info_once("%s: bring-up: DIS MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int AUDIO_sys_disable_op(struct subsys *sys)
 {
