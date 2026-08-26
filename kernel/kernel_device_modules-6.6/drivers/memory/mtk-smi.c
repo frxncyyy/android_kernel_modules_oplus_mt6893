@@ -3873,7 +3873,8 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (of_property_read_bool(dev->of_node, "power-domains"))
+	if (of_property_read_bool(dev->of_node, "power-domains") ||
+	    of_machine_is_compatible("mediatek,MT6893"))
 		pm_runtime_enable(dev);
 
 	platform_set_drvdata(pdev, larb);
@@ -3885,7 +3886,17 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 		dev_notice(dev, "skip rpm callback\n");
 	}
 
-	if (of_property_read_bool(dev->of_node, "init-power-on")) {
+	/*
+	 * op6893 6.6 bring-up: the 4.19 DT has no genpd "power-domains", so the
+	 * upstream gate above left pm_runtime disabled and the larb's
+	 * runtime_resume (clk enable + config_port) never ran.  The display
+	 * masters then saw "smi greq not grant" and the DSI hung forever in
+	 * "Waiting frame data from RDMA".  Enable runtime PM (above) and pin the
+	 * larb resumed for the whole session, same as the init-power-on path --
+	 * a bring-up crutch (costs idle power) to revert once genpd owns these.
+	 */
+	if (of_property_read_bool(dev->of_node, "init-power-on") ||
+	    of_machine_is_compatible("mediatek,MT6893")) {
 		dev_notice(dev, "%s: init power on\n", __func__);
 		ret = pm_runtime_get_sync(dev);
 		if (ret < 0) {
@@ -5542,7 +5553,8 @@ static int mtk_smi_common_probe(struct platform_device *pdev)
 
 	of_property_read_u32(dev->of_node, "mediatek,common-id", &common->commid);
 
-	if (of_property_read_bool(dev->of_node, "power-domains"))
+	if (of_property_read_bool(dev->of_node, "power-domains") ||
+	    of_machine_is_compatible("mediatek,MT6893"))
 		pm_runtime_enable(dev);
 
 	platform_set_drvdata(pdev, common);
@@ -5556,7 +5568,11 @@ static int mtk_smi_common_probe(struct platform_device *pdev)
 	if (of_property_read_bool(dev->of_node, "skip-rpm-cb"))
 		common->skip_rpm_cb = true;
 
-	if (of_property_read_bool(dev->of_node, "init-power-on")) {
+	/* op6893 6.6 bring-up: pin the SMI common resumed, see the matching
+	 * comment in mtk_smi_larb_probe().
+	 */
+	if (of_property_read_bool(dev->of_node, "init-power-on") ||
+	    of_machine_is_compatible("mediatek,MT6893")) {
 		dev_notice(dev, "%s: init power on\n", __func__);
 		ret = pm_runtime_get_sync(dev);
 		if (ret < 0) {
