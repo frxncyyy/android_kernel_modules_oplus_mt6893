@@ -120,14 +120,13 @@ static void layering_rule_scenario_decision(struct drm_device *dev,
 	else
 		l_rule_info.addon_scn[HRT_PRIMARY] = NONE;
 
+	/* op6893: no HRT_FOURTH -- see enum HRT_DISP_TYPE. */
 	if (scn_decision_flag & SCN_TRIPLE_DISP) {
 		l_rule_info.addon_scn[HRT_SECONDARY] = TRIPLE_DISP;
 		l_rule_info.addon_scn[HRT_THIRD] = TRIPLE_DISP;
-		l_rule_info.addon_scn[HRT_FOURTH] = TRIPLE_DISP;
 	} else {
 		l_rule_info.addon_scn[HRT_SECONDARY] = NONE;
 		l_rule_info.addon_scn[HRT_THIRD] = NONE;
-		l_rule_info.addon_scn[HRT_FOURTH] = NONE;
 	}
 
 	if ((scn_decision_flag & SCN_IDLE) && !(scn_decision_flag & SCN_CLEAR))

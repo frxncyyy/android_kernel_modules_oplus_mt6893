@@ -5003,10 +5003,10 @@ static int layering_rule_start(struct drm_mtk_layering_info *disp_info_user,
 	if (get_layering_opt(LYE_OPT_RPO)) {
 		resizing_rule(dev, &layering_info, &scale_num);
 	} else {
+		/* op6893: no HRT_FOURTH -- see enum HRT_DISP_TYPE. */
 		mtk_rollback_all_resize_layer_to_GPU(&layering_info, HRT_PRIMARY);
 		mtk_rollback_all_resize_layer_to_GPU(&layering_info, HRT_SECONDARY);
 		mtk_rollback_all_resize_layer_to_GPU(&layering_info, HRT_THIRD);
-		mtk_rollback_all_resize_layer_to_GPU(&layering_info, HRT_FOURTH);
 	}
 	check_gles_change(&dbg_gles, __LINE__, false);
 

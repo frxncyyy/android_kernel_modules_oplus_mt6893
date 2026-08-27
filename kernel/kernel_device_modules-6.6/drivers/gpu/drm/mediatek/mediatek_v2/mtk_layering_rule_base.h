@@ -63,11 +63,32 @@
 	(MTK_MML_DISP_DIRECT_LINK_LAYER | MTK_MML_DISP_DIRECT_DECOUPLE_LAYER |                     \
 	 MTK_MML_DISP_DECOUPLE_LAYER | MTK_MML_DISP_MDP_LAYER | MTK_MML_DISP_DECOUPLE2_LAYER)
 
+/*
+ * op6893: HRT_FOURTH is deliberately absent, so HRT_DISP_TYPE_NUM is 3 here
+ * rather than the 4 the 6.6 tree assumes for arm64.
+ *
+ * This is both what the hardware has -- the device exposes exactly three
+ * connectors (DSI-1, DP-1, Writeback-1) and a fourth CRTC is never
+ * instantiated -- and what the ABI requires.  The stock HWC blob was built
+ * against a 4.19 tree whose enum ended at HRT_THIRD, so it fills
+ * gles_head/gles_tail for displays 0..2 (writing -1/-1 for the ones it is not
+ * using) and leaves index 3 at the zero its own memset left.  Validating that
+ * index anyway made check_disp_info() reject "gtail >= layer_num" as 0 >= 0:
+ *
+ *   [HRT] gles invalid, disp:3, head:0, tail:0
+ *   layering_rule_start error:-14
+ *
+ * which failed every layering_rule ioctl and left HWC dereferencing NULL in
+ * setupHwcLayers().  Shrinking the enum fixes it at the source: all twenty-odd
+ * loops over HRT_DISP_TYPE_NUM in mtk_layering_rule_base.c stop at the
+ * displays userspace actually describes, instead of only the one check that
+ * happened to complain.  LYE_CRTC in the uapi header stays 4 -- the arrays keep
+ * their wire size, we just do not read past what the blob fills in.
+ */
 enum HRT_DISP_TYPE {
 	HRT_PRIMARY = 0,
 	HRT_SECONDARY,
 	HRT_THIRD,
-	HRT_FOURTH,
 #if IS_ENABLED(CONFIG_DRM_MEDIATEK_AUTO)
 	HRT_FIFTH,
 	HRT_SIXTH,
