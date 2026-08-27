@@ -5579,6 +5579,27 @@ static int mtk_smi_common_probe(struct platform_device *pdev)
 			dev_notice(dev, "Unable to enable SMI COMM%d. ret:%d\n",
 				common->commid, ret);
 			pm_runtime_put_sync(dev);
+		} else if (of_machine_is_compatible("mediatek,MT6893")) {
+			/*
+			 * op6893 6.6 bring-up: the 4.19 DT describes the
+			 * larb->common relationship with the integer
+			 * "mediatek,smi-id" instead of the phandle
+			 * "mediatek,smi-supply" that mtk_smi_larb_probe() needs
+			 * to build the larb->common device_link.  Without that
+			 * link, resuming a larb does NOT pull its smi_common up,
+			 * so the common autosuspends behind the OVL's back and
+			 * the display path stalls: OVL reports smi_greq:0 but
+			 * RDMA never fetches (pitch=0,addr=0x0) and DSI hangs in
+			 * "Waiting frame data from RDMA".  Hold the resume
+			 * reference for the whole session instead of handing the
+			 * device to mtk_smi_init_power_off(), which pins the disp
+			 * SMI commons the same way "echo on > .../power/control"
+			 * does by hand.  Bring-up crutch: revert once the DT
+			 * builds the device_link (see the smi-supply note in
+			 * mtk_smi_larb_probe()).
+			 */
+			dev_notice(dev, "%s: keep SMI COMM%d resumed\n",
+				__func__, common->commid);
 		} else
 			init_power_on_dev[init_power_on_num++] = common;
 	}
