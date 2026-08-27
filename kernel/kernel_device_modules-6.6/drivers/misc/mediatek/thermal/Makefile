@@ -67,8 +67,19 @@ thermal_monitor-y += common/thermal_zones/mtk_ts_pa_thput.o
 thermal_monitor-y += common/thermal_zones/mtk_ts_charger.o
 thermal_monitor-y += common/thermal_zones/oplus_ts_tempntc.o
 
-ifeq ($(strip $(CONFIG_MTK_PLAT_POWER_6853)),)
+# op6893 6.6 bring-up: the WMT (combo chip) thermal zone is the only thing in
+# thermal_monitor.ko that pulls mtk_wcn_cmb_stub_query_ctrl out of connadp, and
+# everything in this module links into one .ko -- so that single symbol keeps the
+# whole legacy thermal stack from loading until the connectivity subsystem is up.
+# The product thermal HAL does not use it either: /vendor/etc/thermal_info_config
+# .json only asks for mtktscpu, mtktsbattery, mtktsAP and mtktsbtsmdpa.  Drop it
+# the same way it is already dropped on 6853.
+ifeq ($(strip $(CONFIG_MTK_PLAT_POWER_6853))$(strip $(CONFIG_MTK_PLAT_POWER_6893)),)
 thermal_monitor-y += common/thermal_zones/mtk_ts_wmt.o
+else
+# The vN monitors call wmt_tm_init()/wmt_tm_deinit() unconditionally, so dropping
+# the object alone leaves them undefined (the stock 6853 path has the same gap).
+ccflags-y += -DMTK_THERMAL_SKIP_WMT_TM
 endif
 
 thermal_monitor-y += common/thermal_zones/mtk_tsAll.o

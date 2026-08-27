@@ -2081,7 +2081,12 @@ static int __init thermal_monitor_init(void)
 		mtktscharger_init();
 		mtk_imgs_init();
 		mtkts_dctm_init();
+#ifndef MTK_THERMAL_SKIP_WMT_TM
+		/* op6893 6.6 bring-up: see the Makefile -- mtk_ts_wmt.o is left out
+		 * of this module, so its init/exit are not linked in either.
+		 */
 		wmt_tm_init();
+#endif
 		tsallts_init();
 		return 0;
 }
@@ -2121,7 +2126,9 @@ static void __exit thermal_monitor_exit(void)
 	mtktscharger_exit();
 	mtk_imgs_exit();
 	mtkts_dctm_exit();
+#ifndef MTK_THERMAL_SKIP_WMT_TM
 	wmt_tm_deinit();
+#endif
 	tsallts_exit();
 }
 
