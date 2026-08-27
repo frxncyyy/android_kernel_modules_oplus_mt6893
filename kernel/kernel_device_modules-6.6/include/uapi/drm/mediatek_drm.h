@@ -856,13 +856,22 @@ struct mtk_drm_disp_caps_info {
 	unsigned int average_luminance;
 	unsigned int min_luminance;
 
-	/* for color histogram */
+	/* Msync2.0 */
+	unsigned int msync_level_num;
+
+	/*
+	 * op6893: for color histogram, and 6.6-only, so it has to stay behind
+	 * msync_level_num -- the stock HWC blob reads that at offset 36 and the
+	 * three fields below used to sit in front of it, handing HWC
+	 * color_format as its msync level count.  Same reasoning as
+	 * drm_mtk_layering_info; this one only cost Msync 2.0 rather than the
+	 * whole composition path, because everything HWC depends on
+	 * (disp_feature_flag, lcm_degree, rsz_in_max, lcm_color_mode, the
+	 * luminances) already sits ahead of the insertion point.
+	 */
 	unsigned int color_format;
 	unsigned int max_bin;
 	unsigned int max_channel;
-
-	/* Msync2.0 */
-	unsigned int msync_level_num;
 };
 
 enum MTK_CRTC_ABILITY {
