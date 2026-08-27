@@ -325,6 +325,12 @@ int fan53870_ldo3_20615_disable(void)
 {
     int ret;
     struct fan53870_pw_chip *pchip = fan53870_pchip;
+
+    if (!pchip || !pchip->regmap) {
+        pr_err("pchip or pchip->regmap is NULL\n");
+        return -ENODEV;
+    }
+
     ret = fan53870_mask_write_reg(pchip->regmap, FAN53870_LDO_ENABLE_REG, 0x04, 0x00);
     pr_err("fan53870_ldo3_20615_disable!\n");
     return ret;
@@ -778,4 +784,3 @@ module_i2c_driver(fan53870_i2c_driver);
 MODULE_DESCRIPTION("FAN53870 Power Driver");
 MODULE_AUTHOR("xxx");
 MODULE_LICENSE("GPL");
-
