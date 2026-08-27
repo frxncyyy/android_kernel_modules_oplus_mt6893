@@ -1153,19 +1153,45 @@ struct nvmem_cell *efuse_cell;
  *
  * The 4.19 driver does not use nvmem cells either: it calls
  * get_devinfo_with_index(LVTS_ADDRESS_INDEX_1..22), and that API is gone in 6.6.
- * Those indices document their physical addresses, 0x11C101C0..0x11C10214 --
- * exactly 22 consecutive words at efuse offset 0x1C0, ending right where the
- * fab_info4 cell begins at 0x218.  So read that block by offset through the
- * nvmem *device* interface, which needs no per-cell DT description.
+ * Take the *indices*, not the addresses those defines carry in comments -- the
+ * comments are marked "TODO: change to new reg addr" and are stale.  The indices
+ * are word indices into the devinfo array, and they form the two blocks the two
+ * nvmem cells would have described:
+ *
+ *   e_data1  indices 116..119   ->  efuse offset 0x1d0, 4 words   (temp[0..3])
+ *   e_data2  indices 190..207   ->  efuse offset 0x2f8, 18 words  (temp[4..21])
+ *
+ * Read them by offset through the nvmem *device* interface, which needs no
+ * per-cell DT description.  Sanity check on this device: word 0 of e_data1 is
+ * 0x3c000000, so g_golden_temp = 0x3c = 60 C, and every calibration count in
+ * both blocks lands in 0x87d6..0x8af7 -- tightly clustered, as calibration data
+ * should be.  Reading 22 *consecutive* words from 0x1c0 instead gives
+ * g_golden_temp = 140 and counts in the millions.
  */
-#define LVTS_EFUSE_CAL_OFFSET	0x1c0
-#define LVTS_EFUSE_CAL_WORDS	22
+#define LVTS_EFUSE_DATA1_OFFSET	0x1d0
+#define LVTS_EFUSE_DATA1_WORDS	4
+#define LVTS_EFUSE_DATA2_OFFSET	0x2f8
+#define LVTS_EFUSE_DATA2_WORDS	18
+
+static int lvts_read_efuse_words(struct nvmem_device *nvmem, unsigned int offset,
+					int words, unsigned int *out)
+{
+	int bytes = words * sizeof(*out);
+	int ret;
+
+	ret = nvmem_device_read(nvmem, offset, bytes, out);
+	if (ret != bytes) {
+		lvts_printk("[lvts_cal] efuse read at 0x%x returned %d\n",
+			offset, ret);
+		return (ret < 0) ? ret : -EIO;
+	}
+	return 0;
+}
 
 static int lvts_read_efuse_cal_block(struct platform_device *dev,
 					unsigned int *temp)
 {
 	struct nvmem_device *nvmem;
-	int bytes = LVTS_EFUSE_CAL_WORDS * sizeof(*temp);
 	int ret;
 
 	/* "mtk-devinfo0", not "mtk-devinfo": drivers/nvmem/mtk-devinfo.c leaves
@@ -1179,17 +1205,19 @@ static int lvts_read_efuse_cal_block(struct platform_device *dev,
 		return PTR_ERR(nvmem);
 	}
 
-	ret = nvmem_device_read(nvmem, LVTS_EFUSE_CAL_OFFSET, bytes, temp);
+	ret = lvts_read_efuse_words(nvmem, LVTS_EFUSE_DATA1_OFFSET,
+					LVTS_EFUSE_DATA1_WORDS, temp);
+	if (!ret)
+		ret = lvts_read_efuse_words(nvmem, LVTS_EFUSE_DATA2_OFFSET,
+					LVTS_EFUSE_DATA2_WORDS,
+					temp + LVTS_EFUSE_DATA1_WORDS);
 	nvmem_device_put(nvmem);
 
-	if (ret != bytes) {
-		lvts_printk("[lvts_cal] efuse read at 0x%x returned %d\n",
-			LVTS_EFUSE_CAL_OFFSET, ret);
-		return (ret < 0) ? ret : -EIO;
-	}
+	if (ret)
+		return ret;
 
-	lvts_printk("[lvts_cal] read %d efuse words at 0x%x, golden raw 0x%x\n",
-		LVTS_EFUSE_CAL_WORDS, LVTS_EFUSE_CAL_OFFSET, temp[0]);
+	lvts_printk("[lvts_cal] efuse read ok, golden raw 0x%x count0 0x%x\n",
+		temp[0], temp[1]);
 	return 0;
 }
 
