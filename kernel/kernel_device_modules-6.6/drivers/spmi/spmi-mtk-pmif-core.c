@@ -1917,7 +1917,16 @@ static int rcs_irq_register(struct platform_device *pdev,
 	return ret;
 }
 
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
+/*
+ * op6893 6.6 bring-up: compiled out (was CONFIG_MTK_AEE_IPANIC).  This registers
+ * the PMIF/SPMI register windows with mrdump for ramdump capture, which pulls in
+ * mrdump_mini_add_extra_file() from mrdump.ko.  mrdump.ko cannot load in this
+ * profile (CONFIG_MTK_AEE_AED is off), so keeping the reference makes
+ * spmi-mtk-pmif.ko fail to insmod ("Unknown symbol mrdump_mini_add_extra_file"),
+ * which blocks the whole SPMI bus -> MT6315 -> GPU VGPU rail.  Re-enable with the
+ * AEE stack.  See [[mali-egl-blocker-66]].
+ */
+#if 0
 static void pmif_spmi_mrdump_register(struct platform_device *pdev, struct pmif *arb)
 {
 	u32 reg[12] = {0};
@@ -2257,7 +2266,7 @@ static int mtk_spmi_probe(struct platform_device *pdev)
 	dev_notice(&pdev->dev, "%s check [0x%x] = 0x%x\n", __func__, test_w_addr, val);
 #endif
 
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
+#if 0 /* op6893 bring-up: mrdump register compiled out, see above */
 	/* add mrdump for reboot DB*/
 	pmif_spmi_mrdump_register(pdev, arb);
 #endif
@@ -2295,6 +2304,18 @@ static int mtk_spmi_remove(struct platform_device *pdev)
 
 static const struct of_device_id mtk_spmi_match_table[] = {
 	{
+		/*
+		 * op6893 6.6 bring-up: the stock 4.19 boot DT names the SPMI/PMIF
+		 * controller "mediatek,mt6885-pmif" (10027000.spmi), but the 6.6
+		 * driver renamed the mt6885/mt6893 family compatible to
+		 * "mediatek,mt6893-spmi-m".  Without this the pmif controller never
+		 * binds, the SPMI bus never registers, MT6315 (VGPU 7_vbuck1) never
+		 * probes, and gpufreq aborts with -517 on regulator_get(_vgpu).
+		 * mt6893 is the mt6885 turbo bin, so reuse mt6893_pmif_arb.
+		 */
+		.compatible = "mediatek,mt6885-pmif",
+		.data = &mt6893_pmif_arb,
+	}, {
 		.compatible = "mediatek,mt6853-pmif-m",
 		.data = &mt6853_pmif_arb,
 	}, {
