@@ -1139,6 +1139,60 @@ struct nvmem_cell *efuse_cell;
 	return efuse_buf;
 }
 
+/*
+ * op6893 6.6 bring-up: read the 22 LVTS calibration words straight out of the
+ * devinfo efuse.
+ *
+ * read_mtk_efuse_cell() below wants a DT node named "lvts" carrying nvmem-cells
+ * e_data1/e_data2.  The stock 4.19 DT we boot has no such node -- its
+ * efuse@11c10000 ("mediatek,devinfo") declares only segment@78, ptpod22 and
+ * fab_info4 -- so calibration fell back to DEFAULT_EFUSE_GOLDEN_TEMP /
+ * DEFAULT_EFUSE_COUNT (g_use_fake_efuse=1).  Programming the LVTS
+ * hardware-protect thresholds from those fake numbers resets the device on the
+ * first temperature read.
+ *
+ * The 4.19 driver does not use nvmem cells either: it calls
+ * get_devinfo_with_index(LVTS_ADDRESS_INDEX_1..22), and that API is gone in 6.6.
+ * Those indices document their physical addresses, 0x11C101C0..0x11C10214 --
+ * exactly 22 consecutive words at efuse offset 0x1C0, ending right where the
+ * fab_info4 cell begins at 0x218.  So read that block by offset through the
+ * nvmem *device* interface, which needs no per-cell DT description.
+ */
+#define LVTS_EFUSE_CAL_OFFSET	0x1c0
+#define LVTS_EFUSE_CAL_WORDS	22
+
+static int lvts_read_efuse_cal_block(struct platform_device *dev,
+					unsigned int *temp)
+{
+	struct nvmem_device *nvmem;
+	int bytes = LVTS_EFUSE_CAL_WORDS * sizeof(*temp);
+	int ret;
+
+	/* "mtk-devinfo0", not "mtk-devinfo": drivers/nvmem/mtk-devinfo.c leaves
+	 * nvmem_config.id at 0, so nvmem_register() names the device
+	 * "<name><id>" (see /sys/bus/nvmem/devices).
+	 */
+	nvmem = nvmem_device_get(&dev->dev, "mtk-devinfo0");
+	if (IS_ERR(nvmem)) {
+		lvts_printk("[lvts_cal] no mtk-devinfo0 nvmem (%ld)\n",
+			PTR_ERR(nvmem));
+		return PTR_ERR(nvmem);
+	}
+
+	ret = nvmem_device_read(nvmem, LVTS_EFUSE_CAL_OFFSET, bytes, temp);
+	nvmem_device_put(nvmem);
+
+	if (ret != bytes) {
+		lvts_printk("[lvts_cal] efuse read at 0x%x returned %d\n",
+			LVTS_EFUSE_CAL_OFFSET, ret);
+		return (ret < 0) ? ret : -EIO;
+	}
+
+	lvts_printk("[lvts_cal] read %d efuse words at 0x%x, golden raw 0x%x\n",
+		LVTS_EFUSE_CAL_WORDS, LVTS_EFUSE_CAL_OFFSET, temp[0]);
+	return 0;
+}
+
 void lvts_thermal_cal_prepare(struct platform_device *dev)
 {
 	unsigned int temp[22];
@@ -1147,8 +1201,12 @@ void lvts_thermal_cal_prepare(struct platform_device *dev)
 	__u32  *buf = NULL;
 
 	buf = read_mtk_efuse_cell("e_data1");
-	if (!buf)
+	if (!buf) {
+		/* op6893 6.6 bring-up: see lvts_read_efuse_cal_block(). */
+		if (lvts_read_efuse_cal_block(dev, temp) == 0)
+			goto have_cal_data;
 		return;
+	}
 	temp[0] = buf[0];
 	temp[1] =  buf[1];
 	temp[2] =  buf[2];
@@ -1178,7 +1236,7 @@ void lvts_thermal_cal_prepare(struct platform_device *dev)
 	temp[21] =  buf[17];
 	kfree(buf);// free effuse buffer
 
-
+have_cal_data:
 	for (i = 0; (i + 5) < 22; i = i + 5)
 		lvts_printk("[lvts_call] %d: 0x%x, %d: 0x%x, %d: 0x%x, %d: 0x%x, %d: 0x%x\n",
 		i, temp[i], i + 1, temp[i + 1], i + 2, temp[i + 2],
