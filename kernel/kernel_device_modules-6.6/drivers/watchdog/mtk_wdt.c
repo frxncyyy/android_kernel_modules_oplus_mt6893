@@ -110,6 +110,19 @@ struct mtk_wdt_data {
 /*
  * DEBUG ONLY -- see mtk_wdt_dbg_trap() near the bottom of this file.
  *
+ * OFF BY DEFAULT.  Enable with mtk_wdt.dbgtrap=1 on the kernel command line,
+ * or "insmod mtk_wdt.ko dbgtrap=1".  Everything below stays compiled in so it
+ * is here when the next unexplained reset shows up; nothing of it runs unless
+ * that parameter is set, because mtk_wdt_dbg_arm() returns immediately.
+ *
+ * What it does when armed, and why you would not want that on a normal image:
+ * it registers reboot/restart/panic notifiers that convert *any* orderly
+ * kernel restart into a hardware watchdog reset, so the RGU registers and the
+ * expdb archive record how the machine died.  That is invaluable while hunting
+ * a reset with no panic, and actively misleading otherwise -- a plain
+ * "reboot,recovery" from userspace then looks like a hard crash.  It also
+ * writes ~960 KiB snapshots into the expdb partition on a timer.
+ *
  * dbg_wdt    : the probed device, so the trap can reach the RGU registers
  *              from any context (reboot notifier, panic, softirq).
  * dbg_frozen : once set, this driver stops petting the hardware watchdog,
@@ -118,6 +131,11 @@ struct mtk_wdt_data {
  * dbg_secs   : seconds since probe; also mirrored, so the preloader print
  *              tells us how far the kernel got before it was reset.
  */
+static bool dbgtrap;
+module_param(dbgtrap, bool, 0444);
+MODULE_PARM_DESC(dbgtrap,
+	"DEBUG ONLY: turn orderly kernel restarts into hardware watchdog resets and dump kmsg snapshots to expdb (default off)");
+
 static struct mtk_wdt_dev *dbg_wdt;
 static bool dbg_frozen;
 static u32 dbg_flags;
@@ -1377,6 +1395,10 @@ static struct notifier_block mtk_wdt_dbg_panic_nb = {
 
 static void mtk_wdt_dbg_arm(struct device *dev, struct mtk_wdt_dev *mtk_wdt)
 {
+	if (!dbgtrap)
+		return;
+
+	dev_info(dev, "DBGTRAP instrumentation armed (mtk_wdt.dbgtrap=1)\n");
 	dbg_wdt = mtk_wdt;
 	mtk_wdt_dbg_mark(DBG_F_PROBE);
 	mtk_wdt_dbg_unhook_req_reset(dev);
