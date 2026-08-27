@@ -222,8 +222,15 @@ static long ged_dispatch(struct file *pFile,
 			// need check input buffer size
 			if (psBridgePackageKM->i32InBufferSize <
 				inputBufferSize) {
-				GED_LOGE("Failed to region_num, it must be %d\n",
-					GE_ALLOC_STRUCT_NUM);
+				/* op6893 6.6 bring-up: report what userspace
+				 * actually sent.  Printing only the expected
+				 * region count left the real GE_ALLOC_STRUCT_NUM
+				 * mismatch to be guessed at.
+				 */
+				GED_LOGE("Failed to region_num, it must be %d (got %d bytes, need %d)\n",
+					GE_ALLOC_STRUCT_NUM,
+					psBridgePackageKM->i32InBufferSize,
+					inputBufferSize);
 				goto dispatch_exit;
 			}
 		}
