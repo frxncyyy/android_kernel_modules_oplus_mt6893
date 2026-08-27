@@ -578,6 +578,17 @@ static const struct of_device_id mt6577_auxadc_of_match[] = {
 	{ .compatible = "mediatek,mt7622-auxadc", .data = &mt8173_compat},
 	{ .compatible = "mediatek,mt8173-auxadc", .data = &mt8173_compat},
 	{ .compatible = "mediatek,mt6765-auxadc", .data = &mt6765_compat},
+	/* op6893 6.6 bring-up: the stock 4.19 DT spells the SoC AUXADC
+	 * auxadc@11001000 / "mediatek,mt6768-auxadc".  MT6768 is the same
+	 * AUXADC as MT6765 here, and MediaTek's own thermal code assumes the
+	 * mt6765 spelling too (get_io_reg_base() in
+	 * misc/mediatek/thermal/v1/src/mtk_tc_wrapper_mt6893.c).  Without a
+	 * match nothing provides the thermistor IIO channels, so
+	 * mtk_ts_bts/mtk_ts_btsmdpa never get past iio_channel_get() and the
+	 * mtktsAP and mtktsbtsmdpa zones the product thermal HAL requires are
+	 * never registered.
+	 */
+	{ .compatible = "mediatek,mt6768-auxadc", .data = &mt6765_compat},
 	{ }
 };
 MODULE_DEVICE_TABLE(of, mt6577_auxadc_of_match);
