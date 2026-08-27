@@ -747,6 +747,8 @@ static const struct mtk_i2c_compatible mt6991_compat = {
 };
 
 static const struct of_device_id mtk_i2c_of_match[] = {
+	/* MT6893 vendor DTs predate the SoC-specific compatible string. */
+	{ .compatible = "mediatek,i2c", .data = &mt6873_compat },
 	{ .compatible = "mediatek,mt2712-i2c", .data = &mt2712_compat },
 	{ .compatible = "mediatek,mt6577-i2c", .data = &mt6577_compat },
 	{ .compatible = "mediatek,mt6589-i2c", .data = &mt6589_compat },
@@ -2666,9 +2668,14 @@ static int mtk_i2c_parse_dt(struct device_node *np, struct mtk_i2c *i2c)
 			i2c->i2c_offset_ap, i2c->i2c_offset_scp);
 
 	of_property_read_u32(np, "clk-src-in-hz", &i2c->clk_src_in_hz);
-	of_property_read_u32(np, "ch-offset-i2c", &i2c->ch_offset_i2c);
+	ret = of_property_read_u32(np, "ch-offset-i2c", &i2c->ch_offset_i2c);
+	if (ret < 0)
+		of_property_read_u32(np, "ch_offset_default",
+				     &i2c->ch_offset_i2c);
 	of_property_read_u32(np, "ch-offset-scp", &i2c->ch_offset_scp);
-	of_property_read_u32(np, "ch-offset-ccu", &i2c->ch_offset_ccu);
+	ret = of_property_read_u32(np, "ch-offset-ccu", &i2c->ch_offset_ccu);
+	if (ret < 0)
+		of_property_read_u32(np, "ch_offset_ccu", &i2c->ch_offset_ccu);
 	of_property_read_u32(np, "ch-offset-dma", &i2c->ch_offset_dma);
 	i2c->ctrl_irq_sel = of_property_read_bool(np, "mediatek,control-irq-sel");
 	i2c->ctrl_rs_stop = of_property_read_bool(np, "mediatek,control-rs-stop");
