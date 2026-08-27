@@ -831,7 +831,24 @@ struct base_jd_atom_v2 {
 	base_jd_core_req core_req;
 	__u8 renderpass_id;
 	__u8 padding[7];
-#if (defined(CONFIG_MALI_MTK_GPU_BM_JM) || IS_ENABLED(CONFIG_MTK_GPU_MT6833_SUPPORT))
+/* op6893 6.6 bring-up: MT6893 must carry frame_nr too, for the ABI alone.
+ * This member is what makes sizeof(base_jd_atom) 72 instead of 64, and the
+ * stock r32p1 blob (/vendor/lib64/egl/mt6893/libGLES_mali.so) submits jobs
+ * with stride 72 because the 4.19 kernel it was built against defines
+ * MTK_GPU_BM_2 unconditionally in the mali Kbuild.  Without it the kernel
+ * rejects every submission ("Stride 72 passed to job_submit isn't supported
+ * by the kernel") and the blob aborts in its mali-cmar-backe thread, taking
+ * down SurfaceFlinger, SystemUI and every other GPU client.
+ *
+ * Only the struct member is wanted here, not the bandwidth monitor:
+ * CONFIG_MALI_MTK_GPU_BM_JM stays undefined, so every kernel-side use of
+ * frame_nr stays compiled out (mali_kbase_jd.c and mali_kbase_jm_rb.c are
+ * both guarded) and mali_kbase does not acquire the MTKGPUQoS_setup and
+ * sspm_reserve_mem_get_* dependencies that would make it unloadable here.
+ */
+#if (defined(CONFIG_MALI_MTK_GPU_BM_JM) || \
+	IS_ENABLED(CONFIG_MTK_GPU_MT6833_SUPPORT) || \
+	IS_ENABLED(CONFIG_MTK_GPU_MT6893_SUPPORT))
 	u32 frame_nr;  /* frame number to the atom */
 #endif
 };
@@ -882,7 +899,24 @@ typedef struct base_jd_atom {
 	base_jd_core_req core_req;
 	__u8 renderpass_id;
 	__u8 padding[7];
-#if (defined(CONFIG_MALI_MTK_GPU_BM_JM) || IS_ENABLED(CONFIG_MTK_GPU_MT6833_SUPPORT))
+/* op6893 6.6 bring-up: MT6893 must carry frame_nr too, for the ABI alone.
+ * This member is what makes sizeof(base_jd_atom) 72 instead of 64, and the
+ * stock r32p1 blob (/vendor/lib64/egl/mt6893/libGLES_mali.so) submits jobs
+ * with stride 72 because the 4.19 kernel it was built against defines
+ * MTK_GPU_BM_2 unconditionally in the mali Kbuild.  Without it the kernel
+ * rejects every submission ("Stride 72 passed to job_submit isn't supported
+ * by the kernel") and the blob aborts in its mali-cmar-backe thread, taking
+ * down SurfaceFlinger, SystemUI and every other GPU client.
+ *
+ * Only the struct member is wanted here, not the bandwidth monitor:
+ * CONFIG_MALI_MTK_GPU_BM_JM stays undefined, so every kernel-side use of
+ * frame_nr stays compiled out (mali_kbase_jd.c and mali_kbase_jm_rb.c are
+ * both guarded) and mali_kbase does not acquire the MTKGPUQoS_setup and
+ * sspm_reserve_mem_get_* dependencies that would make it unloadable here.
+ */
+#if (defined(CONFIG_MALI_MTK_GPU_BM_JM) || \
+	IS_ENABLED(CONFIG_MTK_GPU_MT6833_SUPPORT) || \
+	IS_ENABLED(CONFIG_MTK_GPU_MT6893_SUPPORT))
 	u32 frame_nr;  /* frame number to the atom */
 #endif
 } base_jd_atom;
