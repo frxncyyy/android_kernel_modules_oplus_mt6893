@@ -7,7 +7,13 @@
 #define __GPUFREQ_COMMON_LEGACY_H__
 
 #include <linux/bits.h>
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
+/* op6893 6.6 bring-up: AEE crash-footprint recorder (aee_rr_rec_gpu_dvfs_*,
+ * from mrdump/mboot_params.c) is unavailable -- CONFIG_MTK_AEE_AED is off so
+ * mrdump.ko will not load, and leaving these calls in makes
+ * mtk_gpufreq_mt6893.ko fail to insmod ("Unknown symbol
+ * aee_rr_rec_gpu_dvfs_vgpu").  Compile the footprint calls out.  Re-enable with
+ * the AEE stack.  See [[mali-egl-blocker-66]]. */
+#if 0 && IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
 #include <mboot_params.h>
 #endif
 
@@ -166,7 +172,13 @@ int __gpufreq_fix_custom_freq_volt_stack(unsigned int freq, unsigned int volt);
  **************************************************/
 static inline void __gpufreq_reset_footprint(void)
 {
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
+/* op6893 6.6 bring-up: AEE crash-footprint recorder (aee_rr_rec_gpu_dvfs_*,
+ * from mrdump/mboot_params.c) is unavailable -- CONFIG_MTK_AEE_AED is off so
+ * mrdump.ko will not load, and leaving these calls in makes
+ * mtk_gpufreq_mt6893.ko fail to insmod ("Unknown symbol
+ * aee_rr_rec_gpu_dvfs_vgpu").  Compile the footprint calls out.  Re-enable with
+ * the AEE stack.  See [[mali-egl-blocker-66]]. */
+#if 0 && IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
 	aee_rr_rec_gpu_dvfs_vgpu(0);
 	aee_rr_rec_gpu_dvfs_power_count(0);
 	aee_rr_rec_gpu_dvfs_oppidx(GENMASK(7, 0));
@@ -177,7 +189,13 @@ static inline void __gpufreq_footprint_power_step(unsigned int step)
 {
 	GPUFREQ_LOGD("0x%x", step);
 
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
+/* op6893 6.6 bring-up: AEE crash-footprint recorder (aee_rr_rec_gpu_dvfs_*,
+ * from mrdump/mboot_params.c) is unavailable -- CONFIG_MTK_AEE_AED is off so
+ * mrdump.ko will not load, and leaving these calls in makes
+ * mtk_gpufreq_mt6893.ko fail to insmod ("Unknown symbol
+ * aee_rr_rec_gpu_dvfs_vgpu").  Compile the footprint calls out.  Re-enable with
+ * the AEE stack.  See [[mali-egl-blocker-66]]. */
+#if 0 && IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
 	aee_rr_rec_gpu_dvfs_vgpu(step & GENMASK(7, 0));
 #endif /* CONFIG_MTK_AEE_IPANIC && CONFIG_MTK_AEE_FEATURE */
 }
@@ -189,7 +207,13 @@ static inline void __gpufreq_footprint_dvfs_step(unsigned int step)
 
 static inline void __gpufreq_footprint_oppidx(int oppidx)
 {
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
+/* op6893 6.6 bring-up: AEE crash-footprint recorder (aee_rr_rec_gpu_dvfs_*,
+ * from mrdump/mboot_params.c) is unavailable -- CONFIG_MTK_AEE_AED is off so
+ * mrdump.ko will not load, and leaving these calls in makes
+ * mtk_gpufreq_mt6893.ko fail to insmod ("Unknown symbol
+ * aee_rr_rec_gpu_dvfs_vgpu").  Compile the footprint calls out.  Re-enable with
+ * the AEE stack.  See [[mali-egl-blocker-66]]. */
+#if 0 && IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
 	aee_rr_rec_gpu_dvfs_oppidx(oppidx);
 #else
 	GPUFREQ_UNREFERENCED(oppidx);
@@ -198,7 +222,13 @@ static inline void __gpufreq_footprint_oppidx(int oppidx)
 
 static inline void __gpufreq_footprint_power_count(int power_count)
 {
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
+/* op6893 6.6 bring-up: AEE crash-footprint recorder (aee_rr_rec_gpu_dvfs_*,
+ * from mrdump/mboot_params.c) is unavailable -- CONFIG_MTK_AEE_AED is off so
+ * mrdump.ko will not load, and leaving these calls in makes
+ * mtk_gpufreq_mt6893.ko fail to insmod ("Unknown symbol
+ * aee_rr_rec_gpu_dvfs_vgpu").  Compile the footprint calls out.  Re-enable with
+ * the AEE stack.  See [[mali-egl-blocker-66]]. */
+#if 0 && IS_ENABLED(CONFIG_MTK_AEE_IPANIC) && IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
 	aee_rr_rec_gpu_dvfs_power_count(power_count);
 #else
 	GPUFREQ_UNREFERENCED(power_count);
@@ -218,7 +248,17 @@ static inline void __gpufreq_abort(const char *exception_string, ...)
 	GPUFREQ_LOGE("[ABORT]: %s", tmp_string);
 	__gpufreq_dump_infra_status(NULL, NULL, 0);
 
-	BUG_ON(1);
+	/*
+	 * op6893 6.6 bring-up crutch: the stock BUG_ON(1) turns every recoverable
+	 * probe/DVFS failure into a kernel panic + reboot, which makes iterating on
+	 * the GPU stack on a daily-driver device impossible (e.g. a -517
+	 * EPROBE_DEFER on the VGPU regulator rebooted the phone on every insmod).
+	 * Downgrade to a WARN so the failure propagates as an error return through
+	 * the existing "ret = ...; __gpufreq_abort(); goto done;" callers instead of
+	 * killing the device.  Revert to BUG_ON(1) once the GPU power/regulator
+	 * path is proven.
+	 */
+	WARN(1, "[GPU/FREQ][ABORT] %s\n", tmp_string);
 }
 
 #endif /* __GPUFREQ_COMMON_LEGACY_H__ */

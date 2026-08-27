@@ -2972,11 +2972,32 @@ done:
 }
 
 /* API: init reg base address and flavor config of the platform */
+static void __iomem *__gpufreq_ioremap_res_or_pa(struct platform_device *pdev,
+		const char *name, phys_addr_t fallback_pa)
+{
+	struct resource *res =
+		platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
+
+	if (res)
+		return devm_ioremap(&pdev->dev, res->start, resource_size(res));
+
+	/*
+	 * op6893 6.6 bring-up: the stock 4.19 boot DT's "mediatek,gpufreq" node
+	 * has no reg/reg-names, so none of the infracfg / bpi_bsi_slv0 /
+	 * devapc_ao_infra_peri_debug1..4 regions are named and platform-info
+	 * init aborted (GPU left unpowered -> mali_kbase read "Unknown GPU ID
+	 * 0").  Fall back to the fixed mt6893 addresses (from the reference
+	 * mt6893.dtsi).  Revert once the DT carries the reg block.
+	 */
+	GPUFREQ_LOGI("no DT reg '%s'; ioremap fixed mt6893 pa 0x%llx",
+		name, (unsigned long long)fallback_pa);
+	return devm_ioremap(&pdev->dev, fallback_pa, 0x1000);
+}
+
 static int __gpufreq_init_platform_info(struct platform_device *pdev)
 {
 	struct device *gpufreq_dev = &pdev->dev;
 	struct device_node *of_gpueb = NULL;
-	struct resource *res = NULL;
 	int ret = GPUFREQ_ENOENT;
 
 	GPUFREQ_TRACE_START("pdev=0x%x", pdev);
@@ -2988,15 +3009,25 @@ static int __gpufreq_init_platform_info(struct platform_device *pdev)
 
 	of_gpueb = of_find_compatible_node(NULL, NULL, "mediatek,gpueb");
 	if (unlikely(!of_gpueb)) {
-		GPUFREQ_LOGE("fail to find gpueb of_node");
-		goto done;
+		/*
+		 * op6893 6.6 bring-up: this board has no GPUEB co-processor and
+		 * its DT carries no "mediatek,gpueb" node.  The original code
+		 * aborted platform-info init here (-ENOENT), so gpufreq never
+		 * probed, the MFG power domain was never managed, and mali_kbase
+		 * then read GPU_ID 0 ("Unknown GPU ID 0").  GPUEB is optional and
+		 * everything below is gated on g_gpueb_support, so just leave it
+		 * 0 (AP-driven gpufreq path) and continue.
+		 */
+		GPUFREQ_LOGI("no gpueb of_node; run without GPUEB (g_gpueb_support=0)");
+		g_gpueb_support = 0;
+	} else {
+		of_property_read_u32(of_gpueb, "gpueb-support", &g_gpueb_support);
 	}
 
 	/* ignore return error and use default value if property doesn't exist */
 	of_property_read_u32(gpufreq_dev->of_node, "apply-mcl50-opp", &g_apply_mcl50_opp);
 	of_property_read_u32(gpufreq_dev->of_node, "apply-6879-opp", &g_apply_6879_opp);
 	of_property_read_u32(gpufreq_dev->of_node, "enable-aging", &g_aging_enable);
-	of_property_read_u32(of_gpueb, "gpueb-support", &g_gpueb_support);
 
 	/* 0x1000C000 */
 	g_apmixed_base = __gpufreq_of_ioremap("mediatek,mt6893-apmixedsys", 0);
@@ -3018,67 +3049,41 @@ static int __gpufreq_init_platform_info(struct platform_device *pdev)
 		goto done;
 	}
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "infracfg");
-	if (unlikely(!res)) {
-		GPUFREQ_LOGE("fail to get resource infracfg");
-		goto done;
-	}
-	g_infracfg_base = devm_ioremap(gpufreq_dev, res->start, resource_size(res));
+	g_infracfg_base = __gpufreq_ioremap_res_or_pa(pdev, "infracfg", 0x1020e000);
 	if (unlikely(!g_infracfg_base)) {
 		GPUFREQ_LOGE("fail to ioremap infracfg");
 		goto done;
 	}
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "bpi_bsi_slv0");
-	if (unlikely(!res)) {
-		GPUFREQ_LOGE("fail to get resource bpi_bsi_slv0");
-		goto done;
-	}
-	g_infra_bpi_bsi_slv0 = devm_ioremap(gpufreq_dev, res->start, resource_size(res));
+	g_infra_bpi_bsi_slv0 = __gpufreq_ioremap_res_or_pa(pdev, "bpi_bsi_slv0", 0x1021e000);
 	if (unlikely(!g_infra_bpi_bsi_slv0)) {
 		GPUFREQ_LOGE("fail to ioremap bpi_bsi_slv0");
 		goto done;
 	}
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "devapc_ao_infra_peri_debug1");
-	if (unlikely(!res)) {
-		GPUFREQ_LOGE("fail to get resource devapc_ao_infra_peri_debug1");
-		goto done;
-	}
-	g_infra_peri_debug1 = devm_ioremap(gpufreq_dev, res->start, resource_size(res));
+	g_infra_peri_debug1 = __gpufreq_ioremap_res_or_pa(pdev,
+		"devapc_ao_infra_peri_debug1", 0x10023000);
 	if (unlikely(!g_infra_peri_debug1)) {
 		GPUFREQ_LOGE("fail to ioremap devapc_ao_infra_peri_debug1");
 		goto done;
 	}
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "devapc_ao_infra_peri_debug2");
-	if (unlikely(!res)) {
-		GPUFREQ_LOGE("fail to get resource devapc_ao_infra_peri_debug2");
-		goto done;
-	}
-	g_infra_peri_debug2 = devm_ioremap(gpufreq_dev, res->start, resource_size(res));
+	g_infra_peri_debug2 = __gpufreq_ioremap_res_or_pa(pdev,
+		"devapc_ao_infra_peri_debug2", 0x10025000);
 	if (unlikely(!g_infra_peri_debug2)) {
 		GPUFREQ_LOGE("fail to ioremap devapc_ao_infra_peri_debug2");
 		goto done;
 	}
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "devapc_ao_infra_peri_debug3");
-	if (unlikely(!res)) {
-		GPUFREQ_LOGE("fail to get resource devapc_ao_infra_peri_debug3");
-		goto done;
-	}
-	g_infra_peri_debug3 = devm_ioremap(gpufreq_dev, res->start, resource_size(res));
+	g_infra_peri_debug3 = __gpufreq_ioremap_res_or_pa(pdev,
+		"devapc_ao_infra_peri_debug3", 0x1002b000);
 	if (unlikely(!g_infra_peri_debug3)) {
 		GPUFREQ_LOGE("fail to ioremap devapc_ao_infra_peri_debug3");
 		goto done;
 	}
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "devapc_ao_infra_peri_debug4");
-	if (unlikely(!res)) {
-		GPUFREQ_LOGE("fail to get resource devapc_ao_infra_peri_debug4");
-		goto done;
-	}
-	g_infra_peri_debug4 = devm_ioremap(gpufreq_dev, res->start, resource_size(res));
+	g_infra_peri_debug4 = __gpufreq_ioremap_res_or_pa(pdev,
+		"devapc_ao_infra_peri_debug4", 0x1002e000);
 	if (unlikely(!g_infra_peri_debug4)) {
 		GPUFREQ_LOGE("fail to ioremap devapc_ao_infra_peri_debug4");
 		goto done;

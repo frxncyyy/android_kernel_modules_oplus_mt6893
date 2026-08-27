@@ -1873,16 +1873,31 @@ static void gpufreq_init_external_callback(void)
 	!IS_ENABLED(CONFIG_MTK_GPU_MT6765_SUPPORT) && \
 	!IS_ENABLED(CONFIG_MTK_GPU_MT6781_SUPPORT) && \
 	!IS_ENABLED(CONFIG_MTK_GPU_MT6853_SUPPORT) && \
+	!IS_ENABLED(CONFIG_MTK_GPU_MT6893_SUPPORT) && \
 	!IS_ENABLED(CONFIG_MTK_GPU_MT6833_SUPPORT)
 	register_pbm_gpu_notify(&pbm_cb);
 #endif /* CONFIG_MTK_PBM */
 
 	/* register power throttling callback */
-#if IS_ENABLED(CONFIG_MTK_LOW_BATTERY_POWER_THROTTLING)
+	/*
+	 * op6893 6.6 bring-up: the low-battery / battery-OC / PBM power
+	 * throttling providers (mtk_low_battery_throttling,
+	 * mtk_battery_oc_throttling, mtk_pbm) are not part of the display/GPU
+	 * bring-up module set, so register_low_battery_notify /
+	 * register_battery_oc_notify / register_pbm_gpu_notify are unresolved at
+	 * insmod and mtk_gpufreq_wrapper_legacy.ko fails to load (-ENOENT),
+	 * taking mali_kbase with it.  GPU DVFS still works without these hooks
+	 * (they only clamp GPU freq under battery stress), so skip them on
+	 * mt6893.  Bring-up crutch: drop this once the power_throttling + pbm
+	 * modules are in the load set.
+	 */
+#if IS_ENABLED(CONFIG_MTK_LOW_BATTERY_POWER_THROTTLING) && \
+	!IS_ENABLED(CONFIG_MTK_GPU_MT6893_SUPPORT)
 	register_low_battery_notify(&gpufreq_low_batt_callback, LOW_BATTERY_PRIO_GPU, NULL);
 #endif /* CONFIG_MTK_LOW_BATTERY_POWER_THROTTLING */
 
-#if IS_ENABLED(CONFIG_MTK_BATTERY_OC_POWER_THROTTLING)
+#if IS_ENABLED(CONFIG_MTK_BATTERY_OC_POWER_THROTTLING) && \
+	!IS_ENABLED(CONFIG_MTK_GPU_MT6893_SUPPORT)
 	register_battery_oc_notify(&gpufreq_batt_oc_callback, BATTERY_OC_PRIO_GPU, NULL);
 #endif /* CONFIG_MTK_BATTERY_OC_POWER_THROTTLING */
 
