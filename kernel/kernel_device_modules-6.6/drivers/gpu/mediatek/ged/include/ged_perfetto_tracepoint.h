@@ -39,7 +39,15 @@ TRACE_EVENT(oplus_tracing_mark_write,
 
 /* This part must be outside protection */
 #undef TRACE_INCLUDE_PATH
-#define TRACE_INCLUDE_PATH ../../drivers/gpu/mediatek/ged/include
+/*
+ * op6893 6.6 GKI mixed build: srctree is the common kernel, not the device
+ * modules tree, so the original "../../drivers/gpu/mediatek/ged/include" (which
+ * is resolved relative to $(srctree)/include/trace/define_trace.h) points into
+ * the wrong tree and the header is not found.  Use "." like ged_tracepoint.h in
+ * this same directory -- the ged build already puts ged/include on the -I path,
+ * so define_trace.h finds the header there.
+ */
+#define TRACE_INCLUDE_PATH .
 #undef TRACE_INCLUDE_FILE
 #define TRACE_INCLUDE_FILE ged_perfetto_tracepoint
 #include <trace/define_trace.h>
