@@ -41,7 +41,27 @@
 #else
 #define MAX_CRTC 4
 #endif
-#define OVL_LAYER_NR 15L
+/*
+ * op6893: 12, not the 15 the 6.6 tree uses for arm64.
+ *
+ * MTK_PLANE_INPUT_LAYER_COUNT is OVL_LAYER_NR, so this is the number of DRM
+ * planes the primary CRTC exposes.  The 4.19 tree the stock HWC blob was built
+ * against had 12 here, and PRIMARY_SESSION_INPUT_LAYER_COUNT in
+ * mtk_layering_rule_base.h documented the split as phy(4+2) + ext(3+3); 6.6
+ * widened both to 15 with the comment "phy(12) + ext(3) in MT6989", i.e. for a
+ * newer SoC.  Same shape of problem as HRT_DISP_TYPE_NUM.
+ *
+ * With 15, the blob's layer_id space and the kernel's plane indices disagree:
+ * it called DRM_IOCTL_MTK_GEM_SUBMIT for layer_id 1..3 -- which makes
+ * mtk_fence_prepare_buf() hand out release fences on those timelines -- while
+ * only plane 0 ever reached mtk_drm_crtc_plane_update(), so
+ * DISP_SLOT_CUR_CONFIG_FENCE(1..3) stayed 0 and
+ * mtk_crtc_release_input_layer_fence() never advanced them.  GED then span in
+ * dequeueBuffer on "-P_0_1-" forever, which wedged ColorFade's eglSwapBuffers,
+ * blocked PowerManagerService for 70 s and got system_server watchdog-killed
+ * on a loop.
+ */
+#define OVL_LAYER_NR 12L
 #define MAX_LAYER_NR 20
 #else
 #define MAX_CRTC 3

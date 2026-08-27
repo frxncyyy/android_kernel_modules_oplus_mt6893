@@ -724,8 +724,40 @@ static void mtk_plane_atomic_update(struct drm_plane *plane,
 	if (mtk_plane_state->pending.enable)
 		atomic_set(&mtk_crtc->already_config, 1);
 
+	/*
+	 * op6893: bound the RGB332 skip the way 4.19 did.
+	 *
+	 * RGB332 is the marker format HWC uses to ask the kernel to skip a plane
+	 * update ("workaround for skip plane update when hwc set crtc"); it is in
+	 * the plane's format list purely for that.  The 4.19 tree the stock blob
+	 * was built against only honoured it for the first few commits on crtc0:
+	 *
+	 *	if (cnt <= 5) { cnt++;
+	 *		if (fmt == RGB332 && drm_crtc_index(crtc) == 0)
+	 *			skip_update = 1; }
+	 *
+	 * 6.6 dropped the bound and skips unconditionally, forever.  That also
+	 * bypasses mtk_drm_crtc_plane_update()'s cmdq_pkt_write() of
+	 * DISP_SLOT_CUR_CONFIG_FENCE, so every release fence userspace obtained
+	 * for such a layer through DRM_IOCTL_MTK_GEM_SUBMIT leaks:
+	 * mtk_crtc_release_input_layer_fence() keeps reading 0 from the slot and
+	 * mtk_release_fence() bails out at "num_fence <= 0".  GED then spins in
+	 * dequeueBuffer on "-P_0_1-" a second per try forever, which wedges
+	 * ColorFade's eglSwapBuffers, blocks PowerManagerService for 70 s, and
+	 * gets system_server watchdog-killed on a ~200 s loop -- the black screen
+	 * with a bootanimation flash every few seconds.
+	 */
+	{
+		static int cnt;
+
+		if (cnt <= 5) {
+			cnt++;
+			if (mtk_plane_state->pending.format == DRM_FORMAT_RGB332 &&
+			    crtc_index == 0)
+				skip_update = 1;
+		}
+	}
 	if (mtk_plane_state->pending.format == DRM_FORMAT_RGB332) {
-		skip_update = 1;
 		/* workaround for skip plane update and trigger hwc set crtc in discrete*/
 		if (mtk_crtc->path_data->is_discrete_path) {
 			mtk_crtc->skip_frame = true;

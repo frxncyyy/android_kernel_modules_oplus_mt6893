@@ -24,7 +24,10 @@
 /* move to Platform dependent part? */
 #define TOTAL_OVL_LAYER_NUM (4 + 3 + 2 + 3)
 
-#define PRIMARY_SESSION_INPUT_LAYER_COUNT (15) /* phy(12) + ext(3) in MT6989 */
+/* op6893: 12 -- phy(4+2) + ext(3+3), as on 4.19.  See OVL_LAYER_NR in
+ * mtk_drm_crtc.h; 6.6's 15 is "phy(12) + ext(3) in MT6989", a newer SoC.
+ */
+#define PRIMARY_SESSION_INPUT_LAYER_COUNT (12)
 #define EXTERNAL_SESSION_INPUT_LAYER_COUNT                                     \
 	(2 /*2+3*/) /* 2 is enough, no need ext layer */
 /* ***************************************** */
