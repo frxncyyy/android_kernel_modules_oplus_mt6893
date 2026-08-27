@@ -598,6 +598,24 @@ enum MTK_DISP_CAPS {
 	MTK_NEED_REPAINT       = 0x00000004,
 };
 
+/*
+ * op6893 6.6 bring-up: the layout of this struct and of drm_mtk_layering_info
+ * below is an ABI contract with the *stock* HWC blob
+ * (/vendor/lib64/hw/hwcomposer.mt6893.so), which was built against the 4.19
+ * headers and cannot be rebuilt.  A field inserted ahead of an existing one
+ * moves that field for the blob as well.
+ *
+ * buffer_alloc_id is 6.6-only, and being a __u64 it also pushes sizeof() from
+ * 60 to 72.  _copy_layer_info_from_disp() copies
+ * "sizeof(struct drm_mtk_layer_config) * layer_num" in a single
+ * copy_from_user(), so a stride mismatch garbles every layer past index 0 --
+ * the same failure mode as the Mali base_jd_atom frame_nr stride.  compress and
+ * secure leave only 2 spare bytes of tail padding, so there is nowhere to hide
+ * a __u64: the field is dropped here and MTK_LAYER_BUFFER_ALLOC_ID() in
+ * mtk_layering_rule_base.h yields 0 in its place.  Outside of two debug prints
+ * its only readers are under LYE_OPT_OVL_BW_MONITOR, which mtk_drm_helper.c
+ * defaults to off on this platform.
+ */
 struct drm_mtk_layer_config {
 	__u32 ovl_id;
 	__u32 src_fmt;
@@ -609,7 +627,6 @@ struct drm_mtk_layer_config {
 	__u32 src_width, src_height;
 	__u32 layer_caps;
 	__u32 clip; /* drv internal use */
-	__u64 buffer_alloc_id;
 	__u8 compress;
 	__u8 secure;
 };
@@ -632,8 +649,6 @@ struct drm_mtk_layering_info {
 	int layer_num[LYE_CRTC];
 	int gles_head[LYE_CRTC];
 	int gles_tail[LYE_CRTC];
-	__u32 disp_caps[LYE_CRTC];
-	__u32 frame_idx[LYE_CRTC];
 	int hrt_num;
 	__u32 disp_idx;
 	__u32 disp_list;
@@ -642,6 +657,26 @@ struct drm_mtk_layering_info {
 	__u32 hrt_weight;
 	__u32 hrt_idx;
 	struct mml_frame_info *mml_cfg[LYE_CRTC];
+	/*
+	 * op6893: everything below is 6.6-only and MUST stay at the end -- see
+	 * the comment on drm_mtk_layer_config.  disp_caps and frame_idx used to
+	 * sit between gles_tail and hrt_num, which pushed hrt_num, disp_idx,
+	 * disp_list, res_idx, hrt_weight, hrt_idx and mml_cfg 32 bytes down for
+	 * the stock blob.  The kernel then read the blob's disp_list out of
+	 * disp_caps as 0 and went on to validate a display userspace never
+	 * populated ("[HRT] gles invalid, disp:3, head:0, tail:0", then
+	 * "layering_rule_start error:-14"), and HWC dereferenced NULL in
+	 * setupHwcLayers() on the way back out.
+	 *
+	 * Keeping them here is safe because drm_ioctl() sizes its buffer with
+	 * the kernel's sizeof and zero-fills whatever the shorter userspace
+	 * struct did not carry (drm_ioctl.c, "if (ksize > in_size)"), while
+	 * copying back only the userspace size.  So with the old blob these read
+	 * 0 and the driver's writes to them are discarded.  frame_idx reading 0
+	 * is what MTK's own BWM/GPUC gates already test for ("&& frame_idx").
+	 */
+	__u32 disp_caps[LYE_CRTC];
+	__u32 frame_idx[LYE_CRTC];
 	struct wb_frame_info wb_cfg[LYE_CRTC];
 	__u32 exec_reserved_time;
 };

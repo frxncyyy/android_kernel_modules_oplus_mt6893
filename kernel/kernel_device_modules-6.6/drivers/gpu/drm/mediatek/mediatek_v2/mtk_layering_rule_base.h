@@ -32,6 +32,16 @@
 #define PRIMARY_OVL_LAYER_NUM PRIMARY_SESSION_INPUT_LAYER_COUNT
 #define SECONDARY_OVL_LAYER_NUM EXTERNAL_SESSION_INPUT_LAYER_COUNT
 
+/*
+ * op6893: struct drm_mtk_layer_config has no buffer_alloc_id -- it would change
+ * sizeof(), and that struct's size is the array stride the stock 4.19-era HWC
+ * blob writes with.  See the comment on the struct in
+ * <uapi/drm/mediatek_drm.h>.  Every non-debug reader is under
+ * LYE_OPT_OVL_BW_MONITOR, which is off on this platform, so 0 keeps the
+ * BWM/GPUC compression-ratio lookups missing rather than wrong.
+ */
+#define MTK_LAYER_BUFFER_ALLOC_ID(layer_info) ((__u64)0)
+
 /* #define HRT_DEBUG_LEVEL1 */
 /* #define HRT_DEBUG_LEVEL2 */
 /* #define HRT_UT_DEBUG */

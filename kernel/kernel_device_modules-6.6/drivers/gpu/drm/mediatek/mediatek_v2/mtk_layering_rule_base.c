@@ -574,7 +574,7 @@ static void dump_disp_info(struct drm_mtk_layering_info *disp_info,
 				       layer_info->compress,
 				       layer_info->secure,
 				       disp_info->frame_idx[i],
-				       layer_info->buffer_alloc_id);
+				       MTK_LAYER_BUFFER_ALLOC_ID(layer_info));
 			}
 		}
 	} else {
@@ -639,7 +639,7 @@ static void dump_disp_info(struct drm_mtk_layering_info *disp_info,
 					layer_info->compress,
 					layer_info->secure,
 					disp_info->frame_idx[i],
-					layer_info->buffer_alloc_id);
+					MTK_LAYER_BUFFER_ALLOC_ID(layer_info));
 
 			}
 		}
@@ -1823,7 +1823,7 @@ static int get_layer_weight(struct drm_device *dev, int disp_idx,
 	if (get_layering_opt(LYE_OPT_OVL_BW_MONITOR) && frame_idx &&
 		(disp_idx == HRT_PRIMARY) && layer_info && layer_info->compress &&
 		(layer_info->layer_caps & MTK_HWC_UNCHANGED_LAYER)) {
-		uint64_t key_value = frame_idx + layer_info->buffer_alloc_id -
+		uint64_t key_value = frame_idx + MTK_LAYER_BUFFER_ALLOC_ID(layer_info) -
 			BWM_GPUC_TUNING_FRAME;
 		int i = 0;
 
@@ -1834,7 +1834,7 @@ static int get_layer_weight(struct drm_device *dev, int disp_idx,
 #endif
 		for (i = 0; i < MAX_LAYER_RATIO_NUMBER; i++) {
 			if ((unchanged_compress_ratio_table[i].key_value
-				== layer_info->buffer_alloc_id) &&
+				== MTK_LAYER_BUFFER_ALLOC_ID(layer_info)) &&
 				(unchanged_compress_ratio_table[i].valid == 1) &&
 				(unchanged_compress_ratio_table[i].peak_ratio != 0)) {
 				unsigned int index = 0;
@@ -1860,7 +1860,7 @@ static int get_layer_weight(struct drm_device *dev, int disp_idx,
 
 				do_div(weight, 1000);
 				DDPDBG_BWM("BWM: unchgd f_idx:%u allocid:%llu ratio:%u weight:%lu\n",
-					frame_idx, layer_info->buffer_alloc_id,
+					frame_idx, MTK_LAYER_BUFFER_ALLOC_ID(layer_info),
 					peak_ratio, weight);
 
 				/* Just from emi efficency table to find level index */
@@ -1906,7 +1906,7 @@ static int get_layer_weight(struct drm_device *dev, int disp_idx,
 
 				do_div(weight, 1000);
 				DDPDBG_BWM("BWM:fidx:%u allocid:%llu key:%llu ratio:%u weight:%lu\n",
-					frame_idx, layer_info->buffer_alloc_id, key_value,
+					frame_idx, MTK_LAYER_BUFFER_ALLOC_ID(layer_info), key_value,
 					peak_ratio, weight);
 
 				index = (peak_ratio * 256) / (1000 * 16);
@@ -3797,7 +3797,17 @@ _copy_layer_info_from_disp(struct drm_mtk_layering_info *disp_info_user,
 					layer_size);
 			return -EFAULT;
 		}
-		if (copy_from_user(l_info->mml_cfg[disp_idx],
+		/*
+		 * mml_cfg is optional.  op6893 runs the stock 4.19-era HWC blob,
+		 * and 4.19's uapi header only forward-declares struct
+		 * mml_frame_info -- userspace cannot size it, the 4.19 kernel
+		 * never reads it, and the blob leaves the pointer NULL.  Copying
+		 * from it unconditionally turned every layering_rule ioctl into
+		 * -EFAULT.  vzalloc() above already left the buffer zeroed, which
+		 * is what "no MML" means.
+		 */
+		if (disp_info_user->mml_cfg[disp_idx] &&
+		    copy_from_user(l_info->mml_cfg[disp_idx],
 				   disp_info_user->mml_cfg[disp_idx],
 				   mml_cfg_size)) {
 			DDPMSG("%s:%d copy failed:(0x%p,0x%p), size:%ld\n",
@@ -5610,8 +5620,6 @@ struct drm_mtk_layering_info_32 {
 	int layer_num[LYE_CRTC];
 	int gles_head[LYE_CRTC];
 	int gles_tail[LYE_CRTC];
-	uint32_t disp_caps[LYE_CRTC];
-	uint32_t frame_idx[LYE_CRTC];
 	int hrt_num;
 	uint32_t disp_idx;
 	uint32_t disp_list;
@@ -5620,6 +5628,9 @@ struct drm_mtk_layering_info_32 {
 	uint32_t hrt_weight;
 	uint32_t hrt_idx;
 	compat_uptr_t mml_cfg[LYE_CRTC];
+	/* 6.6-only, kept last to mirror struct drm_mtk_layering_info */
+	uint32_t disp_caps[LYE_CRTC];
+	uint32_t frame_idx[LYE_CRTC];
 };
 
 int mtk_layering_rule_ioctl_compat(struct file *file, unsigned int cmd,
