@@ -2528,6 +2528,15 @@ static int tscpu_thermal_probe(struct platform_device *dev)
 		return 0;
 
 	therm_main = devm_clk_get(&dev->dev, "lvts_clk");
+	if (IS_ERR(therm_main)) {
+		/* op6893 6.6 bring-up: the stock 4.19 DT names this clock
+		 * "therm-main" on therm_ctrl@1100b000, which is also what the
+		 * 4.19 driver asks for (mtk_ts_cpu_noBank.c:2691 in the 4.19
+		 * tree).  Without the fallback probe fails -ENOENT right after
+		 * mapping the controller and LVTS is never initialised.
+		 */
+		therm_main = devm_clk_get(&dev->dev, "therm-main");
+	}
 
 	if (IS_ERR(therm_main)) {
 		tscpu_printk("cannot get thermal clock.\n");

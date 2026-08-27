@@ -398,7 +398,7 @@ extern int temp_dUART;
 
 extern int tscpu_sspm_thermal_throttle;
 extern int tscpu_debug_log;
-extern const struct of_device_id mt_thermal_of_match[2];
+extern const struct of_device_id mt_thermal_of_match[3];
 #if !defined(CFG_THERM_NO_AUXADC)
 extern struct thermal_controller tscpu_g_tc[THERMAL_CONTROLLER_NUM];
 #endif

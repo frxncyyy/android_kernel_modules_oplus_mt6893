@@ -1001,6 +1001,20 @@ int get_io_reg_base(void)
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mt6893-lvts");
 	//node = of_find_node_by_name(NULL, "therm_ctrl");;
+	if (!node) {
+		/* op6893 6.6 bring-up: the stock 4.19 DT we boot describes the
+		 * thermal controller the old way -- therm_ctrl@1100b000 with
+		 * compatible "mediatek,therm_ctrl" (which is what the 4.19
+		 * driver looks up, see the commented-out line above and
+		 * mt6873/src/mtk_tc_wrapper.c in the 4.19 tree).  It carries the
+		 * same reg base and the same two interrupts, so nothing else in
+		 * here has to change.  Without it thermal_base stays NULL, every
+		 * LVTS raw read returns 0, tscpu_is_temp_valid() never goes true
+		 * and mtktscpu is never registered -- which is the zone the
+		 * product thermal HAL needs most.
+		 */
+		node = of_find_compatible_node(NULL, NULL, "mediatek,therm_ctrl");
+	}
 	WARN_ON_ONCE(node == 0);
 	if (node) {
 		/* Setup IO addresses */
@@ -1041,6 +1055,18 @@ int get_io_reg_base(void)
 
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mt6765-auxadc");
+	if (!node) {
+		/* op6893 6.6 bring-up: the stock 4.19 DT spells the AUXADC
+		 * auxadc@11001000 / "mediatek,mt6768-auxadc"; this driver only
+		 * asks for the mt6765 spelling.  The failure is fatal, not
+		 * cosmetic: the of_property_read_u32_index() below returns an
+		 * error on a NULL node and get_io_reg_base() bails out with 0,
+		 * so tscpu_thermal_probe() aborts right after having found the
+		 * thermal controller, and LVTS is never initialised.
+		 */
+		node = of_find_compatible_node(NULL, NULL,
+						"mediatek,mt6768-auxadc");
+	}
 	WARN_ON_ONCE(node == 0);
 	if (node) {
 		/* Setup IO addresses */

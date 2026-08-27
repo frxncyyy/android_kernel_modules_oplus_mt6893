@@ -72,8 +72,19 @@ int tscpu_next_fp_factor = 1;
 int tscpu_debug_log;
 int tscpu_sspm_thermal_throttle;
  #if IS_ENABLED(CONFIG_OF)
-const struct of_device_id mt_thermal_of_match[2] = {
+const struct of_device_id mt_thermal_of_match[3] = {
 	{.compatible = "mediatek,mt6893-lvts",},
+	/* op6893 6.6 bring-up: the stock 4.19 DT we boot names the thermal
+	 * controller therm_ctrl@1100b000 with compatible "mediatek,therm_ctrl"
+	 * -- same reg base, same two interrupts, same lvts_clk.  That is what
+	 * the 4.19 driver matches (mt6873/src/mtk_tc_wrapper.c in the 4.19
+	 * tree).  Without this entry tscpu_thermal_probe() never runs, so
+	 * get_io_reg_base() is never called, thermal_base stays NULL, every
+	 * LVTS raw read is 0, tscpu_is_temp_valid() never turns true, and
+	 * mtktscpu -- the zone the product thermal HAL depends on most -- is
+	 * never registered.
+	 */
+	{.compatible = "mediatek,therm_ctrl",},
 	{},
 };
 #endif
