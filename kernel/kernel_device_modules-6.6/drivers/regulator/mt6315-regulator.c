@@ -388,8 +388,31 @@ static int mt6315_regulator_probe(struct platform_device *pdev)
 		snprintf(regulator_node_name, sizeof(regulator_node_name),
 			 "%d-%s", chip->slave_id, tmp);
 		np = of_find_node_by_name(dev->parent->of_node, regulator_node_name);
+		/*
+		 * op6893 6.6 bring-up: the stock 4.19 boot DT names the child
+		 * regulator nodes with an underscore separator ("7_vbuck1")
+		 * instead of the hyphen the 6.6 driver builds ("7-vbuck1"), so
+		 * the lookup misses and the VGPU rail (mt6315@7 vbuck1) never
+		 * registers -> gpufreq -517 on regulator_get(_vgpu).  Fall back
+		 * to the underscore spelling.
+		 */
+		if (!np) {
+			char alt[20] = {0};
+
+			snprintf(alt, sizeof(alt), "%d_%s", chip->slave_id, tmp);
+			np = of_find_node_by_name(dev->parent->of_node, alt);
+		}
 		/* Will not register nodes which are not defined in DTS file */
 		if (np) {
+			/*
+			 * op6893 6.6 bring-up: bind the regulator to its DT node so
+			 * that phandle supply lookups (e.g. gpufreq's _vgpu-supply ->
+			 * 7_vbuck1) resolve instead of returning -EPROBE_DEFER, and so
+			 * the regulator constraints in that node are parsed.  The
+			 * stock driver left config.of_node NULL, which made
+			 * regulator_get(_vgpu) fail with -517 and abort gpufreq probe.
+			 */
+			config.of_node = np;
 			rdev = devm_regulator_register(dev, &(mt6315_regulators + i)->desc, &config);
 			if (IS_ERR(rdev)) {
 				dev_notice(dev, "failed to register %s\n", (mt6315_regulators + i)->desc.name);
