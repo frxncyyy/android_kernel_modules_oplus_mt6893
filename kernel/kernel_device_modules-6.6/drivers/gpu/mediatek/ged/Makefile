@@ -27,7 +27,20 @@ ccflags-y += -DMTK_GPUFREQ_V2
 ccflags-y += -DMTK_GED_KPI
 ccflags-y += -DMET_USER_EVENT_SUPPORT -DMTK_GPU_DVFS
 ccflags-y += -DGED_DVFS_DEBUG_BUF
+
+# op6893 6.6 bring-up: the GPU bandwidth monitor (src/ged_gpu_bm.c, plus its two
+# call sites in ged_kpi.c) reaches SSPM through mtk_gpu_qos, so enabling it makes
+# ged.ko depend on MTKGPUQoS_setup/MTKGPUQoS_mode and sspm_reserve_mem_get_*.
+# mtk_gpu_qos in turn needs qos_ipi_to_sspm_command from drivers/misc/mediatek/qos,
+# and that whole SSPM IPI path is not brought up on this board -- so ged.ko cannot
+# be loaded at all.  GED itself is required (gralloc needs /proc/ged to hand back
+# GPU-writeable buffers), while GPU BM is bandwidth telemetry that nothing in the
+# display or composition path consumes.  Compile the feature out on MT6893, the
+# same way MTK_GPU_EB_SUPPORT below is kept off the SoCs that have no GPUEB.
+ifeq ($(filter y m,$(CONFIG_MTK_GPU_MT6893_SUPPORT)),)
 ccflags-y += -DMTK_GPU_BM_2
+endif
+
 ccflags-y += -DCONFIG_MTK_GPU_FW_IDLE
 ccflags-y += -DCONFIG_MTK_GPU_APO_SUPPORT
 ccflags-y += -DCONFIG_MTK_GPU_POWER_ON_OFF_TEST
