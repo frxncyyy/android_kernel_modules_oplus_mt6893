@@ -17,7 +17,7 @@
 #include <ged_dvfs.h>
 #include <mtk_gpufreq.h>
 #include <mtk_gpu_utility.h>
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
+#if 0 /* op6893 6.6 bring-up: AEE gpu-dvfs-status recorder (aee_rr_*_gpu_dvfs_status from mboot_params.c) unavailable; CONFIG_MTK_AEE_AED off so mrdump.ko cannot load and the reference blocks mali_kbase insmod. Re-enable with the AEE stack. */ && IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
 #include <mboot_params.h>
 #endif
 #if IS_ENABLED(CONFIG_MTK_GPU_SWPM_SUPPORT)
@@ -54,7 +54,7 @@ enum gpu_dvfs_status_step {
 
 static inline void gpu_dvfs_status_footprint(enum gpu_dvfs_status_step step)
 {
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
+#if 0 /* op6893 6.6 bring-up: AEE gpu-dvfs-status recorder (aee_rr_*_gpu_dvfs_status from mboot_params.c) unavailable; CONFIG_MTK_AEE_AED off so mrdump.ko cannot load and the reference blocks mali_kbase insmod. Re-enable with the AEE stack. */ && IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
 	aee_rr_rec_gpu_dvfs_status(step |
 				(aee_rr_curr_gpu_dvfs_status() & 0xF0));
 #endif
@@ -62,7 +62,7 @@ static inline void gpu_dvfs_status_footprint(enum gpu_dvfs_status_step step)
 
 static inline void gpu_dvfs_status_reset_footprint(void)
 {
-#if IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
+#if 0 /* op6893 6.6 bring-up: AEE gpu-dvfs-status recorder (aee_rr_*_gpu_dvfs_status from mboot_params.c) unavailable; CONFIG_MTK_AEE_AED off so mrdump.ko cannot load and the reference blocks mali_kbase insmod. Re-enable with the AEE stack. */ && IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
 	aee_rr_rec_gpu_dvfs_status(0);
 #endif
 }
