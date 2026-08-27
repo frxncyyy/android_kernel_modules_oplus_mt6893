@@ -12,6 +12,7 @@
 #include <linux/file.h>
 #include <linux/sched/clock.h>
 #include <linux/sync_file.h>
+#include <linux/ratelimit.h>
 
 #include <uapi/drm/mediatek_drm.h>
 
@@ -433,6 +434,30 @@ void mtk_release_fence(unsigned int session_id, unsigned int layer_id,
 			mtk_fence_session_mode_spy(session_id),
 			layer_id, 0);
 	} else {
+		/*
+		 * op6893 bring-up instrumentation (grep LFDBG).  This is the
+		 * silent path for *input layer* release fences -- the ones
+		 * GED's dequeueBuffer actually blocks on (timeline id is the
+		 * layer id, so they show up as "-P_0_0-"/"-P_0_1-" in its
+		 * "didn't signal" complaints, as opposed to the present fence
+		 * on timeline 16 which PFDBG already showed to be healthy).
+		 * Rate limited; remove once the root cause is fixed.
+		 */
+		static DEFINE_RATELIMIT_STATE(lfdbg_stall_rs, HZ, 3);
+
+		/*
+		 * Only complain when fences are actually outstanding.  Looping
+		 * over every layer up to layer_nr and calling us with 0 for the
+		 * unused ones is normal, and it drowned the interesting case:
+		 * issued (fence_idx) ahead of released (timeline_idx) is the
+		 * precise definition of a leaked release fence.
+		 */
+		if (layer_info->fence_idx > (unsigned int)layer_info->timeline_idx &&
+		    __ratelimit(&lfdbg_stall_rs))
+			DDPPR_ERR("LFDBG leak session:0x%x L%u want:%d released:%d issued:%u\n",
+				  session_id, layer_id, fence,
+				  layer_info->timeline_idx,
+				  layer_info->fence_idx);
 		mutex_unlock(&layer_info->sync_lock);
 		return;
 	}
@@ -538,8 +563,27 @@ int mtk_release_present_fence(unsigned int session_id, unsigned int fence_idx, k
 
 	fence_increment = fence_idx - layer_info->timeline->value;
 
-	if (fence_increment <= 0)
+	if (fence_increment <= 0) {
+		/*
+		 * op6893 bring-up instrumentation (grep PFDBG).  This is the
+		 * silent path that leaves mtk_sync present fences unsignalled:
+		 * userspace then blocks forever in dequeueBuffer waiting on a
+		 * release fence, which is what wedges ColorFade's
+		 * eglSwapBuffers and gets system_server killed by the watchdog.
+		 * Printing idx vs the timeline value distinguishes "the GCE
+		 * backup slot never got a fence index" (idx stays 0) from
+		 * "we are simply being called again for an index already
+		 * released" (increment exactly 0).  Rate limited because this
+		 * runs per frame.  Remove once the root cause is fixed.
+		 */
+		static DEFINE_RATELIMIT_STATE(pfdbg_stall_rs, HZ, 3);
+
+		if (__ratelimit(&pfdbg_stall_rs))
+			DDPPR_ERR("PFDBG stall session:0x%x tl:%u idx:%u tlval:%u\n",
+				  session_id, timeline_id, fence_idx,
+				  layer_info->timeline->value);
 		goto done;
+	}
 
 	if (fence_increment >= 2)
 		DDPFENCE("Warning, R/%s%d/L%d/timeline idx:%d/fence:%d\n",
@@ -831,6 +875,22 @@ struct mtk_fence_buf_info *mtk_fence_prepare_buf(struct drm_device *dev,
 	data.fence = MTK_INVALID_FENCE_FD;
 	data.value = ++(layer_info->fence_idx);
 	mutex_unlock(&(layer_info->sync_lock));
+
+	/*
+	 * op6893 bring-up instrumentation (grep GSDBG) -- remove later.  This is
+	 * the DRM_IOCTL_MTK_GEM_SUBMIT path: userspace picks buf->layer_id and we
+	 * hand it a release fence on that layer's timeline.  Printing the layer
+	 * ids that actually come in settles whether the dangling fences on
+	 * "-P_0_1-".."-P_0_3-" are still being issued or are leftovers from an
+	 * earlier phase of boot.
+	 */
+	{
+		static DEFINE_RATELIMIT_STATE(gsdbg_rs, HZ, 6);
+
+		if (__ratelimit(&gsdbg_rs))
+			DDPPR_ERR("GSDBG submit session:0x%x L%u val:%u\n",
+				  session_id, timeline_id, data.value);
+	}
 
 	if (layer_info->timeline) {
 		if (is_implicit)
