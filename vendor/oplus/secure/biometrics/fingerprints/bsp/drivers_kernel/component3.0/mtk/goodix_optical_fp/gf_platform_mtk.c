@@ -111,8 +111,16 @@ void gf_cleanup_pwr_list(struct gf_dev* gf_dev) {
     pr_info("%s cleanup power list", __func__);
     for (index = 0; index < gf_dev->power_num; index++) {
         if (gf_dev->pwr_list[index].pwr_type == FP_POWER_MODE_GPIO) {
-            if (gpio_is_valid(gf_dev->irq_gpio)) {
+            /*
+             * op6893: this tested irq_gpio while freeing pwr_gpio.  On a board
+             * whose power source really is a GPIO that frees a descriptor this
+             * driver may never have requested -- same module_put underflow as
+             * in gf_cleanup().  Test the GPIO being freed, and clear it so a
+             * second pass does nothing.
+             */
+            if (gpio_is_valid(gf_dev->pwr_list[index].pwr_gpio)) {
                 gpio_free(gf_dev->pwr_list[index].pwr_gpio);
+                gf_dev->pwr_list[index].pwr_gpio = -EINVAL;
                 pr_info("remove pwr_gpio success\n");
             }
         }
@@ -444,23 +452,50 @@ int gf_parse_dts(struct gf_dev* gf_dev)
 	return 0;
 }
 
+/*
+ * op6893: this has to be idempotent.  It is reached both from an ioctl and
+ * from gf_release(), and gpio_is_valid() only says the *number* is in range --
+ * it says nothing about whether we still hold the GPIO.  Leaving the numbers
+ * in place after freeing them meant a second call freed them again, and
+ * gpiod_free() does a module_put() on the gpiochip's owner every time:
+ *
+ *   Call trace:
+ *     module_put+0x6c/0x12c
+ *     gpiod_free+0x28/0x40
+ *     gpio_free+0x14/0x24
+ *     gf_cleanup+0x84/0xc0 [gf_tee]
+ *     gf_release+0x94/0x9c [gf_tee]
+ *
+ * Two of those underflowed pinctrl_mt6885's refcount to zero.  That is not a
+ * fingerprint-local problem: gpiod_request() takes try_module_get() on the
+ * same owner and returns -EPROBE_DEFER when it fails, so from then on *every*
+ * gpio_request() against that chip fails, for every driver on the SoC.  The
+ * symptom we chased was the next open() reporting
+ * "Failed to request RESET GPIO. rc = -517".
+ *
+ * Clearing each number as it is released makes the second pass a no-op.
+ */
 void gf_cleanup(struct gf_dev* gf_dev)
 {
 	pr_info("[info] %s\n",__func__);
 	if (gpio_is_valid(gf_dev->irq_gpio))
 	{
 		gpio_free(gf_dev->irq_gpio);
+		gf_dev->irq_gpio = -EINVAL;
 		pr_info("remove irq_gpio success\n");
 	}
 	if (gpio_is_valid(gf_dev->cs_gpio)) {
 		gpio_set_value(gf_dev->cs_gpio, 0);
 		gpio_free(gf_dev->cs_gpio);
+		gf_dev->cs_gpio = -EINVAL;
+		gf_dev->cs_gpio_set = false;
 		pr_info("remove cs_gpio success\n");
 	}
 	if (gpio_is_valid(gf_dev->reset_gpio))
 	{
 		gpio_set_value(gf_dev->reset_gpio, 0);
 		gpio_free(gf_dev->reset_gpio);
+		gf_dev->reset_gpio = -EINVAL;
 		pr_info("remove reset_gpio success\n");
 	}
 

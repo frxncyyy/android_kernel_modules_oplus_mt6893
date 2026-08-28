@@ -783,6 +783,21 @@ static int gf_open(struct inode *inode, struct file *filp)
 err_irq:
     gf_cleanup(gf_dev);
 err_parse_dt:
+    /*
+     * op6893: both error paths used to return with device_list_lock still
+     * held, so the first failed open() wedged the mutex permanently and every
+     * later open() slept on it forever in D state:
+     *
+     *   [<0>] gf_open+0x28/0x158 [gf_tee]
+     *   [<0>] chrdev_open+0x1b8/0x258
+     *
+     * That is what turned a recoverable probe failure into a fingerprint HAL
+     * that could never be restarted.  Undo the ++ as well, or the device is
+     * left looking permanently open and a later open() skips setup entirely.
+     */
+    gf_dev->users--;
+    filp->private_data = NULL;
+    mutex_unlock(&device_list_lock);
     return status;
 }
 
