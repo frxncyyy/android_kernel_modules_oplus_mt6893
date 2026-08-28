@@ -130,7 +130,7 @@ struct mtk_spi {
     u32 tx_sgl_len, rx_sgl_len;
     const struct mtk_spi_compatible *dev_comp;
 };
-#else
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
 struct mtk_spi {
 	void __iomem *base;
 	u32 state;
@@ -143,6 +143,45 @@ struct mtk_spi {
 	struct scatterlist *tx_sgl, *rx_sgl;
 	u32 tx_sgl_len, rx_sgl_len;
 	const struct mtk_spi_compatible *dev_comp;
+};
+#else
+/*
+ * op6893: mirror of the private struct in drivers/spi/spi-mt65xx.c.  It is not
+ * in any header, so this driver keeps a copy and reads gf_ms->spi_clk out of
+ * the master's drvdata -- which only works while the two agree on the layout.
+ *
+ * The pre-5.15 copy above happens to put spi_clk at the same offset (40) as
+ * 6.6 does, so it would have "worked", but the very next member diverges:
+ * 6.6 has bool no_need_unprepare where the old one has struct clk *spare_clk.
+ * Anything added before spi_clk later would break silently, so the 6.6 layout
+ * is spelled out in full rather than left to coincidence.
+ */
+struct mtk_spi {
+	void __iomem *base;
+	u32 state;
+	int pad_num;
+	u32 *pad_sel;
+	struct clk *parent_clk, *sel_clk, *spi_clk;
+	bool no_need_unprepare;
+	struct spi_transfer *cur_transfer;
+	u32 xfer_len;
+	u32 num_xfered;
+	struct scatterlist *tx_sgl, *rx_sgl;
+	u32 tx_sgl_len, rx_sgl_len;
+	const struct mtk_spi_compatible *dev_comp;
+	u32 spi_clk_hz;
+	struct completion spimem_done;
+	u32 auto_suspend_delay;
+	bool suspend_delay_update;
+	bool use_spimem;
+	struct device *dev;
+	dma_addr_t tx_dma;
+	dma_addr_t rx_dma;
+	int irq;
+	u32 reset_bit;
+	bool err_occur;
+	spinlock_t eh_spi_lock;
+	bool dma_en;
 };
 #endif
 
@@ -501,14 +540,14 @@ static void gf_kernel_key_input(struct gf_dev *gf_dev, struct gf_key *gf_key)
 	}
 }
 
-static void gf_auto_send_touchdown()
+static void gf_auto_send_touchdown(void)
 {
     struct fp_underscreen_info tp_info;
     tp_info.touch_state = 1;
     gf_opticalfp_irq_handler(&tp_info);
 }
 
-static void gf_auto_send_touchup()
+static void gf_auto_send_touchup(void)
 {
     struct fp_underscreen_info tp_info;
     tp_info.touch_state = 0;
@@ -1026,10 +1065,23 @@ error_hw:
 	return status;
 }
 
+/*
+ * op6893: spi_driver::remove returns void since 5.18 (a0386bba7093 "spi: make
+ * remove callback a void function").  platform_driver::remove still returns
+ * int in 6.6, so only the SPI build needs the new signature.
+ */
+#if defined(USE_SPI_BUS) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
+#define GF_REMOVE_TYPE	void
+#define GF_REMOVE_RET
+#else
+#define GF_REMOVE_TYPE	int
+#define GF_REMOVE_RET	0
+#endif
+
 #if defined(USE_SPI_BUS)
-static int gf_remove(struct spi_device *spi)
+static GF_REMOVE_TYPE gf_remove(struct spi_device *spi)
 #elif defined(USE_PLATFORM_BUS)
-static int gf_remove(struct platform_device *pdev)
+static GF_REMOVE_TYPE gf_remove(struct platform_device *pdev)
 #endif
 {
 	struct gf_dev *gf_dev = &gf;
@@ -1052,10 +1104,21 @@ static int gf_remove(struct platform_device *pdev)
 		gf_cleanup(gf_dev);
 
 
+	/*
+	 * op6893: mirror the registration in gf_probe().  Upstream left this
+	 * call unguarded, which does not link on a GKI build -- CONFIG_FB is
+	 * off, so there is no fb_unregister_client at all.
+	 */
+#if defined(CONFIG_OPLUS_FINGERPRINT_GKI_ENABLE)
+#if defined(CONFIG_DRM_MEDIATEK_V2)
+	mtk_disp_notifier_unregister(&gf_dev->notifier);
+#endif
+#else
 	fb_unregister_client(&gf_dev->notifier);
+#endif
 	mutex_unlock(&device_list_lock);
 
-	return 0;
+	return GF_REMOVE_RET;
 }
 
 static struct of_device_id gx_match_table[] = {
@@ -1108,7 +1171,12 @@ static int __init gf_init(void)
 	}
 	SPIDEV_MAJOR = status;
 	pr_info("class_create:%s\n", CLASS_NAME);
+	/* op6893: class_create() lost its owner argument in 6.4 (1aaba11da9aa). */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+	gf_class = class_create(CLASS_NAME);
+#else
 	gf_class = class_create(THIS_MODULE, CLASS_NAME);
+#endif
 	if (IS_ERR(gf_class)) {
 		unregister_chrdev(SPIDEV_MAJOR, gf_driver.driver.name);
 		pr_warn("Failed to create class.\n");

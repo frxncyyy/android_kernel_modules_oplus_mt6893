@@ -7,6 +7,10 @@
 #include <linux/workqueue.h>
 #include <linux/of_gpio.h>
 #include <linux/gpio.h>
+/* op6893: pinctrl_lookup_state() and friends.  4.19 pulled this in by way of
+ * of_gpio.h -> gpio.h; that chain is gone in 6.6, so ask for it directly.
+ */
+#include <linux/pinctrl/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <linux/timer.h>
 #include <linux/err.h>

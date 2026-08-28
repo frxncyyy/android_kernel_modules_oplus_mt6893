@@ -10,6 +10,10 @@
 #include <linux/seq_file.h>
 #include <linux/fs.h>
 #include <linux/of_gpio.h>
+/* op6893: pinctrl_lookup_state() and friends.  4.19 pulled this in by way of
+ * of_gpio.h -> gpio.h; that chain is gone in 6.6, so ask for it directly.
+ */
+#include <linux/pinctrl/consumer.h>
 #include <asm/uaccess.h>
 #include <linux/delay.h>
 #include <linux/string.h>
@@ -160,7 +164,7 @@ static int get_manufacture_id_value(struct fp_data *fp_data)
 		fp_data->fp_id[0] = 2;
 		dev_info(fp_data->dev, "fp_id: %d ->fpc\n", fp_data->fp_id[0]);
 	} else {
-		dev_err(fp_data->dev, "fp_id not define, default is 0", ret);
+		dev_err(fp_data->dev, "fp_id not define, default is 0 (ret %d)", ret);
 	}
 
 	devm_pinctrl_put(fp_id_pinctrl);
