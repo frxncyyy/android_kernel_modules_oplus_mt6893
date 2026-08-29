@@ -1072,6 +1072,14 @@ static void mtk_ovl_blender_layer_config(struct mtk_ddp_comp *comp, unsigned int
 
 	alpha = 0xFF & (state->base.alpha >> 8);
 
+	/* op6893: see the note in mtk_disp_ovl.c -- alpha_con comes from the
+	 * restored PLANE_PROP_ALPHA_CON, which defaults to the 1 that used to be
+	 * hardcoded here.  Kept in step across all three OVL variants even though
+	 * this device only uses mtk_disp_ovl.c, so the next SoC does not inherit
+	 * a half-applied change.
+	 */
+	alpha_con = pending->prop_val[PLANE_PROP_ALPHA_CON];
+
 	if (state->base.fb) {
 		if (state->base.fb->format->has_alpha)
 			pixel_blend_mode = state->base.pixel_blend_mode;

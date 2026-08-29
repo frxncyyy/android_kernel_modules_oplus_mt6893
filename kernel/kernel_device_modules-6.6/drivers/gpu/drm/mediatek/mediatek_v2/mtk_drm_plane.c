@@ -175,6 +175,12 @@ static struct mtk_drm_property mtk_plane_property[PLANE_PROP_MAX] = {
 	{DRM_MODE_PROP_ATOMIC, "DIRTY_ROI_W", 0, ULONG_MAX, 0},
 	{DRM_MODE_PROP_ATOMIC, "DIRTY_ROI_H", 0, ULONG_MAX, 0},
 	{DRM_MODE_PROP_ATOMIC, "MODE", 0, UINT_MAX, 0},
+	/* op6893: same ranges and defaults 4.19 published, so a blob that sets
+	 * neither sees exactly the behaviour it had there.  Order must match
+	 * enum MTK_PLANE_PROP.
+	 */
+	{DRM_MODE_PROP_ATOMIC, "PLANE_PROP_ALPHA_CON", 0, 0x1, 0x1},
+	{DRM_MODE_PROP_ATOMIC, "PLANE_PROP_PLANE_ALPHA", 0, 0xFF, 0xFF},
 };
 
 static void mtk_plane_reset(struct drm_plane *plane)
@@ -200,6 +206,16 @@ static void mtk_plane_reset(struct drm_plane *plane)
 #else
 	plane->state->pixel_blend_mode = DRM_MODE_BLEND_PREMULTI;
 #endif
+
+	/*
+	 * op6893: the memset above zeroes prop_val, and zero is a *meaningful*
+	 * value for ALPHA_CON -- it disables constant-alpha blending.  Leaving it
+	 * at zero would therefore not be "unset", it would silently be the
+	 * opposite of the alpha_con = 1 the OVL used to hardcode.  4.19 seeded
+	 * both here for the same reason.
+	 */
+	state->prop_val[PLANE_PROP_ALPHA_CON] = 0x1;
+	state->prop_val[PLANE_PROP_PLANE_ALPHA] = 0xFF;
 
 	state->base.plane = plane;
 	state->pending.format = DRM_FORMAT_RGB565;
@@ -238,6 +254,19 @@ mtk_plane_duplicate_state(struct drm_plane *plane)
 	}
 
 	state->base.alpha = old_state->base.alpha;
+
+	/*
+	 * op6893: duplicate_state kzalloc's, and only the members named here are
+	 * carried over -- prop_val is not copied wholesale.  That is fine for the
+	 * properties HWC re-sets on every commit, but these two have non-zero
+	 * defaults that only mtk_plane_reset() ever writes, so without this they
+	 * would fall back to zero on the first duplicated state and stay there.
+	 * 4.19 copied them here for the same reason.
+	 */
+	state->prop_val[PLANE_PROP_ALPHA_CON] =
+		old_state->prop_val[PLANE_PROP_ALPHA_CON];
+	state->prop_val[PLANE_PROP_PLANE_ALPHA] =
+		old_state->prop_val[PLANE_PROP_PLANE_ALPHA];
 
 	state->prop_val[PLANE_PROP_OVL_CSC_SET_BRIGHTNESS] =
 		old_state->prop_val[PLANE_PROP_OVL_CSC_SET_BRIGHTNESS];
@@ -278,6 +307,23 @@ static int mtk_plane_atomic_set_property(struct drm_plane *plane,
 	for (i = 0; i < PLANE_PROP_MAX; i++) {
 		if (mtk_plane->plane_property[i] == property) {
 			plane_state->prop_val[i] = val;
+			/*
+			 * op6893: mirror the vendor alpha onto the standard DRM
+			 * plane alpha, which is what every OVL variant here reads
+			 * (mtk_disp_ovl.c, _exdma.c and _blender.c all do
+			 * "alpha = 0xFF & (state->base.alpha >> 8)").  Keeping one
+			 * source of truth means the 4.19-era blob, which only sets
+			 * PLANE_PROP_PLANE_ALPHA, drives the same path a
+			 * 6.6-native compositor would through "alpha" -- and no OVL
+			 * needs a second code path.
+			 *
+			 * 8-bit to 16-bit by * 0x101, not << 8, so that full alpha
+			 * maps to DRM_BLEND_ALPHA_OPAQUE (0xFFFF) rather than
+			 * 0xFF00; the OVL's >> 8 recovers the original either way,
+			 * but only the former is actually opaque to DRM.
+			 */
+			if (i == PLANE_PROP_PLANE_ALPHA)
+				state->alpha = (val & 0xFF) * 0x101;
 			DDPDBG("set property:%s %llu\n", property->name, val);
 			return ret;
 		}

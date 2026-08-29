@@ -121,6 +121,26 @@ enum MTK_PLANE_PROP {
 	PLANE_PROP_DIRTY_ROI_W,
 	PLANE_PROP_DIRTY_ROI_H,
 	PLANE_PROP_MODE,
+	/*
+	 * op6893: restored for the stock 4.19-era HWC blob, which asks for these
+	 * two by name and logs
+	 *
+	 *   [DRMDEV] property[PLANE_PROP_PLANE_ALPHA] does not do initialize,
+	 *            so ignore adding property
+	 *
+	 * roughly 1400 times a second when they are missing.  6.6 dropped them in
+	 * favour of the standard DRM "alpha" and "pixel blend mode" plane
+	 * properties, which this driver does create -- but the blob predates that
+	 * and only knows the vendor names, so per-plane alpha was silently stuck
+	 * at opaque.
+	 *
+	 * Appended rather than restored to their 4.19 position (which was index
+	 * 2 and 3) so that no existing index moves: prop_val[] is indexed by this
+	 * enum all over the driver.  Userspace is unaffected either way, since
+	 * DRM properties are looked up by name.
+	 */
+	PLANE_PROP_ALPHA_CON,
+	PLANE_PROP_PLANE_ALPHA,
 	PLANE_PROP_MAX,
 };
 

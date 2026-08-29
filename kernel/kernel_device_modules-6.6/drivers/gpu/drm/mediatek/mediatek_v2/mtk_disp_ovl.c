@@ -2840,7 +2840,26 @@ static void mtk_ovl_layer_config(struct mtk_ddp_comp *comp, unsigned int idx,
 
 	alpha = 0xFF & (state->base.alpha >> 8);
 
-	DDPINFO("Blending: state->base.alpha =0x%x, alpha = 0x%x\n", state->base.alpha, alpha);
+	/*
+	 * op6893: alpha_con was hardcoded to 1.  Take it from the restored
+	 * PLANE_PROP_ALPHA_CON instead, so the 4.19-era HWC blob can turn
+	 * constant-alpha blending off again the way it used to.  The property
+	 * defaults to 1 (seeded in mtk_plane_reset), so a compositor that never
+	 * sets it behaves exactly as before this change.
+	 *
+	 * The matching alpha value arrives through state->base.alpha, which
+	 * mtk_plane_atomic_set_property() mirrors PLANE_PROP_PLANE_ALPHA onto --
+	 * that is why the line above needs no change.
+	 *
+	 * 4.19 additionally forced alpha_con = 0 for opaque X-formats
+	 * (RGBX/BGRX/XRGB/XBGR) at full alpha.  Not restored: 6.6 expresses that
+	 * through pixel_blend_mode / MTK_FMT_PREMULTIPLIED just below, and doing
+	 * both would apply the same decision twice.
+	 */
+	alpha_con = pending->prop_val[PLANE_PROP_ALPHA_CON];
+
+	DDPINFO("Blending: state->base.alpha =0x%x, alpha = 0x%x, alpha_con = %u\n",
+		state->base.alpha, alpha, alpha_con);
 	if (state->base.fb) {
 		if (state->base.fb->format->has_alpha) {
 			pixel_blend_mode = state->base.pixel_blend_mode;
