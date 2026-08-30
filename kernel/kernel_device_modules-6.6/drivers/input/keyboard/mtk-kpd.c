@@ -586,6 +586,40 @@ static int kpd_request_named_gpio(struct vol_info *kpd,
 	return 0;
 }
 
+/*
+ * Is there an EINT for a volume key on this board?
+ *
+ * On the 20615 DTB volume-down has the full set -- pinctrl state volume_down@0
+ * muxing pin 0x9b, keypad,volume-down = <&pio 0x9b 0>, and a
+ * "mediatek, VOLUME_DOWN-eint" node on the same pin -- while volume-up has only
+ * the first two, and its two disagree with each other: the pinctrl state
+ * volume_up@0 muxes pin 0x3b (59), but keypad,volume-up says <&pio 0x14 0>
+ * (GPIO 20), which is this board's touch panel reset line
+ * (touchpanel's reset-gpio = <&pio 0x14 1>).  There is no VOLUME_UP-eint node
+ * at all, so the GPIO number is simply stale dws boilerplate; volume-up reaches
+ * the kernel through the keypad matrix instead.
+ *
+ * Two things went wrong without this check.  init_custom_gpio_state() treated a
+ * missing eint node as "return -1" and failed the entire probe -- taking the
+ * matrix keys down with it -- despite the neighbouring pr_err() promising to
+ * "continue to volume down".  And the probe's devm_gpio_request() for
+ * keypad,volume-up succeeded, so the keypad claimed the touch reset line and
+ * drove it to input; the touch driver's own request then failed and its resets
+ * were left fighting a pin somebody else owned.
+ *
+ * Gating both on the eint node keeps this generic: a board that really does
+ * wire a volume key to an EINT still gets the whole path.
+ */
+static bool kpd_volkey_has_eint(const char *compatible)
+{
+	struct device_node *node = of_find_compatible_node(NULL, NULL, compatible);
+
+	if (!node)
+		return false;
+	of_node_put(node);
+	return true;
+}
+
 static irqreturn_t kpd_volumedown_irq_handler(int irq, void *dev_id)
 {
 	disable_irq_nosync(vol_key_info.vol_down_irq);
@@ -620,7 +654,7 @@ static int init_custom_gpio_state(struct platform_device *client) {
 	}
 
 	/*for key volume up*/
-	if (!vol_key_info.homekey_as_vol_up) {
+	if (!vol_key_info.homekey_as_vol_up && vol_key_info.oplus_vol_up_flag) {
 		volume_up_as_int = pinctrl_lookup_state(pinctrl1, "volume_up_as_int");
 		if (IS_ERR(volume_up_as_int)) {
 			ret = PTR_ERR(volume_up_as_int);
@@ -645,8 +679,14 @@ static int init_custom_gpio_state(struct platform_device *client) {
 				}
 				pr_err("%s debounce_time:%d\n", __func__, debounce_time);
 			} else {
+				/*
+				 * Unreachable now that probe clears
+				 * oplus_vol_up_flag when the node is absent, but
+				 * keep it non-fatal: losing one volume key must
+				 * not cost the matrix keys and the power key.
+				 */
 				pr_err("%d volume up irp node not exist\n", __LINE__);
-				return -1;
+				goto vol_down;
 			}
 			vol_key_info.vol_up_irq_type = IRQ_TYPE_EDGE_FALLING;
 			ret = request_irq(vol_key_info.vol_up_irq,
@@ -661,6 +701,7 @@ static int init_custom_gpio_state(struct platform_device *client) {
 		}
 	}
 
+vol_down:
 	/*for key of volume down*/
 	volume_down_as_int = pinctrl_lookup_state(pinctrl1, "volume_down_as_int");
 	if (IS_ERR(volume_down_as_int)) {
@@ -873,9 +914,11 @@ static int kpd_pdrv_probe(struct platform_device *pdev)
 
 	vol_key_info.homekey_as_vol_up = false;
 	vol_key_info.oplus_vol_down_flag = true;
-	vol_key_info.oplus_vol_up_flag = true;
+	vol_key_info.oplus_vol_up_flag = kpd_volkey_has_eint("mediatek, VOLUME_UP-eint");
+	if (!vol_key_info.oplus_vol_up_flag)
+		pr_notice("no VOLUME_UP-eint node: volume up comes from the keypad matrix, leaving keypad,volume-up alone\n");
 
-	if (!vol_key_info.homekey_as_vol_up) { /* means not home key as volume up, defined on dws */
+	if (!vol_key_info.homekey_as_vol_up && vol_key_info.oplus_vol_up_flag) { /* means not home key as volume up, defined on dws */
 		err = kpd_request_named_gpio(kpd_oplus, "keypad,volume-up",
 				&vol_key_info.vol_up_gpio);
 
