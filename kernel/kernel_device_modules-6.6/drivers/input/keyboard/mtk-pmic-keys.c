@@ -478,6 +478,17 @@ static const struct of_device_id of_mtk_pmic_keys_match_tbl[] = {
 		.compatible = "mediatek,mt6359p-keys",
 		.data = &mt6359p_regs,
 	}, {
+		/*
+		 * Same MT6359P silicon and the same registers, described the
+		 * 4.19 way: one "mediatek,mt-pmic" node under the pmic with an
+		 * interrupt-names list ("pwrkey", "pwrkey_r", "homekey",
+		 * "homekey_r", ...) and no per-key children.  See
+		 * mtk_pmic_keys_legacy_node() and the keycount == 0 path in
+		 * probe for how the keys are recovered from it.
+		 */
+		.compatible = "mediatek,mt-pmic",
+		.data = &mt6359p_regs,
+	}, {
 		.compatible = "mediatek,mt6397-keys",
 		.data = &mt6397_regs,
 	}, {
@@ -498,6 +509,62 @@ static const struct of_device_id of_mtk_pmic_keys_match_tbl[] = {
 };
 MODULE_DEVICE_TABLE(of, of_mtk_pmic_keys_match_tbl);
 
+/*
+ * Legacy (4.19-era) PMIC key description.
+ *
+ * mt6397-core creates this platform device from an mfd_cell, so it binds by
+ * name and its four IRQ resources -- PWRKEY, HOMEKEY, PWRKEY_R, HOMEKEY_R, in
+ * that order -- come from the cell rather than from the device tree.  What the
+ * cell cannot supply is the of_node: it asks for a child compatible with
+ * "mediatek,mt6359p-keys", and a DTB of this vintage instead has one
+ * "mediatek,mt-pmic" node carrying all of the PMIC's interrupt-names.  MFD only
+ * warns in that case ("Failed to locate of_node"), leaves of_node NULL, and
+ * registers the device anyway -- at which point of_match_device() finds nothing
+ * and there is no regs pointer to work from.
+ *
+ * Adopt the legacy node when the modern one is absent.  The IRQ resources are
+ * unaffected either way, so only the of_node and the match are recovered.
+ */
+static struct device_node *mtk_pmic_keys_legacy_node(struct platform_device *pdev)
+{
+	struct device_node *parent = pdev->dev.parent ? pdev->dev.parent->of_node : NULL;
+
+	if (!parent)
+		return NULL;
+
+	return of_get_compatible_child(parent, "mediatek,mt-pmic");
+}
+
+/*
+ * ... and the keycodes, which a legacy node has no children to carry.
+ *
+ * The power key is always the power key.  The home key is whatever the keypad
+ * node says its "reset key" is: on this board mediatek,kpd-sw-rstkey is
+ * KEY_VOLUMEUP, because there is no volume-up EINT and the PMIC home key is
+ * wired to the volume-up button instead -- the same conclusion 4.19 reached in
+ * kpd_pmic_rstkey_handler(), which reported kpd_sw_rstkey whenever its
+ * homekey_as_vol_up flag was set (and that flag was set from exactly this
+ * property).  A board that really has a home key leaves it at KEY_HOME.
+ */
+static unsigned int mtk_pmic_keys_legacy_keycode(struct device *dev, int index)
+{
+	struct device_node *kp;
+	u32 keycode;
+
+	if (index == MTK_PMIC_PWRKEY_INDEX)
+		return KEY_POWER;
+
+	keycode = KEY_HOME;
+	kp = of_find_compatible_node(NULL, NULL, "mediatek,kp");
+	if (kp) {
+		of_property_read_u32(kp, "mediatek,kpd-sw-rstkey", &keycode);
+		of_node_put(kp);
+	}
+	dev_info(dev, "legacy pmic homekey reports keycode %u\n", keycode);
+
+	return keycode;
+}
+
 static int mtk_pmic_keys_probe(struct platform_device *pdev)
 {
 	int error, index = 0;
@@ -510,6 +577,19 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 	struct input_dev *input_dev;
 	const struct of_device_id *of_id =
 		of_match_device(of_mtk_pmic_keys_match_tbl, &pdev->dev);
+
+	if (!node) {
+		node = mtk_pmic_keys_legacy_node(pdev);
+		if (node) {
+			pdev->dev.of_node = node;
+			of_id = of_match_device(of_mtk_pmic_keys_match_tbl,
+					        &pdev->dev);
+		}
+	}
+	if (!of_id) {
+		dev_info(&pdev->dev, "no usable pmic keys node\n");
+		return -EINVAL;
+	}
 
 	ktf_pmic_pdev = pdev;
 	keys = devm_kzalloc(&pdev->dev, sizeof(*keys), GFP_KERNEL);
@@ -552,6 +632,41 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 	if (keycount > MTK_PMIC_MAX_KEY_COUNT) {
 		dev_err(keys->dev, "too many keys defined (%d)\n", keycount);
 		return -EINVAL;
+	}
+
+	/*
+	 * A legacy node has no children to iterate, so drive the two keys the
+	 * mfd_cell's IRQ resources describe -- power at index 0, home at index 1
+	 * -- straight from the cell.  Everything past the keycode is identical
+	 * to the loop below.
+	 */
+	if (!keycount) {
+		for (index = 0; index <= MTK_PMIC_HOMEKEY_INDEX; index++) {
+			keys->keys[index].regs = &mtk_pmic_regs->keys_regs[index];
+
+			keys->keys[index].irq = platform_get_irq(pdev, index);
+			if (keys->keys[index].irq < 0)
+				return keys->keys[index].irq;
+			if (mtk_pmic_regs->release_irq) {
+				keys->keys[index].release_irq_num =
+					platform_get_irq(pdev,
+						index + release_irq_interval);
+				if (keys->keys[index].release_irq_num < 0)
+					return keys->keys[index].release_irq_num;
+			}
+
+			keys->keys[index].keycode =
+				mtk_pmic_keys_legacy_keycode(keys->dev, index);
+
+			if (index == MTK_PMIC_PWRKEY_INDEX)
+				keys->keys[index].suspend_lock =
+					wakeup_source_register(NULL,
+							       "pwrkey wakelock");
+
+			error = mtk_pmic_key_setup(keys, &keys->keys[index]);
+			if (error)
+				return error;
+		}
 	}
 
 	for_each_child_of_node(node, child) {
