@@ -2972,6 +2972,13 @@ static struct i2c_driver tp_i2c_driver = {
 	},
 };
 
+/*
+ * Whether i2c_add_driver() actually ran.  It does not when this is not the
+ * touch IC on the board, which is the normal case on any build carrying more
+ * than one touch driver.
+ */
+static bool tp_i2c_driver_added;
+
 static int __init tp_driver_init_ft3518(void)
 {
 	TPD_INFO("%s is called\n", __func__);
@@ -2985,13 +2992,26 @@ static int __init tp_driver_init_ft3518(void)
 		return 0;
 	}
 
+	tp_i2c_driver_added = true;
+
 	return 0;
 }
 
-/* should never be called */
+/*
+ * The comment here used to read "should never be called", which held while this
+ * was built into the kernel.  Built as a module it is called by rmmod, and
+ * i2c_del_driver() on a driver that was never added walks an uninitialised list
+ * head: an unhandled page fault in i2c_do_del_adapter(), taking the machine
+ * down.  Since init returns 0 either way, that is reachable simply by removing
+ * the module on a device this driver does not claim.
+ */
 static void __exit tp_driver_exit_ft3518(void)
 {
+	if (!tp_i2c_driver_added)
+		return;
+
 	i2c_del_driver(&tp_i2c_driver);
+	tp_i2c_driver_added = false;
 	return;
 }
 #ifdef CONFIG_TOUCHPANEL_LATE_INIT
