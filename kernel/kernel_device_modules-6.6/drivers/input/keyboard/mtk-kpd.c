@@ -292,20 +292,40 @@ static irqreturn_t kpd_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+/*
+ * The keypad properties were renamed between the DTS this driver was written
+ * for and the 4.19-era one this device boots: every name lost its "kpd-"
+ * infix.  Nothing else changed -- despite the "-ms" suffix the debounce value
+ * is still written straight into KP_DEBOUNCE (see the writew() in probe), so
+ * 4.19's 0x400 means exactly what it always did.  Try the current name first
+ * and fall back, rather than requiring a DTB edit we cannot make: the DTB is
+ * preserved verbatim from the stock boot image.
+ */
+static int kpd_of_read_u32(struct device_node *node, const char *name,
+			   const char *legacy_name, u32 *out)
+{
+	int ret = of_property_read_u32(node, name, out);
+
+	if (ret)
+		ret = of_property_read_u32(node, legacy_name, out);
+
+	return ret;
+}
+
 static int kpd_get_dts_info(struct mtk_keypad *keypad,
 				struct device_node *node)
 {
 	int ret;
 
-	ret = of_property_read_u32(node, "mediatek,key-debounce-ms",
-		&keypad->key_debounce);
+	ret = kpd_of_read_u32(node, "mediatek,key-debounce-ms",
+		"mediatek,kpd-key-debounce", &keypad->key_debounce);
 	if (ret) {
 		pr_notice("read mediatek,key-debounce-ms error.\n");
 		return ret;
 	}
 
-	ret = of_property_read_u32(node, "mediatek, use-extend-type",
-		&keypad->use_extend_type);
+	ret = kpd_of_read_u32(node, "mediatek, use-extend-type",
+		"mediatek,kpd-use-extend-type", &keypad->use_extend_type);
 	if (ret) {
 		pr_notice("read mediatek,use-extend-type error.\n");
 		keypad->use_extend_type = 0;
@@ -318,8 +338,8 @@ static int kpd_get_dts_info(struct mtk_keypad *keypad,
 		atomic_set(&kp_wakeup_flag, 1);
 	}
 
-	ret = of_property_read_u32(node, "mediatek,hw-map-num",
-		&keypad->hw_map_num);
+	ret = kpd_of_read_u32(node, "mediatek,hw-map-num",
+		"mediatek,kpd-hw-map-num", &keypad->hw_map_num);
 	if (ret) {
 		pr_notice("read mediatek,hw-map-num error.\n");
 		return ret;
@@ -333,6 +353,9 @@ static int kpd_get_dts_info(struct mtk_keypad *keypad,
 
 	ret = of_property_read_u32_array(node, "mediatek,hw-init-map",
 		keypad->hw_init_map, keypad->hw_map_num);
+	if (ret)
+		ret = of_property_read_u32_array(node, "mediatek,kpd-hw-init-map",
+			keypad->hw_init_map, keypad->hw_map_num);
 
 	if (ret) {
 		pr_notice("hw-init-map was not defined in dts.\n");
@@ -711,9 +734,27 @@ static int kpd_pdrv_probe(struct platform_device *pdev)
 	if (!keypad)
 		return -ENOMEM;
 
+	/*
+	 * This device's DTB comes from the 4.19 firmware, where the keypad node
+	 * carries no clocks/clock-names at all: CONFIG_KEYBOARD_MTK selected the
+	 * older drivers/input/keyboard/mediatek/kpd.c, which asked for "kpd-clk"
+	 * and shrugged when it was absent ("kpd-clk is default set by ccf").  The
+	 * block is clocked either way; only the driver's expectations changed.
+	 *
+	 * Hard-failing here cost us every key on the device -- probe returned
+	 * -ENOENT, so /dev/input was empty and neither volume nor power worked,
+	 * which also meant a screen that timed out could not be woken.  Treat a
+	 * missing clock the same way the old driver did.  clk_prepare_enable()
+	 * and clk_disable_unprepare() both accept NULL, so nothing downstream
+	 * needs a second check.
+	 */
 	keypad->clk = devm_clk_get(&pdev->dev, "kpd");
-	if (IS_ERR(keypad->clk))
-		return PTR_ERR(keypad->clk);
+	if (IS_ERR(keypad->clk)) {
+		if (PTR_ERR(keypad->clk) != -ENOENT)
+			return PTR_ERR(keypad->clk);
+		pr_notice("no kpd clock in dts, left to ccf\n");
+		keypad->clk = NULL;
+	}
 
 	ret = clk_prepare_enable(keypad->clk);
 	if (ret) {
@@ -792,6 +833,8 @@ static int kpd_pdrv_probe(struct platform_device *pdev)
 	keypad->suspend_lock = wakeup_source_register(NULL, "kpd wakelock");
 	if (!keypad->suspend_lock) {
 		pr_notice("wakeup source init failed.\n");
+		/* ret still holds input_register_device()'s 0 at this point */
+		ret = -ENOMEM;
 		goto err_unregister_device;
 	}
 
@@ -840,13 +883,20 @@ static int kpd_pdrv_probe(struct platform_device *pdev)
 			pr_err("%s lfc request keypad,volume-up fail, continue other key\n", __func__);
 			vol_key_info.oplus_vol_up_flag = false;
 			/*return -1;*/
-		}
-		err = gpio_direction_input(vol_key_info.vol_up_gpio);
-
-		if (err < 0) {
-			dev_err(&kpd_oplus->pdev->dev,
-				"gpio_direction_input failed for vol_up INT.\n");
-			return -1;
+		} else {
+			/*
+			 * Only meaningful once the request above succeeded --
+			 * vol_up_gpio is untouched otherwise, and driving an
+			 * unowned number here used to fail the whole probe
+			 * despite the "continue other key" intent.
+			 */
+			err = gpio_direction_input(vol_key_info.vol_up_gpio);
+			if (err < 0) {
+				dev_err(&kpd_oplus->pdev->dev,
+					"gpio_direction_input failed for vol_up INT.\n");
+				ret = err;
+				goto err_free_irq;
+			}
 		}
 	}
 
@@ -856,18 +906,20 @@ static int kpd_pdrv_probe(struct platform_device *pdev)
 		pr_err("%s request keypad,volume-down fail, continue other key\n", __func__);
 		vol_key_info.oplus_vol_down_flag = false;
 		/*return -1;*/
+	} else {
+		err = gpio_direction_input(vol_key_info.vol_down_gpio);
+		if (err < 0) {
+			dev_err(&kpd_oplus->pdev->dev,
+				"gpio_direction_input failed for vol_down INT.\n");
+			ret = err;
+			goto err_free_irq;
+		}
 	}
-	err = gpio_direction_input(vol_key_info.vol_down_gpio);
 
-	if (err < 0) {
-		dev_err(&kpd_oplus->pdev->dev,
-			"gpio_direction_input failed for vol_down INT.\n");
-		return -1;
-	}
-
-	if (init_custom_gpio_state(pdev) < 0) {
+	ret = init_custom_gpio_state(pdev);
+	if (ret < 0) {
 		pr_err("init gpio state failed\n");
-		return -1;
+		goto err_free_irq;
 	}
 
 	if (vol_key_info.oplus_vol_up_flag == true) {
@@ -891,13 +943,30 @@ static int kpd_pdrv_probe(struct platform_device *pdev)
 	//#endif /* OPLUS_BUG_STABILITY */
 	return 0;
 
+/*
+ * Everything below this point used to be reached only when request_irq() or
+ * wakeup_source_register() failed; the Oplus volume-key block bailed out with a
+ * bare "return -1" instead, leaking the IRQ, the wakeup source, the tasklet, the
+ * input device and the sysfs attribute.  A failed probe therefore poisoned the
+ * platform device for good: the next attempt tripped over "cannot create
+ * duplicate filename .../keypad" and "genirq: Flags mismatch irq 348", so the
+ * driver could not be retried without a reboot.  Unwind properly instead.
+ */
+err_free_irq:
+	disable_irq_wake(keypad->irqnr);
+	free_irq(keypad->irqnr, keypad);
+
 err_irq:
 	tasklet_kill(&keypad->tasklet);
+	wakeup_source_unregister(keypad->suspend_lock);
+	keypad->suspend_lock = NULL;
+	suspend_lock_data = NULL;
 
 err_unregister_device:
 	input_unregister_device(keypad->input_dev);
 
 err_unprepare_clk:
+	device_remove_file(&pdev->dev, &dev_attr_keypad);
 	clk_disable_unprepare(keypad->clk);
 
 	return ret;
