@@ -62,11 +62,38 @@
 #define MT6357_PWRKEY_RST_SHIFT			9
 #define MT6357_HOMEKEY_RST_SHIFT		8
 #define MT6357_RST_DU_SHIFT			12
+/*
+ * MT6359/MT6359P key debounce state, from the 4.19 headers
+ * (PMIC_{PWRKEY,HOMEKEY}_DEB_ADDR = MT6359_TOPSTATUS, shifts 1 and 3).  The bit
+ * reads 1 when the key is *released*.  Spelled as literal masks because that is
+ * how mtk_pmic_keys_irq_handler_thread() uses deb_mask -- the other PMICs in
+ * this file pass their DEB_MASK/shift defines, which do not agree with each
+ * other and are why mt6359p originally opted out with INVALID_VALUE.
+ */
+#define MT6359P_TOPSTATUS			(0x2a)
+#define MT6359P_PWRKEY_DEB_MASK			BIT(1)
+#define MT6359P_HOMEKEY_DEB_MASK		BIT(3)
 struct mtk_pmic_keys_regs {
 	u32 deb_reg;
 	u32 deb_mask;
 	u32 intsel_reg;
 	u32 intsel_mask;
+	/*
+	 * Trust deb_reg over the press/release IRQ that delivered the event.
+	 *
+	 * Press and release are two independent threaded IRQs sharing one input
+	 * device, so the kernel is free to run their handler threads in either
+	 * order.  Lose that race once and the key latches: the input core drops
+	 * the next real press as "no change", so userspace sees neither a down
+	 * nor a usable up and the key is dead until something reports it
+	 * released again.  Observed on this board -- Android had both KEY_POWER
+	 * and KEY_VOLUMEUP stuck down with equal press and release IRQ counts.
+	 *
+	 * Where the debounce register is known, reading it makes whichever
+	 * handler runs last report the state the hardware is actually in, so
+	 * the order stops mattering.
+	 */
+	bool deb_authoritative;
 };
 
 #define MTK_PMIC_KEYS_REGS(_deb_reg, _deb_mask,		\
@@ -122,12 +149,20 @@ static const struct mtk_pmic_regs mt6323_regs = {
 };
 
 static const struct mtk_pmic_regs mt6359p_regs = {
-	.keys_regs[MTK_PMIC_PWRKEY_INDEX] =
-		MTK_PMIC_KEYS_REGS(INVALID_VALUE,
-		INVALID_VALUE, MT6359P_PSC_TOP_INT_CON0, 0x1),
-	.keys_regs[MTK_PMIC_HOMEKEY_INDEX] =
-		MTK_PMIC_KEYS_REGS(INVALID_VALUE,
-		INVALID_VALUE, MT6359P_PSC_TOP_INT_CON0, 0x2),
+	.keys_regs[MTK_PMIC_PWRKEY_INDEX] = {
+		.deb_reg		= MT6359P_TOPSTATUS,
+		.deb_mask		= MT6359P_PWRKEY_DEB_MASK,
+		.intsel_reg		= MT6359P_PSC_TOP_INT_CON0,
+		.intsel_mask		= 0x1,
+		.deb_authoritative	= true,
+	},
+	.keys_regs[MTK_PMIC_HOMEKEY_INDEX] = {
+		.deb_reg		= MT6359P_TOPSTATUS,
+		.deb_mask		= MT6359P_HOMEKEY_DEB_MASK,
+		.intsel_reg		= MT6359P_PSC_TOP_INT_CON0,
+		.intsel_mask		= 0x2,
+		.deb_authoritative	= true,
+	},
 	.release_irq = true,
 	.pmic_rst_reg = MT6359P_TOP_RST_MISC,
 	.pwrkey_rst_shift = MT6359_PWRKEY_RST_SHIFT,
@@ -320,12 +355,37 @@ static void mtk_pmic_keys_lp_reset_setup(struct mtk_pmic_keys *keys,
 	}
 }
 
+/*
+ * Current state of one key, according to the debounce register.  Only valid
+ * where regs->deb_authoritative says the register and mask are known.
+ */
+static int mtk_pmic_keys_read_pressed(struct mtk_pmic_keys_info *info)
+{
+	u32 key_deb;
+	int ret;
+
+	ret = regmap_read(info->keys->regmap, info->regs->deb_reg, &key_deb);
+	if (ret < 0) {
+		dev_dbg(info->keys->dev, "regmap_read fail: %d\n", ret);
+		return ret;
+	}
+
+	return !(key_deb & info->regs->deb_mask);
+}
+
 static irqreturn_t mtk_pmic_keys_release_irq_handler_thread(
 				int irq, void *data)
 {
 	struct mtk_pmic_keys_info *info = data;
+	int pressed = 0;
 
-	input_report_key(info->keys->input_dev, info->keycode, 0);
+	if (info->regs->deb_authoritative) {
+		pressed = mtk_pmic_keys_read_pressed(info);
+		if (pressed < 0)
+			pressed = 0;
+	}
+
+	input_report_key(info->keys->input_dev, info->keycode, pressed);
 	input_sync(info->keys->input_dev);
 	if (info->suspend_lock)
 		__pm_relax(info->suspend_lock);
@@ -347,7 +407,10 @@ static irqreturn_t mtk_pmic_keys_irq_handler_thread(int irq, void *data)
 	u32 key_deb, pressed;
 	int ret;
 
-	if (info->release_irq_num > 0) {
+	if (info->regs->deb_authoritative) {
+		ret = mtk_pmic_keys_read_pressed(info);
+		pressed = ret < 0 ? 1 : ret;
+	} else if (info->release_irq_num > 0) {
 		pressed = 1;
 	} else {
 		ret = regmap_read(info->keys->regmap, info->regs->deb_reg, &key_deb);
@@ -713,6 +776,26 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 
 		index++;
 	}
+
+	/*
+	 * The IRQs went live in mtk_pmic_key_setup() above, i.e. before the
+	 * input device is registered.  Anything they reported in that window
+	 * reached no handler -- but input_report_key() still recorded it in
+	 * input_dev->key, and the input core then filters the first real press
+	 * as "no change".  Userspace ends up seeing neither a down nor a usable
+	 * up, and the key is dead for the rest of the boot.
+	 *
+	 * That window is not hypothetical here: the phone is powered on by
+	 * holding the power key and LK leaves the press latched in the PMIC, so
+	 * the pwrkey IRQ fires as soon as it is requested.  Android came up with
+	 * KEY_POWER (and KEY_VOLUMEUP, which is the PMIC home key on this board)
+	 * already down and ignored both for good.
+	 *
+	 * No one can have legitimately observed those reports, so drop them.
+	 */
+	for (index = 0; index < MTK_PMIC_MAX_KEY_COUNT; index++)
+		if (keys->keys[index].keycode)
+			__clear_bit(keys->keys[index].keycode, input_dev->key);
 
 	error = input_register_device(input_dev);
 	if (error) {
