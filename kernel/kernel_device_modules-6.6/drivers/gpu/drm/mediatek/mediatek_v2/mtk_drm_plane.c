@@ -363,6 +363,59 @@ static int mtk_plane_atomic_get_property(struct drm_plane *plane,
 	return -EINVAL;
 }
 
+/*
+ * We deliberately accept every modifier here, which restores the 4.19
+ * behaviour byte for byte.  It is not laziness -- it is the only safe
+ * option given how this driver and its userspace actually use the field.
+ *
+ * MediaTek does not use fb modifiers the way the DRM core expects.  Instead of
+ * a vendor-namespaced tiling/compression descriptor, the OVL code treats the
+ * low bits as a private flag word (see enum MTK_FMT_MODIFIER: PREMULTIPLIED,
+ * SECURE) and never looks at the vendor byte at all.  The stock HWC tags those
+ * flags with vendor 0x0a -- what its copy of drm_fourcc.h called
+ * DRM_FORMAT_MOD_VENDOR_MTK, predating upstream assigning 0x0a to AMLOGIC and
+ * giving MediaTek 0x0b.  So a perfectly ordinary premultiplied-alpha buffer
+ * arrives as 0x0a00000000000001.
+ *
+ * On 4.19 that sailed through: mtk_plane_init() passes format_modifiers = NULL,
+ * which left modifier_count = 0, and drm_plane_check_pixel_format() returns 0
+ * early when the list is empty -- an empty list meant "no opinion".  Since 5.x
+ * the same NULL means the opposite: __drm_universal_plane_init() substitutes
+ * default_modifiers = { DRM_FORMAT_MOD_LINEAR }, turning it into a one-entry
+ * allowlist.  Every commit carrying MTK_FMT_PREMULTIPLIED then failed the core
+ * plane check with -EINVAL, so no plane was ever committed and the panel showed
+ * a black frame from the moment bootanimation (whose buffers are plain LINEAR)
+ * handed off to the launcher.
+ *
+ * Supplying this callback makes the core skip the allowlist entirely, while
+ * leaving addfb2 free to accept DRM_MODE_FB_MODIFIERS -- setting
+ * fb_modifiers_not_supported instead would make drm_internal_framebuffer_create()
+ * reject the buffer even earlier.
+ *
+ * An allowlist here would have to enumerate every value the closed-source HWC
+ * can emit, plus the DRM_FORMAT_MOD_ARM_AFBC(...) forms this driver builds
+ * internally in mtk_drm_lowpower.c and mtk_disp_wdma.c.  Miss one and the
+ * failure mode is a black screen with no other symptom, which is exactly the
+ * bug this comment exists because of.  We log unfamiliar vendors instead so a
+ * genuinely new modifier is visible without being fatal.
+ */
+static bool mtk_plane_format_mod_supported(struct drm_plane *plane,
+					   uint32_t format, uint64_t modifier)
+{
+	switch (fourcc_mod_get_vendor(modifier)) {
+	case DRM_FORMAT_MOD_VENDOR_NONE:	/* LINEAR, and MTK_FMT_* untagged */
+	case DRM_FORMAT_MOD_VENDOR_AMLOGIC:	/* what stock HWC calls VENDOR_MTK */
+	case DRM_FORMAT_MOD_VENDOR_ARM:		/* AFBC, used internally */
+		break;
+	default:
+		DDPPR_ERR("%s: unexpected modifier vendor in 0x%llx (format %p4cc), accepting\n",
+			  __func__, modifier, &format);
+		break;
+	}
+
+	return true;
+}
+
 static const struct drm_plane_funcs mtk_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
@@ -372,6 +425,7 @@ static const struct drm_plane_funcs mtk_plane_funcs = {
 	.atomic_destroy_state = mtk_drm_plane_destroy_state,
 	.atomic_set_property = mtk_plane_atomic_set_property,
 	.atomic_get_property = mtk_plane_atomic_get_property,
+	.format_mod_supported = mtk_plane_format_mod_supported,
 };
 
 static int mtk_plane_atomic_check(struct drm_plane *plane,

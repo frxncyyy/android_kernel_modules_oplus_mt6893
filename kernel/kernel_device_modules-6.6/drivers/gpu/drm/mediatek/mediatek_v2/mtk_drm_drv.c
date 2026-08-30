@@ -9628,11 +9628,15 @@ static int mtk_drm_kms_init(struct drm_device *drm)
 		}
 #endif
 	}
-	/* TODO: allow_fb_modifiers = 1 and format_modifiers = null make drm_warn_on.
-	 * so we set allow_fb_modifiers = 1 after mtk_plane_init
+	/*
+	 * Modifiers must stay supported: the stock HWC creates every buffer with
+	 * DRM_MODE_FB_MODIFIERS to carry its private MTK_FMT_* flag bits, and
+	 * setting fb_modifiers_not_supported would make
+	 * drm_internal_framebuffer_create() reject those outright.  The flip
+	 * side -- that leaving format_modifiers = NULL in mtk_plane_init() now
+	 * yields a LINEAR-only allowlist rather than 4.19's "no opinion" -- is
+	 * handled by mtk_plane_format_mod_supported().
 	 */
-	//drm->mode_config.allow_fb_modifiers = true;
-	//drm->mode_config.fb_modifiers_not_supported = true;
 	drm->mode_config.fb_modifiers_not_supported = false;
 
 	/* Use OVL device for all DMA memory allocations */
