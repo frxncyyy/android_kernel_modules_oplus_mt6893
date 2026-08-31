@@ -451,6 +451,17 @@ static const struct linear_range ldo_volt_ranges2[] = {
 	.moder_mask = modermask,					\
 }
 
+/*
+ * Register writes this driver can make at probe time, for the record:
+ *
+ * regulator_register() -> machine_constraints_voltage() reads each rail's
+ * current vsel and only writes when it falls outside the DT's
+ * [min,max].  LDO1/2/3 declare the full 1.2-3.6 V hardware range, so they can
+ * never need one.  LDO5 declares min == max == 3.3 V, so if VMCH happens to
+ * sit elsewhere its vsel (0x0f) gets written -- inert, since VMCH is the SD
+ * card rail, is disabled, and has no consumer in this DTB.  Nothing here
+ * enables a rail; the touchscreen's regulator_enable() does that.
+ */
 static const struct mt6360_regulator_desc mt6360_ldo_descs[] = {
 	MT6360_LDO_DESC(LDO1, 0x1b, 0xff, 0x17, 0x40,
 			0x17, 0x04, 0x17, 0x30, 0x17, 0x03, 0),
@@ -539,7 +550,6 @@ static int mt6360_ldo_i2c_probe(struct i2c_client *client)
 			ret = PTR_ERR(mli->rdev[i]);
 			dev_err(&client->dev, "failed to register %s: %d\n",
 				mt6360_ldo_descs[i].desc.name, ret);
-			mutex_destroy(&mli->io_lock);
 			return ret;
 		}
 		/* allow change mode */
@@ -554,12 +564,12 @@ static int mt6360_ldo_i2c_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void mt6360_ldo_i2c_remove(struct i2c_client *client)
-{
-	struct mt6360_ldo_info *mli = i2c_get_clientdata(client);
-
-	mutex_destroy(&mli->io_lock);
-}
+/*
+ * No .remove: everything is devm-managed.  4.19 destroyed io_lock here, but
+ * the devm_regulator_register() releases run *after* remove() returns, so
+ * tearing the lock down at that point would be the wrong order if any of them
+ * ever reached back into the accessors.  A mutex needs no explicit teardown.
+ */
 
 static const struct of_device_id mt6360_ldo_of_id[] = {
 	{ .compatible = "mediatek,mt6360_ldo", },
@@ -580,7 +590,6 @@ static struct i2c_driver mt6360_ldo_i2c_driver = {
 		.of_match_table = mt6360_ldo_of_id,
 	},
 	.probe = mt6360_ldo_i2c_probe,
-	.remove = mt6360_ldo_i2c_remove,
 	.id_table = mt6360_ldo_i2c_id,
 };
 module_i2c_driver(mt6360_ldo_i2c_driver);
