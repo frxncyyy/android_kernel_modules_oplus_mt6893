@@ -81,6 +81,23 @@ config DEVICE_MODULES_REGULATOR_MT6360
 	  2-channel buck with Thermal Shutdown and Overload Protection
 	  6-channel High PSRR and Low Dropout LDO.
 
+config REGULATOR_MT6360_LDO_LEGACY
+	tristate "MT6360 LDO bank regulator (legacy MediaTek binding)"
+	depends on I2C
+	select CRC8
+	help
+	  Say Y here to drive the MT6360's LDO bank (i2c slave 0x64) on boards
+	  whose device tree uses the old MediaTek binding -- a bare
+	  "mediatek,subpmic_ldo" i2c client plus a detached mt6360_ldo_dts node
+	  holding the ldo1/ldo2/ldo3/ldo5 descriptions -- instead of the
+	  upstream "mediatek,mt6360" MFD that
+	  DEVICE_MODULES_REGULATOR_MT6360 needs.
+
+	  This is the LDO bank only.  It does not register the MFD, the charger,
+	  the Type-C port or the shared interrupt controller, and it writes to
+	  no other slave address.  On MT6893 boards LDO2 ("vtp") is the
+	  touchscreen's vdd_2v8 rail.
+
 config REGULATOR_MT6362
 	tristate "MT6362 SPMI Regulator driver"
 	depends on DEVICE_MODULES_MFD_MT6397
