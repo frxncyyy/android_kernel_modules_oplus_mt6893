@@ -394,6 +394,15 @@ struct mtk_i2c {
 	bool dynamic_speed;
 #endif
 	bool master_code_sended;
+	/*
+	 * MT6893-era vendor DTs describe the per-SoC controller features in a
+	 * separate "mediatek,i2c_common" node instead of a compiled-in compat
+	 * struct.  set_dt_div says the divider named by the per-bus "clock-div"
+	 * property is the *programmable* CLOCK_DIV register, not a fixed
+	 * divider in the clock path, so it has to be written to the hardware.
+	 */
+	bool set_dt_div;
+	bool ack_err_dumped;
 	struct mtk_i2c_ac_timing ac_timing;
 	const struct mtk_i2c_compatible *dev_comp;
 	spinlock_t multi_host_lock;
@@ -1576,6 +1585,25 @@ static int mtk_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
 		break;
 	}
 
+	/*
+	 * The divider written here has to match the divider the timings above
+	 * were computed for, which is parent_clk / (clk_src_div * clk_div).
+	 *
+	 * Upstream assumes "clock-div" is fixed in the clock path and only
+	 * programs the extra clk_div.  On MT6893 the vendor DT sets
+	 * set_dt_div in "mediatek,i2c_common": clock-div names the CLOCK_DIV
+	 * register itself, so leaving it out would run every bus clk_src_div
+	 * times too fast (5x on this SoC) even though the counts look right.
+	 */
+	if (i2c->set_dt_div) {
+		if (clk_div * i2c->clk_src_div <= max_clk_div)
+			clk_div *= i2c->clk_src_div;
+		else
+			dev_err(i2c->dev,
+				"cannot program clock-div %u (clk_div %u, max %u)\n",
+				i2c->clk_src_div, clk_div, max_clk_div);
+	}
+
 	i2c->ac_timing.inter_clk_div = ((clk_div - 1) << 8) | (clk_div - 1);
 
 	return 0;
@@ -2379,7 +2407,24 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 
 	if (i2c->irq_stat & (I2C_HS_NACKERR | I2C_ACKERR)) {
 		i2c->last_addr = mtk_i2c_readw(i2c, OFFSET_SLAVE_ADDR1);
-		dev_info(i2c->dev, "addr: %x, transfer ACK error\n", msgs->addr);
+		dev_info(i2c->dev,
+			 "addr: %x, transfer ACK error, irq_stat=0x%x (%s)\n",
+			 msgs->addr, i2c->irq_stat,
+			 (i2c->irq_stat & I2C_HS_NACKERR) ? "HS_NACKERR" : "ACKERR");
+		/* Once per bus: the state the controller was actually run in. */
+		if (!i2c->ack_err_dumped) {
+			i2c->ack_err_dumped = true;
+			dev_info(i2c->dev,
+				 "first ACK error: CONTROL=0x%x HS=0x%x TIMING=0x%x LTIMING=0x%x CLOCK_DIV=0x%x EXT_CONF=0x%x IO_CONFIG=0x%x DMA_FSM_DEBUG=0x%x\n",
+				 mtk_i2c_readw(i2c, OFFSET_CONTROL),
+				 mtk_i2c_readw(i2c, OFFSET_HS),
+				 mtk_i2c_readw(i2c, OFFSET_TIMING),
+				 mtk_i2c_readw(i2c, OFFSET_LTIMING),
+				 mtk_i2c_readw(i2c, OFFSET_CLOCK_DIV),
+				 mtk_i2c_readw(i2c, OFFSET_EXT_CONF),
+				 mtk_i2c_readw(i2c, OFFSET_IO_CONFIG),
+				 mtk_i2c_readw(i2c, OFFSET_DMA_FSM_DEBUG));
+		}
 		mtk_i2c_init_hw(i2c);
 		if (i2c->ch_offset_i2c) {
 			mtk_i2c_writew_shadow(i2c, I2C_RESUME_ARBIT, OFFSET_START);
@@ -2642,8 +2687,10 @@ static const struct i2c_algorithm mtk_i2c_algorithm = {
 
 static int mtk_i2c_parse_dt(struct device_node *np, struct mtk_i2c *i2c)
 {
+	struct device_node *comp_node;
 	int ret;
 	unsigned int temp;
+	u8 val8;
 
 	ret = of_property_read_u32(np, "clock-frequency", &i2c->speed_hz);
 	if (ret < 0)
@@ -2655,6 +2702,13 @@ static int mtk_i2c_parse_dt(struct device_node *np, struct mtk_i2c *i2c)
 
 	if (i2c->clk_src_div == 0)
 		return -EINVAL;
+
+	comp_node = of_find_compatible_node(NULL, NULL, "mediatek,i2c_common");
+	if (comp_node) {
+		if (!of_property_read_u8(comp_node, "set_dt_div", &val8))
+			i2c->set_dt_div = !!val8;
+		of_node_put(comp_node);
+	}
 
 	ret = of_property_read_u32(np, "i2c-offset-ap", &i2c->i2c_offset_ap);
 	if (ret < 0)
@@ -2900,6 +2954,13 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Failed to set the speed.\n");
 		return -EINVAL;
 	}
+
+	dev_info(&pdev->dev,
+		 "timing: parent=%lu clock-div=%u set_dt_div=%d speed=%u -> CLOCK_DIV=0x%x TIMING=0x%x/0x%x HS=0x%x LTIMING=0x%x/0x%x EXT_CONF=0x%x\n",
+		 clk_get_rate(clk), i2c->clk_src_div, i2c->set_dt_div,
+		 i2c->speed_hz, i2c->ac_timing.inter_clk_div,
+		 i2c->timing_reg, i2c->ac_timing.htiming, i2c->ac_timing.hs,
+		 i2c->ltiming_reg, i2c->ac_timing.ltiming, i2c->ac_timing.ext);
 
 	if (i2c->dev_comp->max_dma_support > 32) {
 		ret = dma_set_mask(&pdev->dev,
