@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/pm_wakeup.h>
 #include <linux/regmap.h>
@@ -698,25 +699,54 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * A legacy node has no children to iterate, so drive the two keys the
-	 * mfd_cell's IRQ resources describe -- power at index 0, home at index 1
-	 * -- straight from the cell.  Everything past the keycode is identical
-	 * to the loop below.
+	 * A legacy node has no children to iterate, so drive the two keys it
+	 * names straight from its own interrupts.
+	 *
+	 * Index arithmetic must not be used here.  The modern binding groups the
+	 * presses first and the releases after, so press i pairs with i +
+	 * release_irq_interval.  The legacy node interleaves them --
+	 *
+	 *   interrupt-names = "pwrkey", "pwrkey_r", "homekey", "homekey_r", ...
+	 *
+	 * -- so index 1 is the power key's *release*, not the home key's press.
+	 * Taking the indices at face value cross-wired every handler: the power
+	 * key was reported down by irq "pwrkey" but its release handler sat on
+	 * "homekey", which only fires when volume up is pressed, so KEY_POWER
+	 * latched down forever and releasing power reported KEY_VOLUMEUP down
+	 * instead.  That is exactly the "KeyState (pressed): KEY_VOLUMEUP,
+	 * KEY_POWER" with "KeyDowns: 0" the device showed.  4.19 had no such
+	 * problem because mt6359p/v1/pmic_irq.c looks all four up by name.
 	 */
 	if (!keycount) {
+		static const char * const press_name[] = { "pwrkey", "homekey" };
+		static const char * const release_name[] = { "pwrkey_r",
+							     "homekey_r" };
+
 		for (index = 0; index <= MTK_PMIC_HOMEKEY_INDEX; index++) {
 			keys->keys[index].regs = &mtk_pmic_regs->keys_regs[index];
 
-			keys->keys[index].irq = platform_get_irq(pdev, index);
-			if (keys->keys[index].irq < 0)
+			keys->keys[index].irq =
+				of_irq_get_byname(node, press_name[index]);
+			if (keys->keys[index].irq < 0) {
+				dev_err(keys->dev, "no %s irq: %d\n",
+					press_name[index], keys->keys[index].irq);
 				return keys->keys[index].irq;
+			}
 			if (mtk_pmic_regs->release_irq) {
 				keys->keys[index].release_irq_num =
-					platform_get_irq(pdev,
-						index + release_irq_interval);
-				if (keys->keys[index].release_irq_num < 0)
+					of_irq_get_byname(node,
+							  release_name[index]);
+				if (keys->keys[index].release_irq_num < 0) {
+					dev_err(keys->dev, "no %s irq: %d\n",
+						release_name[index],
+						keys->keys[index].release_irq_num);
 					return keys->keys[index].release_irq_num;
+				}
 			}
+			dev_info(keys->dev, "%s irq %d, %s irq %d\n",
+				 press_name[index], keys->keys[index].irq,
+				 release_name[index],
+				 keys->keys[index].release_irq_num);
 
 			keys->keys[index].keycode =
 				mtk_pmic_keys_legacy_keycode(keys->dev, index);
