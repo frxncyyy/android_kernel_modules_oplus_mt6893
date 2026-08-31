@@ -1547,6 +1547,22 @@ static int mt6885_mt6359p_dev_probe(struct platform_device *pdev)
 #if IS_ENABLED(CONFIG_OF)
 static const struct of_device_id mt6885_mt6359p_dt_match[] = {
 	{.compatible = "mediatek,mt6885-mt6359p-sound",},
+	/*
+	 * MT6893 boards of this vintage name the same card without the PMIC's
+	 * "p" suffix -- the DTB has
+	 *
+	 *   sound { compatible = "mediatek,mt6885-mt6359-sound";
+	 *           mediatek,audio-codec = <&mt6359_snd>;
+	 *           mediatek,platform = <&afe>; ... }
+	 *
+	 * pointing at "mediatek,mt6359-sound" and "mediatek,mt6885-sound",
+	 * i.e. exactly the codec and platform this driver drives.  Without this
+	 * entry nothing matched the node, no card was registered, and
+	 * /proc/asound/cards read "--- no soundcards ---" -- which also left
+	 * AudioService with no stream to adjust, so the volume keys reached
+	 * Android but produced neither a volume change nor a volume dialog.
+	 */
+	{.compatible = "mediatek,mt6885-mt6359-sound",},
 	{}
 };
 #endif
