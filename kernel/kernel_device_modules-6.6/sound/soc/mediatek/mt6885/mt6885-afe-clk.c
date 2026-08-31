@@ -778,8 +778,21 @@ int mt6885_init_clock(struct mtk_base_afe *afe)
 		}
 	}
 
+	/*
+	 * 6.6 renamed two of the three syscon phandle properties this node
+	 * carries; a 4.19-era MT6893 DTB spells them the way 4.19's
+	 * mt6885-afe-clk.c read them -- "topckgen" (unchanged), "apmixed"
+	 * (now "apmixedsys") and "infracfg_ao" (now "infracfg").
+	 *
+	 * Only "topckgen" matched, so the probe died on
+	 * "Cannot find apmixedsys: -19" and no card was ever registered.
+	 * Try the current name first, then the legacy one.
+	 */
 	afe_priv->apmixed = syscon_regmap_lookup_by_phandle(afe->dev->of_node,
 							    "apmixedsys");
+	if (IS_ERR(afe_priv->apmixed))
+		afe_priv->apmixed = syscon_regmap_lookup_by_phandle(
+					afe->dev->of_node, "apmixed");
 	if (IS_ERR(afe_priv->apmixed)) {
 		dev_err(afe->dev, "%s() Cannot find apmixedsys: %ld\n",
 			__func__, PTR_ERR(afe_priv->apmixed));
@@ -797,6 +810,9 @@ int mt6885_init_clock(struct mtk_base_afe *afe)
 	afe_priv->infracfg = syscon_regmap_lookup_by_phandle(
 				afe->dev->of_node,
 				"infracfg");
+	if (IS_ERR(afe_priv->infracfg))
+		afe_priv->infracfg = syscon_regmap_lookup_by_phandle(
+					afe->dev->of_node, "infracfg_ao");
 	if (IS_ERR(afe_priv->infracfg)) {
 		dev_err(afe->dev, "%s() Cannot find infracfg: %ld\n",
 			__func__, PTR_ERR(afe_priv->infracfg));
