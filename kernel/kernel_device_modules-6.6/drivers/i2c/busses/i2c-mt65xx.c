@@ -2685,6 +2685,48 @@ static const struct i2c_algorithm mtk_i2c_algorithm = {
 	.functionality = mtk_i2c_functionality,
 };
 
+/*
+ * Bring-up override for the DT's clock-frequency, keyed on the controller's DT
+ * node name: "i2c5:400000,i2c0:100000".  Used to take a bus out of I2C
+ * High-Speed mode without editing the (preserved, 4.19-era) device tree, since
+ * the HS path has its own master-code and timing requirements that a plain
+ * fast-mode transfer does not.
+ */
+static char *force_speed;
+module_param(force_speed, charp, 0444);
+MODULE_PARM_DESC(force_speed, "override clock-frequency per bus: \"i2c5:400000\"");
+
+static void mtk_i2c_apply_force_speed(struct device_node *np, struct mtk_i2c *i2c)
+{
+	char *copy, *rest, *entry;
+
+	if (!force_speed || !*force_speed || !np)
+		return;
+
+	copy = kstrdup(force_speed, GFP_KERNEL);
+	if (!copy)
+		return;
+
+	rest = copy;
+	while ((entry = strsep(&rest, ",")) != NULL) {
+		char *value = strchr(entry, ':');
+		unsigned int hz;
+
+		if (!value)
+			continue;
+		*value++ = '\0';
+		if (kstrtouint(value, 0, &hz) || !hz)
+			continue;
+		if (!of_node_name_eq(np, entry))
+			continue;
+
+		dev_warn(i2c->dev, "force_speed: %u -> %u Hz\n",
+			 i2c->speed_hz, hz);
+		i2c->speed_hz = hz;
+	}
+	kfree(copy);
+}
+
 static int mtk_i2c_parse_dt(struct device_node *np, struct mtk_i2c *i2c)
 {
 	struct device_node *comp_node;
@@ -2695,6 +2737,8 @@ static int mtk_i2c_parse_dt(struct device_node *np, struct mtk_i2c *i2c)
 	ret = of_property_read_u32(np, "clock-frequency", &i2c->speed_hz);
 	if (ret < 0)
 		i2c->speed_hz = I2C_MAX_STANDARD_MODE_FREQ;
+
+	mtk_i2c_apply_force_speed(np, i2c);
 
 	ret = of_property_read_u32(np, "clock-div", &i2c->clk_src_div);
 	if (ret < 0)
@@ -2986,6 +3030,15 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 		return ret;
 	}
 	mtk_i2c_init_hw(i2c);
+	/*
+	 * I3C_EN gates the HS master-code write into the HFIFO, and the only
+	 * other place this register is reported is the timeout dump.
+	 */
+	dev_info(&pdev->dev, "DMA_FSM_DEBUG=0x%x (I3C_EN %s), CONTROL=0x%x, IO_CONFIG=0x%x\n",
+		 mtk_i2c_readw(i2c, OFFSET_DMA_FSM_DEBUG),
+		 (mtk_i2c_readw(i2c, OFFSET_DMA_FSM_DEBUG) & I2C_I3C_EN) ? "set" : "clear",
+		 mtk_i2c_readw(i2c, OFFSET_CONTROL),
+		 mtk_i2c_readw(i2c, OFFSET_IO_CONFIG));
 #ifndef CONFIG_MTK_SENTRY_MODE
 	mtk_i2c_clock_disable(i2c);
 #endif

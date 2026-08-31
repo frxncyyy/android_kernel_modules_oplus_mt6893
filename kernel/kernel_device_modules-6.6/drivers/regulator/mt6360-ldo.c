@@ -479,14 +479,20 @@ static const struct mt6360_regulator_desc mt6360_ldo_descs[] = {
  */
 static int mt6360_pmic_chip_id_check(struct i2c_client *i2c)
 {
-	struct i2c_client pmu_client;
+	struct i2c_client *pmu;
 	int ret;
 
-	memcpy(&pmu_client, i2c, sizeof(*i2c));
-	pmu_client.addr = 0x34;
-	ret = i2c_smbus_read_byte_data(&pmu_client, 0x00);
-	if (ret < 0)
+	pmu = kmemdup(i2c, sizeof(*i2c), GFP_KERNEL);
+	if (!pmu)
+		return -ENOMEM;
+	pmu->addr = 0x34;
+	ret = i2c_smbus_read_byte_data(pmu, 0x00);
+	kfree(pmu);
+	if (ret < 0) {
+		dev_err(&i2c->dev, "PMU 0x34 reg 0x00 read failed: %d\n", ret);
 		return ret;
+	}
+	dev_info(&i2c->dev, "PMU 0x34 reg 0x00 = %02x\n", ret);
 	if (((u8)ret & 0xf0) != 0x50)
 		return -ENODEV;
 	return ret & 0x0f;

@@ -13,6 +13,12 @@
  *
  *   insmod i2cscan.ko bus=5 addrs=0x1a,0x34,0x4e,0x64
  *
+ * With reg= it instead does an SMBus byte read of reg..reg+count-1 on each
+ * address, which is a write of the register index followed by a read.  That
+ * writes only the index byte, never a data byte, so no device state changes.
+ *
+ *   insmod i2cscan.ko bus=5 addrs=0x34 reg=0 count=16
+ *
  * Always fails to load (-ENODEV) once it has printed its results: there is
  * nothing to keep resident.
  */
@@ -29,6 +35,39 @@ static unsigned short addrs[16];
 static int addrs_count;
 module_param_array(addrs, ushort, &addrs_count, 0);
 MODULE_PARM_DESC(addrs, "7-bit addresses to probe");
+
+static int reg = -1;
+module_param(reg, int, 0);
+MODULE_PARM_DESC(reg, "first register to read, or -1 for a bare address probe");
+
+static int count = 1;
+module_param(count, int, 0);
+MODULE_PARM_DESC(count, "number of consecutive registers to read");
+
+static void i2cscan_read_regs(struct i2c_adapter *adap, unsigned short addr)
+{
+	struct i2c_client *client;
+	int i;
+
+	/* struct i2c_client embeds a struct device -- too big for the stack */
+	client = kzalloc(sizeof(*client), GFP_KERNEL);
+	if (!client)
+		return;
+	client->adapter = adap;
+	client->addr = addr;
+
+	for (i = 0; i < count; i++) {
+		int ret = i2c_smbus_read_byte_data(client, reg + i);
+
+		if (ret < 0)
+			pr_info("i2cscan: 0x%02x reg 0x%02x -> error %d\n",
+				addr, reg + i, ret);
+		else
+			pr_info("i2cscan: 0x%02x reg 0x%02x = 0x%02x\n",
+				addr, reg + i, ret);
+	}
+	kfree(client);
+}
 
 static int __init i2cscan_init(void)
 {
@@ -52,6 +91,11 @@ static int __init i2cscan_init(void)
 		struct i2c_msg msg;
 		u8 byte = 0;
 		int ret;
+
+		if (reg >= 0) {
+			i2cscan_read_regs(adap, addrs[i]);
+			continue;
+		}
 
 		msg.addr = addrs[i];
 		msg.flags = I2C_M_RD;
