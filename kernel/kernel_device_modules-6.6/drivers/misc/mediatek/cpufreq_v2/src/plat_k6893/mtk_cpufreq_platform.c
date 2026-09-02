@@ -699,57 +699,90 @@ int mt_cpufreq_dts_map(void)
 	return 0;
 }
 
-unsigned int _mt_cpufreq_get_cpu_level(void)
+/*
+ * op6893 6.6 bring-up: read a segment efuse from whichever node declares it.
+ *
+ * 6.6 gets the CPU speed bin through the nvmem cell binding, asking the
+ * "mt_cpufreq" node for "efuse_segment_cell".  4.19 used
+ * get_devinfo_with_index(7) and never touched the DT, so the 4.19 DTB this port
+ * keeps has no such properties -- its mt_cpufreq node carries a compatible and
+ * nothing else.  The cell itself is present: the same phandle is named
+ * "efuse_segment_cell" on lkg, eem_fsm@11278000, eemgpu_fsm@1100b000 and
+ * gpufreq, which is why gpufreq -- asking its own node -- reads the true 0x40
+ * while this read -ENOENT and fell back to CPU_LEVEL_0.  That cost the MT6891
+ * 26G26G tables on MT6893 silicon: the big core capped at 2.6 GHz instead of
+ * 3.0, at 1050 mV where this bin asks 981 mV for 2.6 GHz.
+ *
+ * mt_cpufreq is tried first, so a DTB that does declare the cell is unaffected.
+ */
+static int mt_cpufreq_read_efuse(const char *cell_name, unsigned int *out)
 {
-	unsigned int lv = CPU_LEVEL_0, val = 0, wo_efuse;
+	static const char * const nodes[] = { "mt_cpufreq", "lkg", "eem_fsm" };
+	struct device_node *dev_node;
 	struct nvmem_cell *efuse_cell;
 	unsigned int *efuse_buf;
 	size_t efuse_len;
-	struct device_node *dev_node;
+	int i;
 
-	dev_node = of_find_node_by_name(NULL, "mt_cpufreq");
-	if (!dev_node){
-		tag_pr_info("@%s: get mt_cpufreq node fail\n", __func__);
-		goto exit;
+	for (i = 0; i < ARRAY_SIZE(nodes); i++) {
+		dev_node = of_find_node_by_name(NULL, nodes[i]);
+		if (!dev_node)
+			continue;
+		efuse_cell = of_nvmem_cell_get(dev_node, cell_name);
+		of_node_put(dev_node);
+		if (IS_ERR(efuse_cell))
+			continue;
+		efuse_buf = (unsigned int *)nvmem_cell_read(efuse_cell,
+							   &efuse_len);
+		nvmem_cell_put(efuse_cell);
+		if (IS_ERR(efuse_buf))
+			continue;
+		if (efuse_len < sizeof(*out)) {
+			kfree(efuse_buf);
+			continue;
+		}
+		*out = *efuse_buf;
+		kfree(efuse_buf);
+		if (i)
+			tag_pr_info("@%s: %s read from %s\n", __func__,
+				    cell_name, nodes[i]);
+		return 0;
 	}
 
-	efuse_cell = of_nvmem_cell_get(dev_node, "efuse_segment_cell");
-	if (IS_ERR(efuse_cell)) {
-		tag_pr_info("@%s: cannot get efuse_segment_cell\n", __func__);
+	tag_pr_info("@%s: cannot get %s\n", __func__, cell_name);
+	return -ENOENT;
+}
+
+unsigned int _mt_cpufreq_get_cpu_level(void)
+{
+	unsigned int lv = CPU_LEVEL_0, val = 0, wo_efuse, raw = 0;
+
+	if (mt_cpufreq_read_efuse("efuse_segment_cell", &raw))
 		goto exit;
-	}
+	val = raw & 0xFF;
 
-	efuse_buf = (unsigned int *)nvmem_cell_read(efuse_cell, &efuse_len);
-	nvmem_cell_put(efuse_cell);
-	if (IS_ERR(efuse_buf)) {
-		tag_pr_info("@%s: cannot get efuse_buf\n", __func__);
-		goto exit;
-	}
-
-	val = (*efuse_buf) & 0xFF;
-	kfree(efuse_buf);
-
-	efuse_cell = of_nvmem_cell_get(dev_node, "efuse_fabinfo2_cell");
-	if (IS_ERR(efuse_cell)) {
-		tag_pr_info("@%s: cannot get efuse_fabinfo2_cell\n", __func__);
-		goto exit;
-	}
-
-	efuse_buf = (unsigned int *)nvmem_cell_read(efuse_cell, &efuse_len);
-	nvmem_cell_put(efuse_cell);
-	if (IS_ERR(efuse_buf)) {
-		tag_pr_info("@%s: cannot get efuse_buf\n", __func__);
-		goto exit;
-	}
-
-	wo_efuse = ((*efuse_buf) >> 13) & 0x1;
-	kfree(efuse_buf);
-
-	if (val == 0x10)
+	/*
+	 * op6893 6.6 bring-up: decide on the segment cell before reading
+	 * fabinfo2, rather than after.  The decision table is unchanged --
+	 * 0x10 and 0x40 were always conclusive on their own and wo_efuse only
+	 * ever broke a tie between them -- but this DTB declares no
+	 * "efuse_fabinfo2_cell" anywhere, and reading it first meant a missing
+	 * fabinfo2 discarded a segment value that had already answered the
+	 * question.
+	 */
+	if (val == 0x10) {
 		lv = CPU_LEVEL_0;
-	else if (val == 0x40)
+		goto exit;
+	} else if (val == 0x40) {
 		lv = CPU_LEVEL_1;
-	else if (wo_efuse == 0x0)
+		goto exit;
+	}
+
+	if (mt_cpufreq_read_efuse("efuse_fabinfo2_cell", &raw))
+		goto exit;
+	wo_efuse = (raw >> 13) & 0x1;
+
+	if (wo_efuse == 0x0)
 		lv = CPU_LEVEL_0;
 	else if (wo_efuse == 0x1)
 		lv = CPU_LEVEL_1;

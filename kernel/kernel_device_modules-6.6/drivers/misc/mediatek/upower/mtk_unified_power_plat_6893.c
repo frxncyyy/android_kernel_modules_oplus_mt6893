@@ -174,58 +174,74 @@ int upower_bank_to_spower_bank(int upower_bank)
 }
 #endif
 
-static unsigned int _mt_cpufreq_get_cpu_level_upower(void)
+/*
+ * op6893 6.6 bring-up: read a segment efuse from whichever node declares it.
+ * Same defect and same reasoning as mt_cpufreq_read_efuse() in
+ * cpufreq_v2/src/plat_k6893/mtk_cpufreq_platform.c -- this DTB's mt_cpufreq
+ * node has no nvmem-cells, so the bin came back as CPU_LEVEL_0 and upower
+ * scaled its capacity and power tables for the wrong part.  The cell is on lkg
+ * and eem_fsm@11278000; mt_cpufreq is still tried first.
+ */
+static int upower_read_efuse(const char *cell_name, unsigned int *out)
 {
-
-	unsigned int lv = 0, val = 0, wo_efuse;
+	static const char * const nodes[] = { "mt_cpufreq", "lkg", "eem_fsm" };
+	struct device_node *dev_node;
 	struct nvmem_cell *efuse_cell;
 	unsigned int *efuse_buf;
 	size_t efuse_len;
-	struct device_node *dev_node;
+	int i;
 
-	dev_node = of_find_node_by_name(NULL, "mt_cpufreq");
-	if (!dev_node){
-		upower_info("@%s: get mt_cpufreq node fail\n", __func__);
-		goto exit;
+	for (i = 0; i < ARRAY_SIZE(nodes); i++) {
+		dev_node = of_find_node_by_name(NULL, nodes[i]);
+		if (!dev_node)
+			continue;
+		efuse_cell = of_nvmem_cell_get(dev_node, cell_name);
+		of_node_put(dev_node);
+		if (IS_ERR(efuse_cell))
+			continue;
+		efuse_buf = (unsigned int *)nvmem_cell_read(efuse_cell,
+							   &efuse_len);
+		nvmem_cell_put(efuse_cell);
+		if (IS_ERR(efuse_buf))
+			continue;
+		if (efuse_len < sizeof(*out)) {
+			kfree(efuse_buf);
+			continue;
+		}
+		*out = *efuse_buf;
+		kfree(efuse_buf);
+		if (i)
+			upower_info("@%s: %s read from %s\n", __func__,
+				    cell_name, nodes[i]);
+		return 0;
 	}
 
-	efuse_cell = of_nvmem_cell_get(dev_node, "efuse_segment_cell");
-	if (IS_ERR(efuse_cell)) {
-		upower_info("@%s: cannot get efuse_segment_cell\n", __func__);
+	upower_info("@%s: cannot get %s\n", __func__, cell_name);
+	return -ENOENT;
+}
+
+static unsigned int _mt_cpufreq_get_cpu_level_upower(void)
+{
+	unsigned int lv = 0, val = 0, wo_efuse, raw = 0;
+
+	if (upower_read_efuse("efuse_segment_cell", &raw))
 		goto exit;
-	}
+	val = raw & 0xFF;
 
-	efuse_buf = (unsigned int *)nvmem_cell_read(efuse_cell, &efuse_len);
-	nvmem_cell_put(efuse_cell);
-	if (IS_ERR(efuse_buf)) {
-		upower_info("@%s: cannot get efuse_buf\n", __func__);
-		goto exit;
-	}
-
-	val = (*efuse_buf) & 0xFF;
-	kfree(efuse_buf);
-
-	efuse_cell = of_nvmem_cell_get(dev_node, "efuse_fabinfo2_cell");
-	if (IS_ERR(efuse_cell)) {
-		upower_info("@%s: cannot get efuse_fabinfo2_cell\n", __func__);
-		goto exit;
-	}
-
-	efuse_buf = (unsigned int *)nvmem_cell_read(efuse_cell, &efuse_len);
-	nvmem_cell_put(efuse_cell);
-	if (IS_ERR(efuse_buf)) {
-		upower_info("@%s: cannot get efuse_buf\n", __func__);
-		goto exit;
-	}
-
-	wo_efuse = ((*efuse_buf) >> 13) & 0x1;
-	kfree(efuse_buf);
-
-	if (val == 0x10)
+	/* Segment cell first; see mtk_cpufreq_platform.c for why. */
+	if (val == 0x10) {
 		lv = 0;
-	else if (val == 0x40)
+		goto exit;
+	} else if (val == 0x40) {
 		lv = 1;
-	else if (wo_efuse == 0x0)
+		goto exit;
+	}
+
+	if (upower_read_efuse("efuse_fabinfo2_cell", &raw))
+		goto exit;
+	wo_efuse = (raw >> 13) & 0x1;
+
+	if (wo_efuse == 0x0)
 		lv = 0;
 	else if (wo_efuse == 0x1)
 		lv = 1;
