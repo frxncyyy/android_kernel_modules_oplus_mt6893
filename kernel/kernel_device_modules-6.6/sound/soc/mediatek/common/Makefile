@@ -17,7 +17,7 @@ snd-soc-mtk-common-objs += mtk-afe-platform-driver.o mtk-afe-fe-dai.o mtk-mmap-i
 ifeq ($(CONFIG_MTK_USIP_DRIVER), m)
     snd-soc-mtk-common-m += mtk-usip.o
 else
-    snd-soc-mtk-common-$(CONFIG_MTK_ECCCI_DRIVER) += mtk-usip.o
+    snd-soc-mtk-common-$(CONFIG_SND_SOC_MTK_USIP) += mtk-usip.o
 endif
 snd-soc-mtk-common-$(CONFIG_SND_SOC_MTK_SRAM) += mtk-sram-manager.o
 snd-soc-mtk-common-$(CONFIG_SND_SOC_MTK_SMART_PHONE) += mtk-sp-pcm-ops.o mtk-afe-debug.o

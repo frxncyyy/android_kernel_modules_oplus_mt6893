@@ -280,6 +280,17 @@ err_platform:
 
 static const struct of_device_id dsp_pcm_dt_match[] = {
 	{ .compatible = "mediatek,snd-audio-dsp", },
+	/*
+	 * MT6893 boards of this vintage spell the node with underscores:
+	 *
+	 *   snd_audio_dsp { compatible = "mediatek,snd_audio_dsp"; ... }
+	 *
+	 * which is what 4.19's audio_dsp driver matched.  Without this entry
+	 * nothing binds the node, the "snd-audio-dsp" platform component never
+	 * registers, and the thirteen DSP dai links in the mt6885 machine
+	 * driver keep snd_soc_register_card() at -EPROBE_DEFER for ever.
+	 */
+	{ .compatible = "mediatek,snd_audio_dsp", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, dsp_pcm_dt_match);

@@ -17,11 +17,23 @@ struct audio_gpio_attr {
 	const char *name;
 	bool gpio_prepare;
 	struct pinctrl_state *gpioctrl;
+	/* Alternate pinctrl state name, tried when @name is not in the node's
+	 * pinctrl-names; see mt6885_afe_gpio_init().
+	 */
+	const char *alt_name;
 };
 
 static struct audio_gpio_attr aud_gpios[MT6885_AFE_GPIO_GPIO_NUM] = {
-	[MT6885_AFE_GPIO_DAT_MISO0_OFF] = {"aud_dat_miso0_off", false, NULL},
-	[MT6885_AFE_GPIO_DAT_MISO0_ON] = {"aud_dat_miso0_on", false, NULL},
+	/* This 4.19 DTB has one ADDA uplink data state, "aud_dat_miso",
+	 * which is what 4.19's MT6885_AFE_GPIO_DAT_MISO looked up.  6.6 split
+	 * it into miso0/miso1; miso1 has no pin group here and is skipped by
+	 * mt6885_afe_gpio_is_prepared(), but miso0 has to find the old name or
+	 * ADDA capture never gets its data pins muxed.
+	 */
+	[MT6885_AFE_GPIO_DAT_MISO0_OFF] = {.name = "aud_dat_miso0_off",
+					   .alt_name = "aud_dat_miso_off"},
+	[MT6885_AFE_GPIO_DAT_MISO0_ON] = {.name = "aud_dat_miso0_on",
+					  .alt_name = "aud_dat_miso_on"},
 	[MT6885_AFE_GPIO_DAT_MISO1_OFF] = {"aud_dat_miso1_off", false, NULL},
 	[MT6885_AFE_GPIO_DAT_MISO1_ON] = {"aud_dat_miso1_on", false, NULL},
 	[MT6885_AFE_GPIO_DAT_MISO2_OFF] = {"aud_dat_miso2_off", false, NULL},
@@ -74,6 +86,14 @@ int mt6885_afe_gpio_init(struct mtk_base_afe *afe)
 	for (i = 0; i < ARRAY_SIZE(aud_gpios); i++) {
 		aud_gpios[i].gpioctrl = pinctrl_lookup_state(aud_pinctrl,
 							     aud_gpios[i].name);
+		if (IS_ERR(aud_gpios[i].gpioctrl) && aud_gpios[i].alt_name) {
+			dev_info(afe->dev, "%s(), %s absent, trying %s\n",
+				 __func__, aud_gpios[i].name,
+				 aud_gpios[i].alt_name);
+			aud_gpios[i].gpioctrl =
+				pinctrl_lookup_state(aud_pinctrl,
+						     aud_gpios[i].alt_name);
+		}
 		if (IS_ERR(aud_gpios[i].gpioctrl)) {
 			ret = PTR_ERR(aud_gpios[i].gpioctrl);
 			dev_err(afe->dev, "%s(), pinctrl_lookup_state %s fail, ret %d\n",

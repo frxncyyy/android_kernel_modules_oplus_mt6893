@@ -131,6 +131,29 @@ static bool mtk_audio_sram_avail(struct mtk_audio_sram *sram,
 			  mtk_audio_sram_avail_from_offset(sram, size, blk_idx, blk_num);
 }
 
+/* The audio_sram node in a 4.19 DTB spells its three properties with
+ * underscores -- "prefer_mode", "mode_size", "block_size" -- which is what
+ * 4.19's mtk-sram-manager.c read.  6.6 renamed all three to hyphens.  A miss
+ * here aborts mt6885_afe_pcm_dev_probe(), so the AFE component never registers
+ * and the machine driver's snd_soc_register_card() defers for ever (-517):
+ * no sound card at all.  Try the current name first, then the 4.19 one.
+ */
+static int sram_of_read_u32(struct device_node *np, const char *name,
+			    const char *legacy, u32 *out)
+{
+	int ret = of_property_read_u32(np, name, out);
+
+	return ret ? of_property_read_u32(np, legacy, out) : 0;
+}
+
+static int sram_of_read_u32_array(struct device_node *np, const char *name,
+				  const char *legacy, u32 *out, size_t sz)
+{
+	int ret = of_property_read_u32_array(np, name, out, sz);
+
+	return ret ? of_property_read_u32_array(np, legacy, out, sz) : 0;
+}
+
 int mtk_audio_sram_init(struct device *dev,
 			struct mtk_audio_sram *sram,
 			const struct mtk_audio_sram_ops *ops)
@@ -180,16 +203,16 @@ int mtk_audio_sram_init(struct device *dev,
 	sram->size = (unsigned int)size64;
 
 	/* get prefer sram mode, mode size */
-	ret = of_property_read_u32(sram_node,
-				   "prefer-mode", &sram->prefer_mode);
+	ret = sram_of_read_u32(sram_node, "prefer-mode", "prefer_mode",
+			       &sram->prefer_mode);
 	if (ret) {
 		dev_err(sram->dev, "%s(), get prefer-mode fail\n", __func__);
 		goto of_error;
 	}
 
-	ret = of_property_read_u32_array(sram_node, "mode-size",
-					 sram->mode_size,
-					 MTK_AUDIO_SRAM_MODE_NUM);
+	ret = sram_of_read_u32_array(sram_node, "mode-size", "mode_size",
+				     sram->mode_size,
+				     MTK_AUDIO_SRAM_MODE_NUM);
 	if (ret) {
 		dev_err(sram->dev, "%s(), get mode-size fail, ret %d\n",
 			__func__, ret);
@@ -198,8 +221,8 @@ int mtk_audio_sram_init(struct device *dev,
 
 
 	/* get block size */
-	ret = of_property_read_u32(sram_node,
-				   "block-size", &sram->block_size);
+	ret = sram_of_read_u32(sram_node, "block-size", "block_size",
+			       &sram->block_size);
 	if (ret) {
 		dev_err(sram->dev, "%s(), get block-size fail\n", __func__);
 		goto of_error;

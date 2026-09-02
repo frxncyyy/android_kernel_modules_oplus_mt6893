@@ -18,6 +18,21 @@ config SND_SOC_MTK_SRAM
 	  Select Y if you use this SRAM management.
 	  If unsure select "N".
 
+config SND_SOC_MTK_USIP
+	tristate "Mediatek uSip modem speech shared memory"
+	default MTK_ECCCI_DRIVER
+	help
+	  Builds mtk-usip.o into snd-soc-mtk-common.  It exports the modem
+	  speech shared-memory region to userspace and therefore calls into
+	  eccci (get_smem_phy_start_addr, get_md_resv_mem_info).
+	  Those are hard undefined references, so with this on and the eccci
+	  modules absent the whole of snd-soc-mtk-common -- and with it the AFE
+	  and the sound card -- fails to insmod with "Unknown symbol".
+	  Say N on a board that enables MTK_ECCCI_DRIVER but does not load the
+	  modem modules; only the USIP misc device is lost.
+	  Defaults to MTK_ECCCI_DRIVER, which is what the Makefile keyed on
+	  before this option existed.
+
 config SND_SOC_MT6833
 	tristate "ASoC support for Mediatek MT6833 chip"
 	depends on ARCH_MEDIATEK

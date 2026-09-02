@@ -1220,6 +1220,16 @@ static int mtk_dloffload_probe(struct platform_device *pdev)
 #if IS_ENABLED(CONFIG_OF)
 static const struct of_device_id mt_soc_offload_common_dt_match[] = {
 	{ .compatible = "mediatek,mt-soc-offload-common", },
+	/*
+	 * MT6893 boards of this vintage spell the node with underscores:
+	 *
+	 *   mt_soc_playback_offload {
+	 *           compatible = "mediatek,mt_soc_offload_common"; ... }
+	 *
+	 * which is what 4.19 matched.  Without this entry the DSP offload dai
+	 * link has no platform component and the card never registers.
+	 */
+	{ .compatible = "mediatek,mt_soc_offload_common", },
 	{}
 };
 MODULE_DEVICE_TABLE(of, mt_soc_offload_common_dt_match);

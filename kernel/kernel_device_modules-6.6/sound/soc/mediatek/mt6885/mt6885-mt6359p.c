@@ -1479,6 +1479,7 @@ static int mt6885_mt6359p_dev_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = &mt6885_mt6359p_soc_card;
 	struct device_node *platform_node, *spk_node;
+	struct device_node *dsp_node, *offload_node, *codec_node;
 	int ret, i;
 	struct snd_soc_dai_link *dai_link;
 
@@ -1509,9 +1510,62 @@ static int mt6885_mt6359p_dev_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	/*
+	 * An ASoC component is named after dev_name(), i.e. after the DT node,
+	 * so on this 4.19 DTB the two ADSP platform drivers come up as
+	 * "snd_audio_dsp" and "mt_soc_playback_offload" -- not as the
+	 * "snd-audio-dsp" / "mt-soc-offload-common" the links below ask for by
+	 * name, which left thirteen DSP links and the offload link unresolved
+	 * and snd_soc_register_card() deferring for ever.  Match them by
+	 * of_node instead; 4.19's mt6885-mt6359.c used the same phandle.
+	 */
+	dsp_node = of_parse_phandle(pdev->dev.of_node,
+				    "mediatek,snd_audio_dsp", 0);
+	if (!dsp_node)
+		dev_info(&pdev->dev,
+			 "Property 'mediatek,snd_audio_dsp' missing or invalid\n");
+
+	offload_node = of_find_compatible_node(NULL, NULL,
+					      "mediatek,mt_soc_offload_common");
+
+	/*
+	 * Same story for the PMIC codec: the links name it DEVICE_MT6359_NAME
+	 * ("mt6359p-sound", the platform *driver* name), but this DTB's node is
+	 * "mt6359_snd", so the component registers under that and the name
+	 * match fails.  Take the of_node from the mediatek,audio-codec phandle,
+	 * as 4.19's mt6885-mt6359.c did.
+	 */
+	codec_node = of_parse_phandle(pdev->dev.of_node,
+				      "mediatek,audio-codec", 0);
+	if (!codec_node)
+		dev_info(&pdev->dev,
+			 "Property 'mediatek,audio-codec' missing or invalid\n");
+
 	for_each_card_prelinks(card, i, dai_link) {
-		if (!dai_link->platforms->name)
+		const char *pname = dai_link->platforms->name;
+		struct snd_soc_dai_link_component *codec;
+		int j;
+
+		if (!pname) {
 			dai_link->platforms->of_node = platform_node;
+		} else if (dsp_node && !strcmp(pname, "snd-audio-dsp")) {
+			dai_link->platforms->name = NULL;
+			dai_link->platforms->of_node = dsp_node;
+		} else if (offload_node &&
+			   !strcmp(pname, "mt-soc-offload-common")) {
+			dai_link->platforms->name = NULL;
+			dai_link->platforms->of_node = offload_node;
+		}
+
+		if (codec_node) {
+			for_each_link_codecs(dai_link, j, codec) {
+				if (!codec->name ||
+				    strcmp(codec->name, DEVICE_MT6359_NAME))
+					continue;
+				codec->name = NULL;
+				codec->of_node = codec_node;
+			}
+		}
 
 		if (!strcmp(dai_link->name, "Speaker Codec")) {
 			ret = snd_soc_of_get_dai_link_codecs(
