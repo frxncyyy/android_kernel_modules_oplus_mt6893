@@ -140,6 +140,23 @@ static struct accdet_priv mt6359_accdet[] = {
 	},
 };
 
+/*
+ * This 4.19 DTB's accdet node is
+ *
+ *   accdet { compatible = "mediatek,pmic-accdet";
+ *            io-channels = <&pmic_auxadc 9>;
+ *            io-channel-names = "pmic_accdet"; ... status = "okay"; }
+ *
+ * i.e. the other name the binding documents for this same block (see
+ * Documentation/devicetree/bindings/sound/mt6359p-accdet.txt).  It is
+ * deliberately NOT listed below yet: it is a *top-level* node, so the platform
+ * device has no parent and accdet_probe()'s very first statement,
+ * dev_get_drvdata(pdev->dev.parent), would fault -- and past that it still
+ * needs the "pmic_accdet" iio channel and the "mt63xx-accdet-efuse" nvmem
+ * cell, neither of which has a provider in this port yet.  Until those three
+ * are handled the node stays unbound, @accdet stays NULL, and the card comes up
+ * without a headset jack (see mt6359p_accdet_init()).
+ */
 const struct of_device_id accdet_of_match[] = {
 	{
 		.compatible = "mediatek,mt6359p-accdet",
@@ -3342,6 +3359,17 @@ int mt6359p_accdet_init(struct snd_soc_component *component,
 {
 	int ret;
 
+	/* @accdet is only set by accdet_probe().  The machine driver calls this
+	 * from its dai_link init, i.e. from inside snd_soc_register_card(), so
+	 * a NULL here used to take the whole kernel down (__mutex_init on
+	 * &accdet->jack.mutex) rather than just cost us the jack.
+	 */
+	if (!accdet) {
+		dev_info(component->dev,
+			 "%s(), accdet not probed, no headset jack\n", __func__);
+		return 0;
+	}
+
 	/* Enable Headset and 4 Buttons Jack detection */
 	ret = snd_soc_card_jack_new(card,
 				    "Headset Jack",
@@ -3368,6 +3396,9 @@ EXPORT_SYMBOL_GPL(mt6359p_accdet_init);
 
 int mt6359p_accdet_set_drvdata(struct snd_soc_card *card)
 {
+	if (!accdet)
+		return -ENODEV;
+
 	snd_soc_card_set_drvdata(card, accdet);
 
 	return 0;
