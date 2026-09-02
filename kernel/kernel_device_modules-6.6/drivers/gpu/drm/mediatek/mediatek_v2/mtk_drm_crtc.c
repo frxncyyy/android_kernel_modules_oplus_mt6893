@@ -8450,30 +8450,11 @@ static void mtk_crtc_release_input_layer_fence(
 	struct mtk_drm_private *priv = mtk_crtc->base.dev->dev_private;
 	int i;
 	unsigned int fence_idx = 0;
-	bool lfdbg = false;
 
 	/* fence release already during suspend */
 	if (priv->power_state == false) {
-		/* op6893 bring-up instrumentation (grep LFDBG) -- remove later. */
-		static DEFINE_RATELIMIT_STATE(lfdbg_pwr_rs, HZ, 1);
-
-		if (__ratelimit(&lfdbg_pwr_rs))
-			DDPPR_ERR("LFDBG skip crtc%d power_state==false\n",
-				  drm_crtc_index(crtc));
 		DDPFENCE("%s:%d power_state == false\n", __func__, __LINE__);
 		return;
-	}
-
-	/*
-	 * op6893 bring-up instrumentation (grep LFDBG) -- remove later.  Checked
-	 * once per call rather than per layer so that a single burst shows every
-	 * layer, and only for crtc0.  layer_nr matters here: any layer index
-	 * userspace uses beyond it never gets its release fence advanced at all.
-	 */
-	{
-		static DEFINE_RATELIMIT_STATE(lfdbg_rel_rs, HZ, 1);
-
-		lfdbg = (drm_crtc_index(crtc) == 0) && __ratelimit(&lfdbg_rel_rs);
 	}
 
 	for (i = 0; i < mtk_crtc->layer_nr; i++) {
@@ -8489,11 +8470,6 @@ static void mtk_crtc_release_input_layer_fence(
 		if (drm_crtc_index(crtc) == 2)
 			DDPINFO("%d, fence_idx:%d, subtractor:%d\n",
 					i, fence_idx, subtractor);
-		if (lfdbg)
-			DDPPR_ERR("LFDBG rel crtc0 nr:%u L%d slot:%u idx:%u sub:%u\n",
-				mtk_crtc->layer_nr, i,
-				(unsigned int)mtk_get_plane_slot_idx(mtk_crtc, i),
-				fence_idx, subtractor);
 		mtk_release_fence(session_id, i, fence_idx - subtractor);
 	}
 }
@@ -17217,25 +17193,6 @@ void mtk_drm_crtc_plane_disable(struct drm_crtc *crtc, struct drm_plane *plane,
 		       DISP_SLOT_CUR_CONFIG_FENCE(mtk_get_plane_slot_idx(mtk_crtc, plane_index)));
 	cur_fence = plane_state->pending.prop_val[PLANE_PROP_NEXT_BUFF_IDX];
 
-	/*
-	 * op6893 bring-up instrumentation (grep CFDBG) -- remove later.  Answers
-	 * whether userspace configures the planes it is not using: LFDBG showed
-	 * DISP_SLOT_CUR_CONFIG_FENCE stuck at 0 for layers 1..3, so their release
-	 * fences never advance and GED blocks in dequeueBuffer on "-P_0_1-".
-	 * "cur:-1" here means the blob never set PLANE_PROP_NEXT_BUFF_IDX for
-	 * this plane; no line at all for a plane index means the config path is
-	 * not even reached for it.
-	 */
-	{
-		static DEFINE_RATELIMIT_STATE(cfdbg_rs, HZ, 8);
-
-		if (drm_crtc_index(crtc) == 0 && __ratelimit(&cfdbg_rs))
-			DDPPR_ERR("CFDBG cfg crtc0 P%u cur:%d last:%u en:%d fmt:0x%x\n",
-				plane_index, (int)cur_fence, last_fence,
-				plane_state->pending.enable ? 1 : 0,
-				plane_state->pending.format);
-	}
-
 	addr = mtk_get_gce_backup_slot_pa(mtk_crtc,
 		DISP_SLOT_CUR_CONFIG_FENCE(mtk_get_plane_slot_idx(mtk_crtc, plane_index)));
 	if (cur_fence != -1 && cur_fence > last_fence)
@@ -17470,25 +17427,6 @@ void mtk_drm_crtc_plane_update(struct drm_crtc *crtc, struct drm_plane *plane,
 	last_fence = *(unsigned int *)mtk_get_gce_backup_slot_va(mtk_crtc,
 		       DISP_SLOT_CUR_CONFIG_FENCE(mtk_get_plane_slot_idx(mtk_crtc, plane_index)));
 	cur_fence = (unsigned int)plane_state->pending.prop_val[PLANE_PROP_NEXT_BUFF_IDX];
-
-	/*
-	 * op6893 bring-up instrumentation (grep CFDBG) -- remove later.  This is
-	 * the normal plane update path (the one in mtk_drm_crtc_plane_disable()
-	 * only runs when a plane is torn down).  LFDBG showed
-	 * DISP_SLOT_CUR_CONFIG_FENCE pinned at 0 for layers 1..3, so their
-	 * release fences never advance and GED blocks in dequeueBuffer on
-	 * "-P_0_1-".  A missing line for a plane index means this path never
-	 * runs for it; "cur:4294967295" means the blob left
-	 * PLANE_PROP_NEXT_BUFF_IDX at its -1 default.
-	 */
-	{
-		static DEFINE_RATELIMIT_STATE(cfdbg_upd_rs, HZ, 8);
-
-		if (drm_crtc_index(crtc) == 0 && __ratelimit(&cfdbg_upd_rs))
-			DDPPR_ERR("CFDBG upd crtc0 P%u cur:%u last:%u en:%d sub:%u\n",
-				plane_index, cur_fence, last_fence,
-				plane_state->pending.enable ? 1 : 0, sub);
-	}
 
 	addr = mtk_get_gce_backup_slot_pa(mtk_crtc,
 		DISP_SLOT_CUR_CONFIG_FENCE(mtk_get_plane_slot_idx(mtk_crtc, plane_index)));
@@ -19616,26 +19554,6 @@ static void mtk_drm_crtc_atomic_flush(struct drm_crtc *crtc,
 			mtk_crtc_state->prop_val[CRTC_PROP_PRES_FENCE_IDX]);
 		drm_trace_tag_value("update_present_fence",
 			mtk_crtc_state->prop_val[CRTC_PROP_PRES_FENCE_IDX]);
-
-		/* op6893 bring-up instrumentation (grep PFDBG) -- remove later. */
-		{
-			static DEFINE_RATELIMIT_STATE(pfdbg_upd_rs, HZ, 2);
-
-			if (__ratelimit(&pfdbg_upd_rs))
-				DDPPR_ERR("PFDBG upd crtc%u idx:%u\n", index,
-					mtk_crtc_state->prop_val[CRTC_PROP_PRES_FENCE_IDX]);
-		}
-	} else {
-		/*
-		 * op6893 bring-up instrumentation (grep PFDBG).  If this fires,
-		 * userspace never set CRTC_PROP_PRES_FENCE_IDX, so the GCE
-		 * backup slot keeps whatever it had and pf_release_thread has
-		 * no index to release.
-		 */
-		static DEFINE_RATELIMIT_STATE(pfdbg_noprop_rs, HZ, 2);
-
-		if (__ratelimit(&pfdbg_noprop_rs))
-			DDPPR_ERR("PFDBG noprop crtc%u\n", index);
 	}
 
 	/* for wfd latency debug */
@@ -20968,22 +20886,6 @@ static int mtk_drm_pf_release_thread(void *data)
 		else
 			pf_time = 0;
 		fence_idx = atomic_read(&private->crtc_rel_present[crtc_idx]);
-
-		/*
-		 * op6893 bring-up instrumentation (grep PFDBG) -- remove later.
-		 * fence_idx here is what the RDMA0 SOF handler read out of the
-		 * GCE backup slot, i.e. the far end of the CMDQ write in
-		 * mtk_drm_crtc_atomic_flush().  Pairing this with "PFDBG upd"
-		 * shows whether the index survives the trip through the slot.
-		 */
-		{
-			static DEFINE_RATELIMIT_STATE(pfdbg_thr_rs, HZ, 2);
-
-			if (__ratelimit(&pfdbg_thr_rs))
-				DDPPR_ERR("PFDBG thr crtc%u slotidx:%u connected:%d\n",
-					crtc_idx, fence_idx,
-					mtk_drm_lcm_is_connect(mtk_crtc) ? 1 : 0);
-		}
 
 		if (mtk_release_present_fence(private->session_id[crtc_idx],
 					  fence_idx, pf_time) == 1) {
