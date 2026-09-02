@@ -432,17 +432,52 @@ static int mt6315_regulator_probe(struct platform_device *pdev)
 			 * registered three identically named "VBUCK1" rails, one
 			 * per slave, which no name lookup could tell apart.
 			 *
-			 * Only the name is taken from the node.  The constraints
-			 * in it are still not parsed, because desc.of_match is
-			 * matched against children of config.of_node and this is
-			 * the rail node itself -- that is unchanged behaviour and
-			 * does not matter here: MCUPM owns the CPU rails and the
-			 * kernel side only reads their voltage.
+			 * Also the fallback if the of_match below ever misses:
+			 * when the core does parse the node it takes
+			 * constraints->name from regulator-name too, and
+			 * rdev_get_name() prefers that over desc->name.
 			 */
 			descs[i] = (mt6315_regulators + i)->desc;
 			if (!of_property_read_string(np, "regulator-name",
 						     &dt_name))
 				descs[i].name = dt_name;
+			/*
+			 * op6893 6.6 bring-up: point desc.of_match at the
+			 * node's real name so the core parses the constraints
+			 * inside it.
+			 *
+			 * regulator_of_get_init_node() searches the children of
+			 * config.dev->of_node -- the mt6315_<slave>_regulator
+			 * node -- and the rails are exactly that, its children.
+			 * What did not line up is the name: MT_BUCK puts
+			 * "vbuck1" in of_match while this DTB calls the child
+			 * "7_vbuck1".  So regulator_of_get_init_data() returned
+			 * NULL, register fell through to config->init_data
+			 * (which this driver never sets), and every rail came up
+			 * with no constraints at all -- min_microvolts and
+			 * max_microvolts both 0, valid_ops_mask empty.
+			 *
+			 * That is what made gpufreq abort at every boot.
+			 * _vgpu-supply is 7_vbuck1, so regulator_set_voltage()
+			 * hit the REGULATOR_CHANGE_VOLTAGE check in
+			 * regulator_check_voltage() and returned -EPERM:
+			 * "7_vbuck1: voltage operation not allowed" then
+			 * "__gpufreq_abort: fail to set VGPU (-1)".  Its other
+			 * rail, _vsram_gpu -> MT6359P vsram_others, always had
+			 * constraints (500000-1193750) and scaled fine, which is
+			 * why only VGPU failed.
+			 *
+			 * Registration does not disturb a live rail here.  The
+			 * nodes carry regulator-name, min 300000, max 1193750
+			 * and regulator-enable-ramp-delay, and no
+			 * always-on / boot-on / initial-mode, so
+			 * machine_constraints_voltage() reads the current
+			 * voltage and writes only if it is outside that range --
+			 * all six rails sit between 725000 and 862500.  The max
+			 * is the driver's own linear range exactly
+			 * (0xbf * 6250 = 1193750).
+			 */
+			descs[i].of_match = np->name;
 			/*
 			 * op6893 6.6 bring-up: bind the regulator to its DT node so
 			 * that phandle supply lookups (e.g. gpufreq's _vgpu-supply ->
@@ -450,6 +485,11 @@ static int mt6315_regulator_probe(struct platform_device *pdev)
 			 * the regulator constraints in that node are parsed.  The
 			 * stock driver left config.of_node NULL, which made
 			 * regulator_get(_vgpu) fail with -517 and abort gpufreq probe.
+			 *
+			 * Belt and braces now that of_match matches: the core
+			 * sets rdev->dev.of_node from the node it matched, and
+			 * only falls back to config->of_node when it matched
+			 * nothing.
 			 */
 			config.of_node = np;
 			rdev = devm_regulator_register(dev, &descs[i], &config);
