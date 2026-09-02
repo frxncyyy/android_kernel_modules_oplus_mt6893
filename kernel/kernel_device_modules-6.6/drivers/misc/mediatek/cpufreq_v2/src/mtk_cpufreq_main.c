@@ -1708,8 +1708,33 @@ static int _mt_cpufreq_pdrv_probe(struct platform_device *pdev)
 	_mt_cpufreq_aee_init();
 
 	ret = mt_cpufreq_regulator_map(pdev);
-	if (ret)
+	if (ret) {
 		tag_pr_notice("%s regulator map fail\n", __func__);
+		/*
+		 * op6893 6.6 bring-up: refuse to probe instead of falling
+		 * through.  Upstream only logged this, but everything below
+		 * assumes the four buck handles are valid, and
+		 * mt_cpufreq_regulator_map() returns at its *first* failure --
+		 * so regulator_proc1 is an ERR_PTR while proc2, sram1 and sram2
+		 * are still NULL.  cpuhvfs_set_init_volt() then reads them and
+		 * the module init takes the kernel down:
+		 *
+		 *   Unable to handle kernel NULL pointer dereference at
+		 *   virtual address 0000000000000078
+		 *     get_cur_volt_proc_cpu+0x30    [CPU_DVFS]
+		 *     cpuhvfs_set_init_volt+0xbc    [CPU_DVFS]
+		 *     _mt_cpufreq_pdrv_probe+0x40   [CPU_DVFS]
+		 *     init_module+0x128             [CPU_DVFS]
+		 *
+		 * Bailing out leaves the device with no cpufreq -- exactly where
+		 * it is without this module -- instead of an unbootable one, and
+		 * makes a missing rail a diagnosable message rather than a
+		 * panic.  Arming DVFS without the rails would be worse than
+		 * either: MCUPM would be told to switch frequencies while the
+		 * kernel has no idea what voltage the cores are at.
+		 */
+		return -ENODEV;
+	}
 
 #ifdef HYBRID_CPU_DVFS
 #ifdef INIT_MCUPM_VOLTAGE_SETTING

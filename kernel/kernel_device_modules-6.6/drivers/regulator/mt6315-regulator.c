@@ -343,6 +343,7 @@ static int mt6315_regulator_probe(struct platform_device *pdev)
 	struct mt6315_chip *chip;
 	struct regulator_config config = {};
 	struct regulator_dev *rdev;
+	struct regulator_desc *descs;
 	struct device_node *node = pdev->dev.of_node;
 	u32 val = 0;
 	int i, j;
@@ -381,6 +382,13 @@ static int mt6315_regulator_probe(struct platform_device *pdev)
 	config.dev = dev;
 	config.driver_data = pdata;
 	config.regmap = regmap;
+	/*
+	 * op6893 6.6 bring-up: one struct regulator_desc per rail instead of the
+	 * shared static ones, so that .name can be set from the DT below.
+	 */
+	descs = devm_kcalloc(dev, pdata->size, sizeof(*descs), GFP_KERNEL);
+	if (!descs)
+		return -ENOMEM;
 	for (i = 0; i < pdata->size; i++) {
 		for (j = 0; j < sizeof(tmp) - 1 && (mt6315_regulators + i)->desc.name[j] != '\0'; j++)
 			tmp[j] = tolower((mt6315_regulators + i)->desc.name[j]);
@@ -404,6 +412,37 @@ static int mt6315_regulator_probe(struct platform_device *pdev)
 		}
 		/* Will not register nodes which are not defined in DTS file */
 		if (np) {
+			const char *dt_name;
+
+			/*
+			 * op6893 6.6 bring-up: register the rail under the name
+			 * the DT gives it ("6_vbuck1", "7_vbuck3") rather than
+			 * the driver's own desc.name ("VBUCK1", "VBUCK3").
+			 *
+			 * regulator_dev_lookup() falls back to
+			 * regulator_lookup_by_name() when a consumer asks for a
+			 * supply that has no <name>-supply phandle, and that
+			 * compares against rdev_get_name().  The 4.19 mt6315
+			 * driver took the name from the DT, so on 4.19 CPU DVFS
+			 * resolves all four of its rails that way -- the
+			 * mt_cpufreq node in this DTB carries a compatible and
+			 * nothing else, no supplies at all.  Keeping desc.name
+			 * made those lookups miss, left regulator_proc2 NULL and
+			 * panicked the kernel inside CPU_DVFS.ko's init; it also
+			 * registered three identically named "VBUCK1" rails, one
+			 * per slave, which no name lookup could tell apart.
+			 *
+			 * Only the name is taken from the node.  The constraints
+			 * in it are still not parsed, because desc.of_match is
+			 * matched against children of config.of_node and this is
+			 * the rail node itself -- that is unchanged behaviour and
+			 * does not matter here: MCUPM owns the CPU rails and the
+			 * kernel side only reads their voltage.
+			 */
+			descs[i] = (mt6315_regulators + i)->desc;
+			if (!of_property_read_string(np, "regulator-name",
+						     &dt_name))
+				descs[i].name = dt_name;
 			/*
 			 * op6893 6.6 bring-up: bind the regulator to its DT node so
 			 * that phandle supply lookups (e.g. gpufreq's _vgpu-supply ->
@@ -413,9 +452,9 @@ static int mt6315_regulator_probe(struct platform_device *pdev)
 			 * regulator_get(_vgpu) fail with -517 and abort gpufreq probe.
 			 */
 			config.of_node = np;
-			rdev = devm_regulator_register(dev, &(mt6315_regulators + i)->desc, &config);
+			rdev = devm_regulator_register(dev, &descs[i], &config);
 			if (IS_ERR(rdev)) {
-				dev_notice(dev, "failed to register %s\n", (mt6315_regulators + i)->desc.name);
+				dev_notice(dev, "failed to register %s\n", descs[i].name);
 				continue;
 			}
 		} else {
