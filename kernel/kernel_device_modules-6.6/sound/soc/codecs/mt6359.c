@@ -15,6 +15,7 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/mfd/mt6397/core.h>
 #include <linux/regulator/consumer.h>
+#include <linux/soc/mediatek/pmic_wrap.h>
 #include <sound/tlv.h>
 #include <sound/soc.h>
 #include <sound/core.h>
@@ -4312,7 +4313,7 @@ static int mt6359_get_hpofs_auxadc(struct mt6359_priv *priv)
 	int ret;
 	struct iio_channel *auxadc = priv->hpofs_cal_auxadc;
 
-	if (!IS_ERR(auxadc)) {
+	if (!IS_ERR_OR_NULL(auxadc)) {
 		ret = iio_read_channel_raw(auxadc, &value);
 		if (ret < 0) {
 			dev_err(priv->dev, "Error: %s read fail (%d)\n",
@@ -5474,6 +5475,15 @@ static int get_hp_current_calibrate_val(struct mt6359_priv *priv)
 	int ret = 0;
 	unsigned short efuse_val = 0;
 	int value, sign;
+
+	/* mt6359_parse_dt() leaves an ERR_PTR here when the node declares no
+	 * pmic-hp-efuse, and nvmem_device_read() only rejects NULL.
+	 */
+	if (IS_ERR_OR_NULL(priv->hp_efuse)) {
+		dev_info(priv->dev, "%s(), no efuse, calibrate val 0\n",
+			 __func__);
+		return 0;
+	}
 
 	/* set eFuse register index */
 	/* HPDET_COMP[6:0] @ efuse bit 1792 ~ 1798 */
@@ -7104,9 +7114,18 @@ static int mt6359_parse_dt(struct mt6359_priv *priv)
 	const int mux_num = 3;
 	unsigned int mic_type_mux[3];
 	struct device *dev = priv->dev;
-	struct device_node *np;
+	struct device_node *np = NULL;
 
-	np = of_get_child_by_name(dev->parent->of_node, "mt6359codec");
+	/* This DTB (4.19 vintage) has mt6359_snd as a *top-level* node carrying
+	 * mediatek,pwrap-regmap, not a child of the MT6359 MFD, so dev->parent is
+	 * NULL and there is no "mt6359codec" child anywhere.  Look for the child
+	 * only when there really is an MFD parent and otherwise read the two
+	 * properties straight off our own node, the way the 4.19 driver did.
+	 */
+	if (dev->parent && dev->parent->of_node)
+		np = of_get_child_by_name(dev->parent->of_node, "mt6359codec");
+	if (!np)
+		np = of_node_get(dev->of_node);
 	if (!np)
 		return -EINVAL;
 
@@ -7130,6 +7149,7 @@ static int mt6359_parse_dt(struct mt6359_priv *priv)
 		for (i = MUX_MIC_TYPE_0; i <= MUX_MIC_TYPE_2; ++i)
 			priv->mux_select[i] = mic_type_mux[i];
 	}
+	of_node_put(np);
 
 	ret = of_property_read_bool(dev->of_node, "vow_dmic_lp");
 	if (ret) {
@@ -7146,30 +7166,27 @@ static int mt6359_parse_dt(struct mt6359_priv *priv)
 
 	ret = PTR_ERR_OR_ZERO(priv->hpofs_cal_auxadc);
 	if (ret) {
-		if (ret != -EPROBE_DEFER)	//EPROBE_DEFER:517
-			dev_info(dev,
-				"%s() Get pmic_hpofs_cal iio ch failed (%d)\n",
-				__func__, ret);
-		else
-			dev_info(dev,
-				"%s() Get pmic_hpofs_cal iio ch failed (%d), will retry ...\n",
-				__func__, ret);
-
-		return ret;
+		/* Not fatal, and deliberately not deferred either.  This node
+		 * declares no io-channels at all, and both lookups answer
+		 * -EPROBE_DEFER for "no such consumer" as well as for "provider
+		 * not up yet", so propagating it would defer for ever.  4.19
+		 * came to the same place by accident: its returns sat under
+		 * #ifdef CONFIG_IIO_CHANNEL, which is not a Kconfig symbol.
+		 * The ERR_PTR is kept, not cleared -- mt6359_get_hpofs_auxadc()
+		 * gates on IS_ERR(), so headphone DC trim just reads 0.
+		 */
+		dev_info(dev,
+			"%s() no pmic_hpofs_cal iio ch (%d), hp dc trim off\n",
+			__func__, ret);
 	}
 
 	/* get pmic efuse handler */
 	priv->hp_efuse = devm_nvmem_device_get(dev, "pmic-hp-efuse");
 	ret = PTR_ERR_OR_ZERO(priv->hp_efuse);
 	if (ret) {
-		if (ret != -EPROBE_DEFER)
-			dev_info(dev, "%s() Get efuse failed (%d)\n",
-				__func__, ret);
-		else
-			dev_info(dev, "%s() Get efuse failed (%d), will retry ...\n",
-				__func__, ret);
-
-		return ret;
+		/* Same as above; get_hp_current_calibrate_val() gates on it. */
+		dev_info(dev, "%s() no pmic-hp-efuse (%d), calibrate val 0\n",
+			 __func__, ret);
 	}
 
 	/* get pmic vaud18 regulator */
@@ -7184,8 +7201,8 @@ static int mt6359_parse_dt(struct mt6359_priv *priv)
 static int mt6359_platform_driver_probe(struct platform_device *pdev)
 {
 	struct mt6359_priv *priv;
+	struct device_node *pwrap_node;
 	int ret;
-	struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
 #if IS_ENABLED(CONFIG_SND_SOC_OPLUS_DISCRETE_TYPEC_SWITCH)
 /* 2021/02/26, add for change micbias0 and micbias2*/
 	int micb_mv = 1900;
@@ -7197,7 +7214,32 @@ static int mt6359_platform_driver_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
-	priv->regmap = mt6397->regmap;
+	/* Two DT shapes reach this driver.  Upstream nests the codec under the
+	 * MT6359 MFD and takes the regmap from the parent's drvdata; this DTB
+	 * has mt6359_snd top-level with a mediatek,pwrap-regmap phandle, so
+	 * pdev->dev.parent is NULL and dev_get_drvdata() on it would oops
+	 * before anything is logged.  Try the phandle first (this is what the
+	 * 4.19 driver did) and keep the MFD path for DTs that do nest us.
+	 */
+	pwrap_node = of_parse_phandle(pdev->dev.of_node,
+				      "mediatek,pwrap-regmap", 0);
+	if (pwrap_node) {
+		priv->regmap = pwrap_node_to_regmap(pwrap_node);
+		of_node_put(pwrap_node);
+	} else if (pdev->dev.parent) {
+		struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
+
+		if (!mt6397)
+			return -EPROBE_DEFER;
+		priv->regmap = mt6397->regmap;
+	} else {
+		dev_err(&pdev->dev,
+			"%s(), no mediatek,pwrap-regmap and no MFD parent\n",
+			__func__);
+		return -EINVAL;
+	}
+	if (!priv->regmap)
+		return -ENODEV;
 	if (IS_ERR(priv->regmap))
 		return PTR_ERR(priv->regmap);
 
