@@ -4511,22 +4511,50 @@ static struct subsys_ops VPU_sys_ops = {
 	.get_state = vpu_get_state_op,
 };
 
+/* 4.19 resolved a PGATE's pre-clocks with __clk_lookup(name), which 6.6 does
+ * not export to modules, so this file grew a hand-rolled lookup that only knew
+ * "mfg_sel".  Every other pre-clock silently became NULL -- harmless for MDP
+ * and DIS, but the audio and ADSP domains want their bus clocks running before
+ * the MTCMOS sequence touches bus protection, so name the rest explicitly.
+ */
+struct mt6893_pre_clk {
+	const char *name;
+	const char *compatible;
+	unsigned int index;
+};
+
+static const struct mt6893_pre_clk mt6893_pre_clks[] = {
+	{ "mfg_sel",	    "mediatek,mt6893-topckgen",    CLK_TOP_MFG_SEL },
+	{ "adsp_sel",	    "mediatek,mt6893-topckgen",    CLK_TOP_ADSP_SEL },
+	{ "aud_intbus_sel", "mediatek,mt6893-topckgen",    CLK_TOP_AUD_INTBUS_SEL },
+	{ "ifrao_audio",    "mediatek,mt6893-infracfg_ao", CLK_IFRAO_AUDIO },
+	{ "ifrao_audio26m", "mediatek,mt6893-infracfg_ao",
+							   CLK_IFRAO_AUDIO_26M_BCLK },
+};
+
 static struct clk *mt6893_get_pre_clk(const char *name)
 {
 	struct of_phandle_args clkspec = { .args_count = 1 };
+	const struct mt6893_pre_clk *map = NULL;
 	struct device_node *node;
 	struct clk *clk;
+	size_t i;
 
-	if (strcmp(name, "mfg_sel"))
+	for (i = 0; i < ARRAY_SIZE(mt6893_pre_clks); i++) {
+		if (!strcmp(name, mt6893_pre_clks[i].name)) {
+			map = &mt6893_pre_clks[i];
+			break;
+		}
+	}
+	if (!map)
 		return NULL;
 
-	node = of_find_compatible_node(NULL, NULL,
-				       "mediatek,mt6893-topckgen");
+	node = of_find_compatible_node(NULL, NULL, map->compatible);
 	if (!node)
 		return NULL;
 
 	clkspec.np = node;
-	clkspec.args[0] = CLK_TOP_MFG_SEL;
+	clkspec.args[0] = map->index;
 	clk = of_clk_get_from_provider(&clkspec);
 	of_node_put(node);
 
@@ -4957,10 +4985,21 @@ struct mtk_power_gate scp_clks[] = {
 //	PGATE(SCP_SYS_VENC_CORE1, "PG_VENC_C1", "PG_DIS", "venc_sel",
 					//			SYS_VEN_CORE1),
 
-//	//PGATE3(SCP_SYS_AUDIO, "PG_AUDIO", NULL, "aud_intbus_sel",
-	//		"ifrao_audio26m",
-	//		"ifrao_audio", SYS_AUDIO),
-	//PGATE(SCP_SYS_ADSP, "PG_ADSP", NULL, "adsp_sel", SYS_ADSP),
+	/* op6893 6.6 bring-up: AUDIO and ADSP, same story as MDP/DIS above.
+	 * The 4.19 DTB reaches both power domains as scpsys *clocks*:
+	 * mt6885-afe-pcm@11210000 has "scp_sys_audio" = <&scpsys 21> and
+	 * adsp_common@10800000 has "scp_sys_adsp" = <&scpsys 22>, which are
+	 * exactly SCP_SYS_AUDIO / SCP_SYS_ADSP.  With these two lines commented
+	 * out those slots stayed ERR_PTR(-ENOENT) from alloc_clk_data(), so the
+	 * AFE and the ADSP could never power their domain up and there was no
+	 * sound card at all.  4.19's clk-mt6885-pg.c has both entries live, in
+	 * this exact form; the sequence data (AUDIO_PWR_STA_MASK/AUDIO_sys_ops,
+	 * ADSP_PWR_STA_MASK/ADSP_sys_ops) is complete in this file.
+	 */
+	PGATE3(SCP_SYS_AUDIO, "PG_AUDIO", NULL, "aud_intbus_sel",
+			"ifrao_audio26m",
+			"ifrao_audio", SYS_AUDIO),
+	PGATE(SCP_SYS_ADSP, "PG_ADSP", NULL, "adsp_sel", SYS_ADSP),
 	//PGATE(SCP_SYS_CAM, "PG_CAM", "PG_DIS", "cam_sel", SYS_CAM),
 //	PGATE(SCP_SYS_CAM_RAWA, "PG_CAM_RAWA", "PG_CAM", NULL, SYS_CAM_RAWA),
 //	PGATE(SCP_SYS_CAM_RAWB, "PG_CAM_RAWB", "PG_CAM", NULL, SYS_CAM_RAWB),
