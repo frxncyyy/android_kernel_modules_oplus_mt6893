@@ -22,20 +22,25 @@ enum scp_clk {
 
 struct adsp_clock_attr {
 	const char *name;
+	/* Alternate DT clock-name for the same clock, tried when @name is not
+	 * in the node's clock-names; see adsp_clk_probe().
+	 */
+	const char *alt_name;
 	struct clk *clock;
 };
 
 static struct device *pm_dev;
 
 static struct adsp_clock_attr adsp_clks[ADSP_CLK_NUM] = {
-	[CLK_ADSP_CK_CG] = {"clk_adsp_ck_cg", NULL},
-	[CLK_TOP_ADSP_SEL] = {"clk_top_adsp_sel", NULL},
-	[CLK_TOP_CLK26M] = {"clk_top_clk26m", NULL},
-	[CLK_TOP_ADSPPLL] = {"clk_top_adsppll", NULL},
+	[CLK_ADSP_CK_CG] = {.name = "clk_adsp_ck_cg",
+			    .alt_name = "scp_sys_adsp"},
+	[CLK_TOP_ADSP_SEL] = {.name = "clk_top_adsp_sel"},
+	[CLK_TOP_CLK26M] = {.name = "clk_top_clk26m"},
+	[CLK_TOP_ADSPPLL] = {.name = "clk_top_adsppll"},
 };
 
 static struct adsp_clock_attr scp_clks[SCP_CLK_NUM] = {
-	[CLK_TOP_SCP_SEL] = {"clk_top_scp_sel", NULL},
+	[CLK_TOP_SCP_SEL] = {.name = "clk_top_scp_sel"},
 };
 
 static int adsp_set_top_mux(enum adsp_clk clk)
@@ -118,6 +123,18 @@ int adsp_clk_probe(struct platform_device *pdev,
 
 	for (i = 0; i < ARRAY_SIZE(adsp_clks); i++) {
 		adsp_clks[i].clock = devm_clk_get(dev, adsp_clks[i].name);
+		if (IS_ERR(adsp_clks[i].clock) && adsp_clks[i].alt_name) {
+			/* This 4.19 DTB calls the ADSP power/CG gate
+			 * "scp_sys_adsp" -- the scpsys MTCMOS clock, which is
+			 * exactly what 4.19's adsp/mt6885/adsp_clk.c asked for.
+			 * 6.6 renamed the lookup to "clk_adsp_ck_cg", a name
+			 * that appears in no node here.
+			 */
+			pr_info("%s %s absent, trying %s\n", __func__,
+				adsp_clks[i].name, adsp_clks[i].alt_name);
+			adsp_clks[i].clock = devm_clk_get(dev,
+							  adsp_clks[i].alt_name);
+		}
 		if (IS_ERR(adsp_clks[i].clock)) {
 			ret = PTR_ERR(adsp_clks[i].clock);
 			pr_err("%s devm_clk_get %s fail %d\n", __func__,
