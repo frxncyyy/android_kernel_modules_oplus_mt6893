@@ -1575,6 +1575,20 @@ static void mtk_ovl_layer_off(struct mtk_ddp_comp *comp, unsigned int idx,
 	}
 }
 
+/*
+ * op6893: TEMPORARY.  How many more layer configurations to report the blend
+ * setup of, so the values that decide DISP_OVL_LAYER_CONST_BLD can be read on a
+ * running device without turning DDPINFO on for everything.  Zero (the default)
+ * costs one branch per layer per frame.
+ *
+ *   echo 40 > /sys/module/mediatek_drm/parameters/ovl_blend_dbg
+ *
+ * Delete along with the CONST_BLD investigation.
+ */
+static int ovl_blend_dbg;
+module_param(ovl_blend_dbg, int, 0644);
+MODULE_PARM_DESC(ovl_blend_dbg, "op6893: report the blend setup of the next N layer configs");
+
 static unsigned int ovl_fmt_convert(struct mtk_disp_ovl *ovl, unsigned int fmt,
 				    uint64_t modifier, unsigned int compress)
 {
@@ -3021,6 +3035,17 @@ static void mtk_ovl_layer_config(struct mtk_ddp_comp *comp, unsigned int idx,
 			comp->regs_pa + disp_reg_ovl_pitch,
 			0,
 			DISP_OVL_LAYER_CONST_BLD);
+
+	/* op6893: TEMPORARY -- see ovl_blend_dbg above. */
+	if (ovl_blend_dbg > 0) {
+		ovl_blend_dbg--;
+		pr_info("op6893 blend: %s L%u fmt=%p4cc has_alpha=%d state_mode=%u used_mode=%u alpha=0x%x alpha_con=%u con=0x%x const_bld=%d\n",
+			mtk_dump_comp_str_id(comp->id), lye_idx, &fmt,
+			state->base.fb ? state->base.fb->format->has_alpha : -1,
+			state->base.pixel_blend_mode, pixel_blend_mode,
+			alpha, alpha_con, con,
+			pixel_blend_mode == DRM_MODE_BLEND_PIXEL_NONE);
+	}
 
 	if (pending->enable) {
 		u32 vrefresh;
