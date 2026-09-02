@@ -1353,8 +1353,27 @@ EXPORT_SYMBOL(cmdq_util_get_first_err_mod);
 
 int cmdq_proc_create(void)
 {
-	struct proc_dir_entry *debugDirEntry = NULL;
+	static struct proc_dir_entry *debugDirEntry;
 	struct proc_dir_entry *entry = NULL;
+
+	/*
+	 * op6893 6.6 bring-up: create the directory once.
+	 *
+	 * This is called from cmdq_probe(), and MT6893 has two GCE instances
+	 * (10228000.gce_mbox and 10318000.gce_mbox_m), so it runs twice.  The
+	 * second proc_mkdir("mtk_cmdq_debug") hit proc_register()'s duplicate
+	 * check and left a WARN backtrace at every boot:
+	 *
+	 *   proc_dir_entry '/proc/mtk_cmdq_debug' already registered
+	 *   proc_register / proc_mkdir / cmdq_proc_create / init_module
+	 *
+	 * Nothing was lost -- the entries all read util.* globals rather than
+	 * per-instance state, so one set is what is wanted anyway, and the
+	 * caller ignores the return value.  Keeping the handle in a static
+	 * makes the second call a no-op instead of a warning.
+	 */
+	if (debugDirEntry)
+		return 0;
 
 	debugDirEntry = proc_mkdir("mtk_cmdq_debug", NULL);
 	if (!debugDirEntry) {
