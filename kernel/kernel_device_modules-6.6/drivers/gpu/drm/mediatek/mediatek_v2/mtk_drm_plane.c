@@ -201,11 +201,30 @@ static void mtk_plane_reset(struct drm_plane *plane)
 
 	/* Linux alpha property use 16 bit to convey alpha value, so set default to 0xFFFF */
 	plane->state->alpha = DRM_BLEND_ALPHA_OPAQUE;
-#if !IS_ENABLED(CONFIG_DRM_MEDIATEK_AUTO_YCT)
-	plane->state->pixel_blend_mode = DRM_MODE_BLEND_PIXEL_NONE;
-#else
+
+	/*
+	 * op6893: default to premultiplied alpha rather than PIXEL_NONE, which is
+	 * what the !AUTO_YCT build used to pick here.
+	 *
+	 * mtk_ovl_layer_config() (and mtk_disp_ovl_blender.c) turn
+	 * pixel_blend_mode == PIXEL_NONE into DISP_OVL_LAYER_CONST_BLD -- "ignore
+	 * the per-pixel alpha, blend with the constant alpha only".  The 4.19
+	 * driver this DTB and HWC blob come from has neither CONST_BLD nor a
+	 * blend-mode property, so the blob never sets one: every layer kept this
+	 * reset value and every translucent layer reached the panel opaque.
+	 *
+	 * That is the status bar row going black.  ScreenDecorOverlay is a
+	 * near-fully transparent rounded-corner mask lying on top of it, and
+	 * opaque black is what CONST_BLD makes of it.  screencap looked correct
+	 * throughout because SurfaceFlinger composites that path itself.
+	 *
+	 * PREMULTI is what drm_plane_create_blend_mode_property() seeds upstream
+	 * and what SurfaceFlinger hands out on Android.  Opaque formats are
+	 * unaffected: the OVL only reads this when fb->format->has_alpha and
+	 * keeps its own local PIXEL_NONE otherwise, so an X-format layer still
+	 * gets CONST_BLD and still reaches the panel opaque.
+	 */
 	plane->state->pixel_blend_mode = DRM_MODE_BLEND_PREMULTI;
-#endif
 
 	/*
 	 * op6893: the memset above zeroes prop_val, and zero is a *meaningful*
