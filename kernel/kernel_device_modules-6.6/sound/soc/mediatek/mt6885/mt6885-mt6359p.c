@@ -32,6 +32,38 @@
  */
 #define EXT_SPK_AMP_W_NAME "Ext_Speaker_Amp"
 
+#if IS_ENABLED(CONFIG_OPLUS_MTK_AUDIO_EXT)
+/*
+ * Oplus boards do not use MTK's smart-PA dispatcher at all.  That dispatcher
+ * only runs for a "mediatek,speaker_amp" i2c node, and on these boards that
+ * node is status = "disabled" -- so mtk_spk_i2c_probe() never runs,
+ * mtk_spk_get_type() stays MTK_SPK_NOT_SMARTPA, and mtk_spk_update_info()
+ * leaves the I2S backend links pointing at snd-soc-dummy.  (Verified on the
+ * working 4.19 stack: MTK_SPK_TYPE_GET really does read NOT_SMARTPA there
+ * while both speakers play.)
+ *
+ * What attaches the amps instead is the board's "oplus,asoc-audio" node, which
+ * names the components and DAIs by string:
+ *
+ *   audio_extend { compatible = "oplus,asoc-audio";
+ *                  oplus,speaker-vendor = "nxp";
+ *                  oplus,speaker-i2s-id = <3>;         // the "I2S3" dai_link
+ *                  oplus,speaker-codec-name =
+ *                          "tfa98xx.9-0034", "tfa98xx.9-0035";
+ *                  oplus,speaker-codec-dai-name =
+ *                          "tfa98xx-aif-9-34", "tfa98xx-aif-9-35"; };
+ *
+ * extend_codec_i2s_be_dailinks() finds the link whose .name matches and swaps
+ * its codecs[] for that list.  The names come from the tfa98xx driver itself:
+ * the component is dev_name()-derived ("<driver>.<bus>-<addr>") and the DAI has
+ * "-<bus>-<addr>" appended by tfa98xx_append_i2c_address().
+ *
+ * Same call, same position as mt6833-mt6359p.c.
+ */
+extern void extend_codec_i2s_be_dailinks(struct snd_soc_dai_link *dailink,
+					 size_t size);
+#endif /* CONFIG_OPLUS_MTK_AUDIO_EXT */
+
 static struct snd_soc_card mt6885_mt6359p_soc_card;
 
 struct mt6885_compress_info compr_info;
@@ -1585,6 +1617,12 @@ static int mt6885_mt6359p_dev_probe(struct platform_device *pdev)
 			}
 		}
 	}
+
+#if IS_ENABLED(CONFIG_OPLUS_MTK_AUDIO_EXT)
+	/* Add for oplus extend audio */
+	extend_codec_i2s_be_dailinks(mt6885_mt6359p_dai_links,
+				     ARRAY_SIZE(mt6885_mt6359p_dai_links));
+#endif /* CONFIG_OPLUS_MTK_AUDIO_EXT */
 
 	card->dev = &pdev->dev;
 
