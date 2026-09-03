@@ -142,6 +142,23 @@ static struct nxpTfaContainer *tfa98xx_container;
 static int tfa98xx_kmsg_regs;
 static int tfa98xx_ftrace_regs;
 
+/*
+ * tfa->dev_idx stays -1 for any amp whose i2c address is not in the container
+ * file (tfa_cont_get_idx() fails and tfa98xx_container_loaded() returns early).
+ * The mixer controls below declare .count = tfa98xx_device_count and index
+ * ucontrol->value.integer.value[] by dev_idx, so such an amp would read and
+ * write value[-1].  Under CONFIG_UBSAN_TRAP that is not a warning but a fatal
+ * arm64 BRK -- an audio HAL reading "TFA98XX STOP" panicked the kernel.  Skip
+ * those devices instead: the amp is unusable either way, but the phone lives.
+ *
+ * Callers must hold tfa98xx_mutex (tfa98xx_device_count is protected by it).
+ */
+static bool tfa98xx_dev_idx_valid(const struct tfa98xx *tfa98xx)
+{
+	return tfa98xx->tfa && tfa98xx->tfa->dev_idx >= 0 &&
+	       tfa98xx->tfa->dev_idx < tfa98xx_device_count;
+}
+
 #ifdef OPLUS_ARCH_EXTENDS
 static int tfa98xx_factory_flag = 0;
 #endif
@@ -150,11 +167,34 @@ static int tfa98xx_factory_flag = 0;
 //Modify for multi-project baseline
 //static char fw_name[100] = {0};
 //==>/vendor/firmware/../../odm/firmware/tfa98xx.cnt
-static char *fw_name = "../../odm/firmware/tfa98xx.cnt";
+/*
+ * op6893 (RMX3031): the path is resolved against firmware_class.path, which
+ * this ROM's init sets to "/vendor/firmware", so the "../../" prefix escapes
+ * to the filesystem root.
+ *
+ * The OnePlus default, /odm/firmware/tfa98xx.cnt, is the wrong container for
+ * this board.  It is a ONEPLUS / 9874 file declaring its two devices at i2c
+ * 0x34 and 0x37, while this board has TFA9873s at 0x34 and 0x35 (the tfa98xx@34
+ * and tfa98xx@35 nodes; CHIP_RIGHT_ADDR below).  0x35 therefore misses in
+ * tfa_cont_get_idx(), which returns -1, and tfa98xx_container_loaded() bails
+ * out before tfa_dev_start() -- so only the 0x34 amp, i.e. CHIP_RCV_ADDR, the
+ * earpiece, ever plays.  /mnt/odm_fw/firmware/tfa98xx.cnt (the pre-2024 Oplus
+ * default) is a symlink to the same file and fails the same way; that is the
+ * "earpiece works, speakers silent" state the stock 4.19 source produces.
+ *
+ * This board's real container is the Realme / 9873N1B one below: devices 0x34
+ * and 0x35, profiles stereo / handset / MMI_Test_SpkL / MMI_Test_SpkR /
+ * MMI_Rec / calibrate.cal.  It is also what the working 4.19 kernel hardcodes.
+ */
+static char *fw_name = "../../odm/etc/audio/smartpa_param/tfa98xx.cnt";
 module_param(fw_name, charp, 0644);
 MODULE_PARM_DESC(fw_name, "TFA98xx DSP firmware (container file) name.");
 
 /*2024/08/16, used to distinguish different project pcb version*/
+/*
+ * Unused on op6893: no tfa98xx_reverse.cnt exists on this ROM, and the 4.19
+ * DTB has no "tfa_need_reverse" property, so is_need_reverse stays 0.
+ */
 static char *fw_name_reverse = "../../odm/firmware/tfa98xx_reverse.cnt";
 module_param(fw_name_reverse, charp, 0644);
 MODULE_PARM_DESC(fw_name_reverse, "TFA98xx DSP firmware (container file) name.");
@@ -2934,6 +2974,9 @@ static int tfa98xx_get_vstep(struct snd_kcontrol *kcontrol,
 	list_for_each_entry(tfa98xx, &tfa98xx_device_list, list) {
 		int vstep = tfa98xx->prof_vsteps[profile];
 
+		if (!tfa98xx_dev_idx_valid(tfa98xx))
+			continue;
+
 		ucontrol->value.integer.value[tfa98xx->tfa->dev_idx] =
 				tfacont_get_max_vstep(tfa98xx->tfa, profile)
 				- vstep - 1;
@@ -2968,8 +3011,12 @@ static int tfa98xx_set_vstep(struct snd_kcontrol *kcontrol,
 		int vstep, vsteps;
 		int ready = 0;
 		int new_vstep;
-		int value =
-			ucontrol->value.integer.value[tfa98xx->tfa->dev_idx];
+		int value;
+
+		if (!tfa98xx_dev_idx_valid(tfa98xx))
+			continue;
+
+		value = ucontrol->value.integer.value[tfa98xx->tfa->dev_idx];
 
 		vstep = tfa98xx->prof_vsteps[profile];
 		vsteps = tfacont_get_max_vstep(tfa98xx->tfa, profile);
@@ -3233,6 +3280,9 @@ static int tfa98xx_get_stop_ctl(struct snd_kcontrol *kcontrol,
 
 	mutex_lock(&tfa98xx_mutex);
 	list_for_each_entry(tfa98xx, &tfa98xx_device_list, list) {
+		if (!tfa98xx_dev_idx_valid(tfa98xx))
+			continue;
+
 		ucontrol->value.integer.value[tfa98xx->tfa->dev_idx] = 0;
 	}
 	mutex_unlock(&tfa98xx_mutex);
@@ -3248,7 +3298,12 @@ static int tfa98xx_set_stop_ctl(struct snd_kcontrol *kcontrol,
 	mutex_lock(&tfa98xx_mutex);
 	list_for_each_entry(tfa98xx, &tfa98xx_device_list, list) {
 		int ready = 0;
-		int i = tfa98xx->tfa->dev_idx;
+		int i;
+
+		if (!tfa98xx_dev_idx_valid(tfa98xx))
+			continue;
+
+		i = tfa98xx->tfa->dev_idx;
 
 		pr_info("%d: %ld\n", i, ucontrol->value.integer.value[i]);
 
@@ -3302,7 +3357,12 @@ static int tfa98xx_set_cal_ctl(struct snd_kcontrol *kcontrol,
 	mutex_lock(&tfa98xx_mutex);
 	list_for_each_entry(tfa98xx, &tfa98xx_device_list, list) {
 		enum tfa_error err;
-		int i = tfa98xx->tfa->dev_idx;
+		int i;
+
+		if (!tfa98xx_dev_idx_valid(tfa98xx))
+			continue;
+
+		i = tfa98xx->tfa->dev_idx;
 
 		tfa98xx->cal_data = (uint16_t)ucontrol->value.integer.value[i];
 
@@ -3459,6 +3519,9 @@ static int tfa98xx_get_cal_ctl(struct snd_kcontrol *kcontrol,
 
 	mutex_lock(&tfa98xx_mutex);
 	list_for_each_entry(tfa98xx, &tfa98xx_device_list, list) {
+		if (!tfa98xx_dev_idx_valid(tfa98xx))
+			continue;
+
 		mutex_lock(&tfa98xx->dsp_lock);
 		ucontrol->value.integer.value[tfa98xx->tfa->dev_idx] =
 			tfa_dev_mtp_get(tfa98xx->tfa, TFA_MTP_RE25_PRIM);
