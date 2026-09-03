@@ -62,6 +62,7 @@ static const char *aud_clks[CLK_NUM] = {
 	[CLK_TOP_APLL12_DIV8] = "top_apll12_div8",
 	[CLK_TOP_APLL12_DIV9] = "top_apll12_div9",
 	[CLK_CLK26M] = "top_clk26m_clk",
+	[CLK_SCP_SYS_AUD] = "scp_sys_audio",
 };
 
 int mt6885_set_audio_int_bus_parent(struct mtk_base_afe *afe,
@@ -212,6 +213,18 @@ int mt6885_afe_enable_clock(struct mtk_base_afe *afe)
 
 	dev_info(afe->dev, "%s()\n", __func__);
 
+	/*
+	 * Must come first: this is the audio MTCMOS domain (see the
+	 * CLK_SCP_SYS_AUD comment in mt6885-afe-clk.h).  Everything below it,
+	 * and every AFE register access, is dead until the domain is up.
+	 */
+	ret = clk_prepare_enable(afe_priv->clk[CLK_SCP_SYS_AUD]);
+	if (ret) {
+		dev_err(afe->dev, "%s clk_prepare_enable %s fail %d\n",
+			__func__, aud_clks[CLK_SCP_SYS_AUD], ret);
+		goto CLK_SCP_SYS_AUD_ERR;
+	}
+
 	ret = clk_prepare_enable(afe_priv->clk[CLK_INFRA_SYS_AUDIO]);
 	if (ret) {
 		dev_err(afe->dev, "%s clk_prepare_enable %s fail %d\n",
@@ -278,6 +291,8 @@ CLK_INFRA_AUDIO_26M_ERR:
 	clk_disable_unprepare(afe_priv->clk[CLK_INFRA_AUDIO_26M]);
 CLK_INFRA_SYS_AUDIO_ERR:
 	clk_disable_unprepare(afe_priv->clk[CLK_INFRA_SYS_AUDIO]);
+CLK_SCP_SYS_AUD_ERR:
+	clk_disable_unprepare(afe_priv->clk[CLK_SCP_SYS_AUD]);
 
 	return ret;
 }
@@ -295,6 +310,8 @@ void mt6885_afe_disable_clock(struct mtk_base_afe *afe)
 	clk_disable_unprepare(afe_priv->clk[CLK_MUX_AUDIO]);
 	clk_disable_unprepare(afe_priv->clk[CLK_INFRA_AUDIO_26M]);
 	clk_disable_unprepare(afe_priv->clk[CLK_INFRA_SYS_AUDIO]);
+	/* Last, mirroring the enable order: powers the audio domain back down. */
+	clk_disable_unprepare(afe_priv->clk[CLK_SCP_SYS_AUD]);
 }
 
 int mt6885_afe_dram_request(struct device *dev)

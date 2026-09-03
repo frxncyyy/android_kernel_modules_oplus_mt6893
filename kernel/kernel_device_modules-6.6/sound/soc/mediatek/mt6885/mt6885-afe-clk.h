@@ -279,6 +279,17 @@ enum {
 	CLK_TOP_APLL12_DIV8,
 	CLK_TOP_APLL12_DIV9,
 	CLK_CLK26M,
+	/*
+	 * op6893: the audio MTCMOS domain, which a 4.19-era MT6893 DTB exposes
+	 * as a *clock* -- scpsys@10006000 has #clock-cells = <1> and no
+	 * power-domains property, and the AFE node lists "scp_sys_audio" =
+	 * <&scpsys 21> among its clocks.  Upstream 6.6 expects genpd instead and
+	 * dropped this entry; with no genpd domain registered on this board the
+	 * domain stayed off, so every AFE register write was swallowed and every
+	 * volatile register read back 0 (AFE_DAC_CON0 = 0, AFE_DL1_CUR = 0, no
+	 * DMA, -EIO from every write).  clk-mt6893-pg provides it as PG_AUDIO.
+	 */
+	CLK_SCP_SYS_AUD,
 	CLK_NUM
 };
 
