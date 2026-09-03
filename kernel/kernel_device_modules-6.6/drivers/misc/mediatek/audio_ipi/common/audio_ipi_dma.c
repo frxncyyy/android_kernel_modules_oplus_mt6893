@@ -12,6 +12,7 @@
 #include <linux/vmalloc.h>
 
 #include <linux/delay.h>
+#include <linux/ratelimit.h>
 #include <linux/uaccess.h>      /* needed by copy_to_user */
 
 #if IS_ENABLED(CONFIG_MTK_AUDIODSP_SUPPORT)
@@ -1640,7 +1641,23 @@ size_t audio_ipi_dma_msg_read(void __user *buf, size_t count)
 	}
 
 	if (msg_queue->tmp_buf_k2h == NULL) {
-		pr_info("arg!! %p, return", msg_queue->tmp_buf_k2h);
+		/*
+		 * Not a transient error: tmp_buf_k2h is only allocated by
+		 * hal_dma_init_msg_queue() from init_audio_ipi_dma_by_dsp(),
+		 * which init_audio_ipi_dma() skips whenever
+		 * is_audio_use_adsp() is false.  On op6893 that is decided
+		 * ~3 ms too early -- audio_ipi_init() runs before adsp-v1 has
+		 * called register_adspsys(), so get_adsp_core_total() is still
+		 * 0 -- and it never becomes true afterwards.  The audio HAL
+		 * polls this read at 2 Hz regardless, which at ~85 bytes a line
+		 * wipes a 4 MB log_buf in about seven hours.  Keep one line
+		 * every five minutes: enough to diagnose, cheap enough to
+		 * leave running.
+		 */
+		static DEFINE_RATELIMIT_STATE(rs_no_k2h, 300 * HZ, 1);
+
+		if (__ratelimit(&rs_no_k2h))
+			pr_info("arg!! %p, return", msg_queue->tmp_buf_k2h);
 		return 0;
 	}
 

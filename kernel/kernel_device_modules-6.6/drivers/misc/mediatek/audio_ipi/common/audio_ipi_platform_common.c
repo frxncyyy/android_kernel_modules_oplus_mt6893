@@ -50,7 +50,8 @@ uint32_t adsp_cid_to_ipi_dsp_id(const uint32_t core_id) /* enum adsp_core_id */
 	return dsp_id;
 #else
 	if (core_id >= get_adsp_core_total()) {
-		pr_notice("invalid cid %u, total %u", core_id, get_adsp_core_total());
+		pr_notice_ratelimited("invalid cid %u, total %u",
+				      core_id, get_adsp_core_total());
 		return AUDIO_OPENDSP_ID_INVALID;
 	}
 
@@ -79,7 +80,14 @@ uint32_t ipi_dsp_id_to_adsp_cid(const uint32_t dsp_id)
 
 	core_id = dsp_id - AUDIO_OPENDSP_USE_HIFI3_A;
 	if (core_id >= get_adsp_core_total()) {
-		pr_notice("invalid cid %u, total %u", core_id, get_adsp_core_total());
+		/*
+		 * Hot when the ADSP never registers a core: audio_task_manager
+		 * and audio_messenger_ipi ask about every dsp_id/task at init,
+		 * which on op6893 produced 161 identical lines inside one
+		 * millisecond and buried the rest of the boot log.
+		 */
+		pr_notice_ratelimited("invalid cid %u, total %u",
+				      core_id, get_adsp_core_total());
 		return 0xFFFFFFFF;
 	}
 
