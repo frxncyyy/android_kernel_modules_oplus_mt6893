@@ -706,7 +706,7 @@ void mtk_rdma_cal_golden_setting(struct mtk_ddp_comp *comp,
 	else
 		fill_rate = 96 * mmsys_clk * 3 / 16; /* FIFO depth / us */
 
-	DDPMSG("%s,w:%llu,h:%llu,vrefresh:%d,bpc:%d,is_vdo:%d,is_dc:%d,sram:%d,fifo:%d\n",
+	DDPINFO("%s,w:%llu,h:%llu,vrefresh:%d,bpc:%d,is_vdo:%d,is_dc:%d,sram:%d,fifo:%d\n",
 		__func__, width, height, if_fps, cfg->bpc,
 		gsc->is_vdo_mode, gsc->is_dc, gs[GS_RDMA_SRAM_SEL], fifo_size);
 

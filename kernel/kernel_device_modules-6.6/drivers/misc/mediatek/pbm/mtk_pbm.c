@@ -371,7 +371,16 @@ static bool pbm_func_enable_check(void)
 	struct pbm *pwrctrl = &pbm_ctrl;
 
 	if (!pwrctrl->pbm_drv_done) {
-		pr_info_ratelimited("pwrctrl->pbm_drv_done: %d\n", pwrctrl->pbm_drv_done);
+		/*
+		 * op6893: pbm_probe() never runs, because the preserved 4.19
+		 * DTB has no "mediatek,pbm" node for pbm_of_match to bind to,
+		 * so this stays 0 for the entire boot -- it is a permanent
+		 * state, not a startup window.  The kickers keep calling in at
+		 * ~50 Hz regardless, and pr_info_ratelimited() still let two
+		 * lines per second through (360 lines in the first 186 s, with
+		 * 200-300 suppressed every 5 s).  Once is enough.
+		 */
+		pr_info_once("pwrctrl->pbm_drv_done: %d\n", pwrctrl->pbm_drv_done);
 		return false;
 	}
 

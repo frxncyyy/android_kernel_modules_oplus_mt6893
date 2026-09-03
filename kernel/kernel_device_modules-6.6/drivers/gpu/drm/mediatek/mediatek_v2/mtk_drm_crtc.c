@@ -12919,7 +12919,7 @@ void mtk_crtc_config_default_path(struct mtk_drm_crtc *mtk_crtc)
 		}
 	}
 
-	DDPMSG("%s:%d scaling_en:%d hdisplay:%d vdisplay:%d lcm:width:%d lcm_height:%d\n",
+	DDPINFO("%s:%d scaling_en:%d hdisplay:%d vdisplay:%d lcm:width:%d lcm_height:%d\n",
 		__func__, __LINE__, mtk_crtc->scaling_ctx.scaling_en,
 		crtc->state->adjusted_mode.hdisplay, crtc->state->adjusted_mode.vdisplay,
 		mtk_crtc->scaling_ctx.lcm_width, mtk_crtc->scaling_ctx.lcm_height);

@@ -769,7 +769,19 @@ int mt_ppm_main(void)
 					log_print = true;
 					if (ppm_main_info.cluster_info[i].max_freq_req != NULL &&
 					ppm_main_info.cluster_info[i].min_freq_req != NULL) {
-						pr_info("ppm update cpufreq limit ,cluster %d, min freq %d ------max freq %d\n",
+						/*
+						 * ppm_ver, not ppm_dbg(MAIN): with
+						 * ppm_debug == 0 (the default, /proc/ppm/debug)
+						 * ppm_dbg's MAIN arm falls through to pr_debug,
+						 * which in this module is a live
+						 * printk(KERN_DEBUG) -- not dynamic debug, whose
+						 * control file lists no callsite here -- so it
+						 * still reached dmesg, 311 lines in the first
+						 * 190 s.  ppm_main_log_print() just below already
+						 * reports every change this logs, throttled by
+						 * LOG_CHECK_INTERVAL.
+						 */
+						ppm_ver("ppm update cpufreq limit ,cluster %d, min freq %d ------max freq %d\n",
 							i,
 	ppm_main_info.cluster_info[i].dvfs_tbl[c_req->cpu_limit[i].min_cpufreq_idx].frequency,
 	ppm_main_info.cluster_info[i].dvfs_tbl[c_req->cpu_limit[i].max_cpufreq_idx].frequency);
