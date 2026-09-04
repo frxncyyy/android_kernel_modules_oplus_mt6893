@@ -324,7 +324,8 @@ int send_message(
 	}
 
 	if (is_audio_task_dsp_ready(p_ipi_msg->task_scene) == false) {
-		pr_info("dsp not ready!! return");
+		/* The other half of the 178-line pair; see is_audio_dsp_ready(). */
+		pr_info_ratelimited("dsp not ready!! return");
 		return -1;
 	}
 

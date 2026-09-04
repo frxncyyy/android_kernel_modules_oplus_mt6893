@@ -243,7 +243,19 @@ bool is_audio_dsp_ready(const uint32_t dsp_id)
 		ret = (is_scp_ready(ipi_dsp_id_to_scp_cid(dsp_id)) == 1);
 #endif
 	} else
-		pr_notice("dsp_id %u not support!!", dsp_id);
+		/*
+		 * op6893 6.6 bring-up: neither is_audio_use_adsp() nor
+		 * is_audio_use_scp() can ever be true on this port -- see the
+		 * note in audio_ipi_dma.c for why get_adsp_core_total() is
+		 * still 0 when audio_ipi_init() decides -- so every IPI send
+		 * lands here.  The audio HAL tries 89 of them in the 60 ms
+		 * after init, and send_message() in audio_ipi_queue.c prints a
+		 * second line for each, so one dead DSP costs 178 boot lines.
+		 * Keep the default 10-per-5 s burst: enough to see which
+		 * dsp_ids were asked for, and the "callbacks suppressed"
+		 * counter still says how many followed.
+		 */
+		pr_notice_ratelimited("dsp_id %u not support!!", dsp_id);
 
 	return ret;
 }

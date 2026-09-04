@@ -89,13 +89,30 @@ static void set_static_cpu_power_limit(unsigned int limit)
 	static_cpu_power_limit = (limit != 0) ? limit : 0x7FFFFFFF;
 
 	if (prv_stc_cpu_pwr_lim != static_cpu_power_limit) {
+		/*
+		 * op6893 6.6 bring-up: tscpu_printk is an ungated pr_notice,
+		 * and this cooler thrashes.  Over a 1408 s uptime it produced
+		 * 226 dmesg lines, all of them inside the first 66 s, because
+		 * tscpu_set_power_consumption_state() applies step 3 and frees
+		 * it again roughly twice a second while the SoC cools off after
+		 * boot -- the temperature the two lines report swings between
+		 * 86 C and 56 C in 164 ms.  Three lines per oscillation, none
+		 * of which says anything the next one does not.
+		 *
+		 * Moved to tscpu_dprintk, this file's own verbose macro (which
+		 * it already uses for every surrounding detail line).  It comes
+		 * back with "echo 1 > /proc/driver/thermal/tzcpu_log".  The
+		 * throttling itself is unaffected -- apthermolmt_set_* below
+		 * still runs -- and the current state stays readable in
+		 * /proc/thermlmt.
+		 */
 #ifdef FAST_RESPONSE_ATM
-		tscpu_printk("%s %d, T=%d\n", __func__,
+		tscpu_dprintk("%s %d, T=%d\n", __func__,
 				(static_cpu_power_limit != 0x7FFFFFFF) ?
 				static_cpu_power_limit : 0,
 			tscpu_get_curr_max_ts_temp());
 #else
-		tscpu_printk("%s %d, T=%d\n", __func__,
+		tscpu_dprintk("%s %d, T=%d\n", __func__,
 				(static_cpu_power_limit != 0x7FFFFFFF) ?
 				static_cpu_power_limit : 0,
 			tscpu_get_curr_temp());
@@ -166,7 +183,8 @@ static int tscpu_set_power_consumption_state(void)
 	for (i = 0; i < Num_of_OPP; i++) {
 		if (cl_dev_state[i] == 1) {
 			if (i != previous_step) {
-				tscpu_printk("%s prev=%d curr=%d\n", __func__,
+				/* Same flood, see set_static_cpu_power_limit(). */
+				tscpu_dprintk("%s prev=%d curr=%d\n", __func__,
 							previous_step, i);
 				previous_step = i;
 				mtktscpu_limited_dmips =
@@ -235,7 +253,8 @@ static int tscpu_set_power_consumption_state(void)
 	 */
 	if (i == Num_of_OPP) {
 		if (previous_step != -1) {
-			tscpu_printk(
+			/* Same flood, see set_static_cpu_power_limit(). */
+			tscpu_dprintk(
 				"Free all static thermal limit, previous_opp=%d\n",
 				     previous_step);
 			previous_step = -1;

@@ -744,8 +744,16 @@ static int mt_cpufreq_read_efuse(const char *cell_name, unsigned int *out)
 		*out = *efuse_buf;
 		kfree(efuse_buf);
 		if (i)
-			tag_pr_info("@%s: %s read from %s\n", __func__,
-				    cell_name, nodes[i]);
+			/*
+			 * Which node holds the cell is a property of the DTB,
+			 * so it cannot change while we run, but
+			 * _mt_cpufreq_get_cpu_level() is called 55 times during
+			 * boot and every call re-read the same cell and printed
+			 * the same line.  Once is enough for a fact that is
+			 * fixed at probe.
+			 */
+			pr_info_once(TAG "@%s: %s read from %s\n", __func__,
+				     cell_name, nodes[i]);
 		return 0;
 	}
 
@@ -789,7 +797,15 @@ unsigned int _mt_cpufreq_get_cpu_level(void)
 exit:
 	turbo_flag = 0;
 
-	tag_pr_info("%d, %d, Settle time(%d, %d) efuse_val = 0x%x\n",
+	/*
+	 * op6893 6.6 bring-up: 55 identical lines at boot, one per call, all
+	 * of them "1, 0, Settle time(1250, 500) efuse_val = 0x40" -- the
+	 * segment is read from the same efuse every time.  cpufreq_ver is the
+	 * subsystem's own gate (func_lv_mask, writable through
+	 * /proc/cpufreq/cpufreq_debug), the same one the other flood in
+	 * mtk_cpufreq_main.c was moved behind.
+	 */
+	cpufreq_ver("%d, %d, Settle time(%d, %d) efuse_val = 0x%x\n",
 		lv, turbo_flag, UP_SRATE, DOWN_SRATE, val);
 
 	return lv;

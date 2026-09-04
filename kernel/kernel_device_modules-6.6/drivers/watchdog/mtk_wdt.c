@@ -329,8 +329,6 @@ static struct dbg_mem_region dbg_mem_tab[] = {
  * (periodic pstore dumps, reboot/panic notifiers, normal RGU petting) stays
  * active. Re-raise to ~300 for an adb-less image that needs the pstore fallback. */
 #define DBG_AUTORESET_S		0
-/* claimed hardware heartbeat, so the core pets the RGU every ~2 s */
-#define DBG_HEARTBEAT_MS	4000
 
 /*
  * DEBUG ONLY -- is the ~31 s reset a fixed firmware deadline, or is it caused
@@ -1481,12 +1479,23 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	mtk_wdt->wdt_dev.ops = &mtk_wdt_ops;
 	mtk_wdt->wdt_dev.timeout = WDT_MAX_TIMEOUT;
 	/*
-	 * DEBUG ONLY -- claim a much shorter hardware heartbeat than the 31 s
-	 * the RGU is actually programmed for, so the watchdog core pets it
-	 * every ~2 s instead of every 15.5 s.  If the ~31 s reset is the RGU
-	 * expiring, this alone makes the boot survive it.
+	 * Answered, and back to the vendor value.  The ~31 s reset was the
+	 * regulator core disabling rails nothing had claimed yet, which
+	 * regulator_ignore_unused on the command line fixes; it was never the
+	 * RGU expiring.  DBG_HEARTBEAT_MS used to claim a 4 s hardware
+	 * heartbeat here so the watchdog core would pet the RGU every 2 s, and
+	 * that made mtk_wdt_ping()'s unconditional pr_info the largest single
+	 * flood in the log: 705 of 8507 dmesg lines over a 1408 s uptime.
+	 *
+	 * The core's keepalive interval is
+	 * min_not_zero(max_hw_heartbeat_ms, timeout * 1000) / 2, so the vendor
+	 * value pets every 15.5 s.  That is safe here: this DT has no
+	 * interrupts property for the watchdog, so pretimeout stays 0,
+	 * mtk_wdt_init() forces single-stage reset-on-timeout, and
+	 * mtk_wdt_set_timeout() programs the RGU for the full 31 * 1.024 s --
+	 * the usual half-of-deadline margin, and the same interval 4.19 runs.
 	 */
-	mtk_wdt->wdt_dev.max_hw_heartbeat_ms = DBG_HEARTBEAT_MS;
+	mtk_wdt->wdt_dev.max_hw_heartbeat_ms = WDT_MAX_TIMEOUT * 1000;
 	mtk_wdt->wdt_dev.min_timeout = WDT_MIN_TIMEOUT;
 	mtk_wdt->wdt_dev.parent = dev;
 

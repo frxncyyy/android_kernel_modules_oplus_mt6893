@@ -678,7 +678,18 @@ static void mtk_dsc1_config(struct mtk_ddp_comp *comp,
 			   ((slice_bits - num_extra_mux_bits) % mux_word_size != 0)) {
 			num_extra_mux_bits--;
 		}
-		DDPMSG("RCT_ON = 0x%X, num_extra_mux_bits = %d->%d, slice_bits = %d\n",
+		/*
+		 * op6893 6.6 bring-up: DDPMSG is the one DDP macro with no
+		 * runtime gate, and this is a per-commit path -- 240 of 8507
+		 * dmesg lines over a 1408 s uptime, in bursts of ~10/s whenever
+		 * the DSC is reconfigured plus one a minute while idle.  The
+		 * values are constant for a given panel mode (this panel:
+		 * RCT_ON = 0x1, 246->240, 34560), so nothing is learned by
+		 * repeating them.  DDPINFO carries the same line under
+		 * g_mobile_log, like the four display sites already moved for
+		 * the same reason.
+		 */
+		DDPINFO("RCT_ON = 0x%X, num_extra_mux_bits = %d->%d, slice_bits = %d\n",
 			 (dsc_params->rct_on), reg_val, num_extra_mux_bits, slice_bits);
 
 		final_offset = rc_model_size + num_extra_mux_bits -
@@ -1289,7 +1300,8 @@ static void mtk_dsc_config(struct mtk_ddp_comp *comp,
 			   ((slice_bits - num_extra_mux_bits) % mux_word_size != 0)) {
 			num_extra_mux_bits--;
 		}
-		DDPMSG("RCT_ON = 0x%X, num_extra_mux_bits = %d->%d, slice_bits = %d\n",
+		/* Same flood as in mtk_dsc1_config(), see the note there. */
+		DDPINFO("RCT_ON = 0x%X, num_extra_mux_bits = %d->%d, slice_bits = %d\n",
 			 (dsc_params->rct_on), reg_val, num_extra_mux_bits, slice_bits);
 
 		final_offset = rc_model_size + num_extra_mux_bits -
