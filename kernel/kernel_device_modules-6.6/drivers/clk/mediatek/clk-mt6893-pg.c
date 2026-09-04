@@ -4320,19 +4320,31 @@ static int IPE_sys_disable_op(struct subsys *sys)
 }
 static int VDE_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_vde(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: VDEC MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int VDE2_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_vde2(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: VDEC2 MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int VEN_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_ven(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: VENC MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int VEN_CORE1_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_ven_core1(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: VENC_CORE1 MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int MDP_sys_disable_op(struct subsys *sys)
 {
@@ -5048,11 +5060,22 @@ struct mtk_power_gate scp_clks[] = {
 	PGATE(SCP_SYS_ISP, "PG_ISP", "PG_MDP", "img1_sel", SYS_ISP),
 	PGATE(SCP_SYS_ISP2, "PG_ISP2", "PG_DIS", "img2_sel", SYS_ISP2), /* MDP*/
 	PGATE(SCP_SYS_IPE, "PG_IPE", "PG_DIS", "ipe_sel", SYS_IPE), /* MDP */
-	//PGATE(SCP_SYS_VDEC, "PG_VDEC", "PG_DIS", "vdec_sel", SYS_VDE),
-	//PGATE(SCP_SYS_VDEC2, "PG_VDEC2", "PG_DIS", "vdec_sel", SYS_VDE2),
-	//PGATE(SCP_SYS_VENC, "PG_VENC", "PG_DIS", "venc_sel", SYS_VEN),
-//	PGATE(SCP_SYS_VENC_CORE1, "PG_VENC_C1", "PG_DIS", "venc_sel",
-					//			SYS_VEN_CORE1),
+	/* The codec cluster, restored from 4.19's clk-mt6885-pg.c lines
+	 * 4995-4999, again verbatim.  Five DTB consumers, all of them SMI LARBs:
+	 * smi_larb5 scp-vdec, smi_larb4 + smi_larb6 scp-vdec2, smi_larb7
+	 * scp-venc, smi_larb8 scp-venc-c1.  While these four slots were
+	 * ERR_PTR(-ENOENT) all five failed devm_clk_get() on CLK0 and never
+	 * bound.  vdec_sel and venc_sel are both registered by clk-mt6893.ko.
+	 * The CG halves live on their own syscon nodes and need clk-mt6893-vde1
+	 * (vdecsys_soc@1600f000), -vde2 (vdecsys@1602f000), -ven1
+	 * (vencsys@17000000) and -ven2 (vencsys_c1@17800000) loaded as well;
+	 * smi_larb6 asks for the power domain only.
+	 */
+	PGATE(SCP_SYS_VDEC, "PG_VDEC", "PG_DIS", "vdec_sel", SYS_VDE),
+	PGATE(SCP_SYS_VDEC2, "PG_VDEC2", "PG_DIS", "vdec_sel", SYS_VDE2),
+	PGATE(SCP_SYS_VENC, "PG_VENC", "PG_DIS", "venc_sel", SYS_VEN),
+	PGATE(SCP_SYS_VENC_CORE1, "PG_VENC_C1", "PG_DIS", "venc_sel",
+							SYS_VEN_CORE1),
 
 	/* op6893 6.6 bring-up: AUDIO and ADSP, same story as MDP/DIS above.
 	 * The 4.19 DTB reaches both power domains as scpsys *clocks*:
@@ -5075,15 +5098,14 @@ struct mtk_power_gate scp_clks[] = {
 	PGATE(SCP_SYS_CAM_RAWB, "PG_CAM_RAWB", "PG_CAM", NULL, SYS_CAM_RAWB),
 	PGATE(SCP_SYS_CAM_RAWC, "PG_CAM_RAWC", "PG_CAM", NULL, SYS_CAM_RAWC),
 	/* Still off, and each one is referenced by the DTB, so each is still a
-	 * dead consumer: MD1 (mddriver), CONN (consys@18000000), VDEC/VDEC2/
-	 * VENC/VENC_CORE1 (smi_larb4-8, the codec larbs), DP_TX (dp_tx@14800000)
-	 * and VPU (apusys_power + m4u@19010000/19015000).  Held back because
-	 * their consumers are modules this port does not load yet, which means
-	 * nothing would claim the domain and clk_disable_unused() would power it
-	 * down at late_initcall -- fine for a domain that is already down, but
-	 * not something to hand to MD1 or CONN untested while their firmware
-	 * side is unknown.  The camera seven above are safe on that count: the
-	 * SMI larb and subcom drivers are loaded and do clk_prepare_enable().
+	 * dead consumer: MD1 (mddriver), CONN (consys@18000000), DP_TX
+	 * (dp_tx@14800000) and VPU (apusys_power + m4u@19010000/19015000).
+	 * Held back because their consumers are modules this port does not load
+	 * yet, and because MD1 and CONN are not something to hand out untested
+	 * while their firmware side is unknown.  The multimedia domains above
+	 * are safe on that count: their SMI larb and subcom drivers are loaded,
+	 * nothing resumes them (see smi_init_power_on_wanted() in mtk-smi.c) and
+	 * their power-down is suppressed either way.
 	 */
 	//PGATE(SCP_SYS_DP_TX, "PG_DP_TX", "PG_DIS", NULL, SYS_DP_TX),
 	/* Gary Wang: no need to turn of disp mtcmos*/
