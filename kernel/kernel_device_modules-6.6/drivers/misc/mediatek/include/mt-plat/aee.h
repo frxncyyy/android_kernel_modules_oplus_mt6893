@@ -15,6 +15,15 @@
 #define AEE_PROCESS_NAME_LENGTH 256
 #define AEE_BACKTRACE_LENGTH 3072
 
+/*
+ * op6893 6.6 bring-up: /proc/aed, owned by mboot_params.c in mrdump.ko and
+ * populated from there and from aed-main.c in aee_aed.ko.  Exported so the
+ * second one can use it as a parent rather than as a path prefix; see the note
+ * beside the definition for why the symbol itself is the point.
+ */
+struct proc_dir_entry;
+extern struct proc_dir_entry *aee_proc_dir;
+
 
 enum AEE_REBOOT_MODE {
 	AEE_REBOOT_MODE_NORMAL = 0,

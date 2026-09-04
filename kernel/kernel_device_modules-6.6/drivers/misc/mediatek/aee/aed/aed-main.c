@@ -2264,8 +2264,17 @@ AED_PROC_CURRENT_KE_FOPS(ee_coredump);
 
 static int aed_proc_init(void)
 {
+	/*
+	 * op6893 6.6 bring-up: AED_PROC_ENTRY() already passes aed_proc_dir as
+	 * the parent -- it was simply never assigned, so every entry fell back
+	 * to spelling the directory into its own name and depended on someone
+	 * else having created /proc/aed first.  Take it from mrdump, which owns
+	 * it; see the note beside aee_proc_dir in mboot_params.c.
+	 */
+	aed_proc_dir = aee_proc_dir;
+
 	/* 0400: S_IRUSR */
-	AED_PROC_ENTRY(aed/current-ee-coredump, current_ke_ee_coredump, 0400);
+	AED_PROC_ENTRY(current-ee-coredump, current_ke_ee_coredump, 0400);
 
 #if IS_ENABLED(CONFIG_MTK_AEE_UT)
 	aed_proc_debug_init(NULL);

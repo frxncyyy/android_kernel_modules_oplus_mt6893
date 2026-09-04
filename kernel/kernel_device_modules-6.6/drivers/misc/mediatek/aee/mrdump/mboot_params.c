@@ -1201,11 +1201,33 @@ static const struct proc_ops aee_rr_mboot_params_proc_fops = {
 	.proc_release = single_release,
 };
 
+/*
+ * op6893 6.6 bring-up: /proc/aed has one owner and several tenants.  Built in,
+ * this directory was created by arch_initcall(mboot_params_proc_init) long
+ * before anything could ask for it.  As modules the order is whatever depmod
+ * computed, and aee_aed.ko -- which almost every other vendor module imports a
+ * symbol from, so first-stage init loads it before everything else -- called
+ * proc_create("aed/current-ee-coredump") at 0.876 s while this ran at 1.367 s.
+ * With no "aed" to resolve against, __xlate_proc_name() WARNed with
+ * "name 'aed/current-ee-coredump'" (fs/proc/generic.c:172) and the entry was
+ * never created.
+ *
+ * Export the directory so aed-main.c can pass it as a parent instead of
+ * spelling it into the entry name.  The pointer is not really the point: the
+ * symbol is, because an import is the only thing that orders two first-stage
+ * modules under Android's parallel modules.load.  mrdump.ko has no
+ * dependencies of its own, so it just moves to the front of the graph.
+ */
+struct proc_dir_entry *aee_proc_dir;
+EXPORT_SYMBOL(aee_proc_dir);
+
 static void aee_rr_mboot_params_proc_init(void)
 {
 	struct proc_dir_entry *aee_rr_file;
 
-	proc_mkdir("aed", NULL);
+	aee_proc_dir = proc_mkdir("aed", NULL);
+	if (!aee_proc_dir)
+		pr_notice("%s: Can't create aed proc dir\n", __func__);
 
 	aee_rr_file = proc_create("aed/reboot-reason", 0440, NULL,
 			&aee_rr_mboot_params_proc_fops);
