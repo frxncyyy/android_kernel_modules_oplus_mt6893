@@ -298,7 +298,24 @@ void *mtk_vcu_get_sec_handle(struct mtk_vcu_queue *vcu_queue,
 		return ERR_PTR(-EINVAL);
 	}
 
+	/*
+	 * op6893 6.6 bring-up: dmabuf_to_secure_handle() is exported by
+	 * mtk_sec_heap.ko, which drivers/dma-buf/heaps/Makefile only builds
+	 * under CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM (=y on 4.19, off here).
+	 * Without it mtk-vcu.ko does not load at all, which costs the whole
+	 * codec stack for a WFD-only path -- and the same module registers the
+	 * "mtk_wfd_region" heap, so dma_heap_find() above has already failed
+	 * and this point is unreachable in practice.  Fail loudly rather than
+	 * fabricate a handle.
+	 */
+#if IS_ENABLED(CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM)
 	sec_handle = dmabuf_to_secure_handle(vcu_sec_handle->dbuf);
+#else
+	pr_info_once("[%s] no trusted-memory subsystem in this build\n", __func__);
+	dma_heap_buffer_free(vcu_sec_handle->dbuf);
+	mutex_unlock(&vcu_queue->mmap_lock);
+	return ERR_PTR(-EINVAL);
+#endif
 	mem_buff_data->va = 0;
 	mem_buff_data->iova = 0;
 	mem_buff_data->pa = sec_handle;

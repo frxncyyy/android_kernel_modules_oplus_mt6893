@@ -950,6 +950,21 @@ static void vcu_set_gce_cmd(struct cmdq_pkt *pkt,
 			__func__, addr, data, mask);
 	break;
 	case CMD_SEC_WRITE:
+		/*
+		 * op6893 6.6 bring-up: every cmdq_sec_* symbol this file uses is
+		 * exported by cmdq-sec-drv.ko, and the cmdq mailbox Makefile only
+		 * builds that module inside its "ifneq (,$(filter y m,
+		 * $(CONFIG_MTK_GZ_TZ_SYSTEM)))" block -- GenieZone is =y on 4.19
+		 * but off in this 6.6 config, so the module does not exist and
+		 * mtk-vcu.ko could not load at all: nine "Unknown symbol (err
+		 * -2)" lines, no /dev/vcu, and vpud exiting on open() every five
+		 * seconds for the whole session.  MediaTek's own gate for these
+		 * calls is exactly that config, so use it here too; the secure
+		 * (WFD/DRM) encode path is unavailable either way until the
+		 * trusted-memory and GZ stacks are brought up, while ordinary
+		 * decode and encode need none of it.
+		 */
+#if IS_ENABLED(CONFIG_MTK_GZ_TZ_SYSTEM)
 		if (vcu_check_reg_base(vcu, addr, 4) == 0) {
 			cmdq_sec_pkt_write_reg(pkt,
 				addr,
@@ -964,6 +979,10 @@ static void vcu_set_gce_cmd(struct cmdq_pkt *pkt,
 		}
 		pr_debug("[VCU] %s CMD_SEC_WRITE addr: 0x%llx 0x%llx 0x%x 0x%x\n",
 				__func__, addr, data, dma_offset, dma_size);
+#else
+		pr_info_once("[VCU] %s CMD_SEC_WRITE dropped: no GZ secure CMDQ in this build\n",
+				__func__);
+#endif
 	break;
 	case CMD_POLL_REG:
 		if (vcu_check_reg_base(vcu, addr, 4) == 0) {
@@ -1057,7 +1076,9 @@ static void vcu_set_gce_secure_cmd(struct cmdq_pkt *pkt,
 
 	break;
 	case CMD_SEC_WRITE:
-#if (!(IS_ENABLED(CONFIG_DEVICE_MODULES_ARM_SMMU_V3)))
+	/* op6893: see the CMD_SEC_WRITE note in vcu_set_gce_cmd(). */
+#if (!(IS_ENABLED(CONFIG_DEVICE_MODULES_ARM_SMMU_V3))) && \
+	IS_ENABLED(CONFIG_MTK_GZ_TZ_SYSTEM)
 		if (vcu_check_reg_base(vcu, addr, 4) == 0) {
 			if (is_disable_map_sec()) {
 				//for secure handle
@@ -1072,6 +1093,9 @@ static void vcu_set_gce_secure_cmd(struct cmdq_pkt *pkt,
 			pr_info("[VCU] %s CMD_SEC_WRITE wrong addr: 0x%llx 0x%llx 0x%x 0x%x\n",
 				__func__, addr, data, dma_offset, dma_size);
 		}
+#elif !IS_ENABLED(CONFIG_MTK_GZ_TZ_SYSTEM)
+		pr_info_once("[VCU] %s CMD_SEC_WRITE dropped: no GZ secure CMDQ in this build\n",
+			__func__);
 #endif
 		pr_debug("[VCU] %s CMD_SEC_WRITE addr: 0x%llx 0x%llx 0x%x 0x%x\n",
 			__func__, addr, data, dma_offset, dma_size);
@@ -1207,8 +1231,11 @@ static void vcu_gce_flush_callback(struct cmdq_cb_data data)
 				buff->cmdq_buff.core_id, &vcu->flags[i]);
 
 			//TODO: ask CMDQ owner add mtee param
+			/* op6893: see the CMD_SEC_WRITE note in vcu_set_gce_cmd(). */
+#if IS_ENABLED(CONFIG_MTK_GZ_TZ_SYSTEM)
 			if (buff->cmdq_buff.secure != 0)
 				cmdq_sec_mbox_switch_normal(vcu->clt_venc_sec[0]);
+#endif
 
 			vcu->cbf.enc_unlock(vcu->gce_info[j].v4l2_ctx,
 				buff->cmdq_buff.core_id);
@@ -1218,8 +1245,10 @@ static void vcu_gce_flush_callback(struct cmdq_cb_data data)
 				if (vcu->clt_venc[core_id] != NULL)
 					cmdq_mbox_disable(vcu->clt_venc[core_id]->chan);
 			} else {
+#if IS_ENABLED(CONFIG_MTK_GZ_TZ_SYSTEM)
 				if (vcu->clt_venc_sec[0] != NULL)
 					cmdq_sec_mbox_disable(vcu->clt_venc_sec[0]->chan);
+#endif
 				if (vcu->clt_venc[1] != NULL)
 					cmdq_mbox_disable(vcu->clt_venc[1]->chan);
 			}
@@ -1415,8 +1444,11 @@ static int vcu_gce_cmd_flush(struct mtk_vcu *vcu,
 				if (vcu->clt_venc[core_id] != NULL)
 					cmdq_mbox_enable(vcu->clt_venc[core_id]->chan);
 			} else {
+				/* op6893: see the CMD_SEC_WRITE note in vcu_set_gce_cmd(). */
+#if IS_ENABLED(CONFIG_MTK_GZ_TZ_SYSTEM)
 				if (vcu->clt_venc_sec[0] != NULL)
 					cmdq_sec_mbox_enable(vcu->clt_venc_sec[0]->chan);
+#endif
 				if (vcu->clt_venc[1] != NULL)
 					cmdq_mbox_enable(vcu->clt_venc[1]->chan);
 			}
@@ -1454,6 +1486,11 @@ static int vcu_gce_cmd_flush(struct mtk_vcu *vcu,
 
 	if (buff.cmdq_buff.codec_type == VCU_VENC) {
 		if (buff.cmdq_buff.secure != 0) {
+			/* op6893: see the CMD_SEC_WRITE note in vcu_set_gce_cmd().
+			 * The dapc/port engine masks go with the calls, or -Werror
+			 * trips over them being unused.
+			 */
+#if IS_ENABLED(CONFIG_MTK_GZ_TZ_SYSTEM)
 			const u64 dapc_engine =
 				(1LL << CMDQ_SEC_VENC_BSDMA) |
 				(1LL << CMDQ_SEC_VENC_CUR_LUMA) |
@@ -1496,6 +1533,10 @@ static int vcu_gce_cmd_flush(struct mtk_vcu *vcu,
 
 			//CMDQ SCENARIO hint WFD
 			cmdq_sec_pkt_set_secid(pkt_ptr, SEC_ID_WFD);
+#else
+			pr_info_once("[VCU] %s secure venc unavailable: no GZ secure CMDQ in this build\n",
+				__func__);
+#endif
 
 			// one normal cmdq thread is for sec encoding
 			//coworking with cmdq secure thread
@@ -2848,7 +2889,9 @@ static int mtk_vcu_write(const char *val, const struct kernel_param *kp)
 			}
 			usleep_range(10000, 20000);
 		}
-		vcu_ptr->vdec_log_info->type = 0;
+		/* op6893: log_test_nofuse has no "type" field, it is ioctl ABI
+		 * shared with the 4.19 vpud -- see mtk_vcu_controls.h.
+		 */
 		memcpy(vcu_ptr->vdec_log_info->log_info,
 			val, strnlen(val, LOG_INFO_SIZE - 1) + 1);
 	} else
@@ -2865,9 +2908,8 @@ static int mtk_vcu_write(const char *val, const struct kernel_param *kp)
 		vcu_ptr->enable_vcu_dbg_log = 0;
 	}
 
-	pr_info("[log wakeup VPUD] log_info %p type %d vcu_ptr %p val %p: %s %lu\n",
+	pr_info("[log wakeup VPUD] log_info %p type ks->us vcu_ptr %p val %p: %s %lu\n",
 		(char *)vcu_ptr->vdec_log_info->log_info,
-		vcu_ptr->vdec_log_info->type,
 		vcu_ptr, val, val,
 		(unsigned long)strnlen(val, LOG_INFO_SIZE - 1) + 1);
 
@@ -2918,11 +2960,9 @@ int vcu_get_log(char *val, unsigned int val_len)
 		}
 		usleep_range(10000, 20000);
 	}
-	vcu_ptr->vdec_log_info->type = 1;
-
-	pr_info("[log wakeup VPUD] log_info %p type %d vcu_ptr %p\n",
-		(char *)vcu_ptr->vdec_log_info->log_info,
-		vcu_ptr->vdec_log_info->type, vcu_ptr);
+	/* op6893: no "type" field, see mtk_vcu_controls.h. */
+	pr_info("[log wakeup VPUD] log_info %p type us->ks vcu_ptr %p\n",
+		(char *)vcu_ptr->vdec_log_info->log_info, vcu_ptr);
 
 	atomic_set(&vcu_ptr->vdec_log_got, 1);
 	wake_up(&vcu_ptr->vdec_log_get_wq);

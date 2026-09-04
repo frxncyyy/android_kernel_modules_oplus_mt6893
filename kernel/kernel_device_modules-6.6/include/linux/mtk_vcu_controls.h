@@ -13,7 +13,25 @@
 #include <linux/string.h>
 #include <linux/compat.h>
 
-#define SHARE_BUF_SIZE 64
+/*
+ * op6893 6.6 bring-up: SHARE_BUF_SIZE and struct log_test_nofuse are ioctl
+ * ABI, and the /vendor/bin/vpud we boot was built against the 4.19 header
+ * (include/uapi/linux/mtk_vcu_controls.h in the 4.19 tree).  MediaTek shrank
+ * SHARE_BUF_SIZE from 80 to 64 and prepended an "int type" to
+ * log_test_nofuse between the two, which moves the _IOC size field and so
+ * changes the command numbers themselves:
+ *
+ *   VCU_GET_OBJECT      4.19 0xc0587_60a (88 B)   6.6 0xc048760a (72 B)
+ *   VCU_GET_LOG_OBJECT  4.19 0x4400760b (1024 B)  6.6 0x4404760b (1028 B)
+ *
+ * so every vpud ioctl landed in the default arm of vcu_unlocked_ioctl() as
+ * "[VCU] Invalid cmd_number 0xc058760a", vpud spun on it and init respawned
+ * it forever.  Restore the 4.19 numbers: 80 only relaxes the BUILD_BUG_ON
+ * fits-in-share_buf assertions in vdec/venc_vcp_if.c, and the "type" field
+ * was informational (see mtk_vcu.c, where it is assigned and printed but
+ * never tested).
+ */
+#define SHARE_BUF_SIZE 80
 #define LOG_INFO_SIZE 1024
 #define VCODEC_CMDQ_CMD_MAX           (2048)
 
@@ -249,7 +267,7 @@ struct share_obj {
 };
 
 struct log_test_nofuse {
-	int type; // 0: set log from ks to us; 1: get log from us to ks;
+	/* op6893: no "int type" here, see the SHARE_BUF_SIZE note above. */
 	char log_info[LOG_INFO_SIZE];
 };
 
