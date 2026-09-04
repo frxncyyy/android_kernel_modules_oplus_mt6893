@@ -3751,6 +3751,47 @@ static void is_mpu_violation(struct device *dev, bool is_probe_start)
 	iounmap(semi_base);
 }
 
+/*
+ * op6893 6.6 bring-up: which LARBs/COMMONs want the init-power-on pin below.
+ *
+ * The pin exists for the display path only (see the comments at both call
+ * sites).  It used to be "every SMI device on MT6893", which was harmless
+ * while the only devices that could bind were the four display/MDP LARBs --
+ * the img/ipe/cam ones sat in deferred probe because no CG provider for
+ * imgsys1/imgsys2/ipesys/camsys was loaded.  Once those providers moved into
+ * the first stage, 16 LARBs bound, and the blanket pin powered the whole
+ * multimedia cluster up at probe and handed it to mtk_smi_init_power_off():
+ *
+ *   [clkmgr] SYS_ISP MTCMOS BUS hang at pdn flow step 0
+ *   ram_console_update / spm_mtcmos_ctrl_isp / ISP_sys_disable_op
+ *   pg_unprepare / clk_unprepare / mtk_smi_larb_suspend
+ *   mtk_smi_init_power_off / mtk_drm_kms_lateinit
+ *
+ * INFRA_TOPAXI_PROTECTEN_MM_2 never acked ISP_PROT_STEP1_0, the WARN loop in
+ * ram_console_update() spun forever (256 KB of ramoops covering 70 ms) and the
+ * boot never got past mtk_drm_bind -- the same failure the DIS and MDP domains
+ * already hit, see DIS_sys_disable_op() in clk-mt6893-pg.c.
+ *
+ * The LARBs that have no reason to be pinned are better off never resumed:
+ * their MTCMOS domain then stays off for the whole session, so nothing has to
+ * power it down.  Keep the pin for scp-dis/scp-mdp, whose domains are held on
+ * anyway, and leave everything else runtime-suspended.  The DT (4.19) sets no
+ * "init-power-on" property on anything, so this predicate is the only source
+ * of the pin on this board.
+ */
+static bool smi_init_power_on_wanted(struct device *dev)
+{
+	const char *name;
+
+	if (!of_machine_is_compatible("mediatek,MT6893"))
+		return false;
+
+	/* clocks[0]/clock-names[0] is the scpsys MTCMOS "clock" of the domain */
+	if (of_property_read_string_index(dev->of_node, "clock-names", 0, &name))
+		return false;
+
+	return !strcmp(name, "scp-dis") || !strcmp(name, "scp-mdp");
+}
 
 static int mtk_smi_larb_probe(struct platform_device *pdev)
 {
@@ -3894,9 +3935,10 @@ static int mtk_smi_larb_probe(struct platform_device *pdev)
 	 * "Waiting frame data from RDMA".  Enable runtime PM (above) and pin the
 	 * larb resumed for the whole session, same as the init-power-on path --
 	 * a bring-up crutch (costs idle power) to revert once genpd owns these.
+	 * Only the display/MDP larbs, see smi_init_power_on_wanted().
 	 */
 	if (of_property_read_bool(dev->of_node, "init-power-on") ||
-	    of_machine_is_compatible("mediatek,MT6893")) {
+	    smi_init_power_on_wanted(dev)) {
 		dev_notice(dev, "%s: init power on\n", __func__);
 		ret = pm_runtime_get_sync(dev);
 		if (ret < 0) {
@@ -5569,17 +5611,20 @@ static int mtk_smi_common_probe(struct platform_device *pdev)
 		common->skip_rpm_cb = true;
 
 	/* op6893 6.6 bring-up: pin the SMI common resumed, see the matching
-	 * comment in mtk_smi_larb_probe().
+	 * comment in mtk_smi_larb_probe().  Display/MDP only, see
+	 * smi_init_power_on_wanted(): pinning ipe_smi_subcom and the three
+	 * cam_smi_subcoms as well would hold PG_IPE and PG_CAM on for the whole
+	 * session for nothing, since no img/cam master is up yet.
 	 */
 	if (of_property_read_bool(dev->of_node, "init-power-on") ||
-	    of_machine_is_compatible("mediatek,MT6893")) {
+	    smi_init_power_on_wanted(dev)) {
 		dev_notice(dev, "%s: init power on\n", __func__);
 		ret = pm_runtime_get_sync(dev);
 		if (ret < 0) {
 			dev_notice(dev, "Unable to enable SMI COMM%d. ret:%d\n",
 				common->commid, ret);
 			pm_runtime_put_sync(dev);
-		} else if (of_machine_is_compatible("mediatek,MT6893")) {
+		} else if (smi_init_power_on_wanted(dev)) {
 			/*
 			 * op6893 6.6 bring-up: the 4.19 DT describes the
 			 * larb->common relationship with the integer

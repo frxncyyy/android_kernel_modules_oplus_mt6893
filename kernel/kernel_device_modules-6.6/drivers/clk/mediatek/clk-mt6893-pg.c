@@ -4269,15 +4269,54 @@ static int MFG6_sys_disable_op(struct subsys *sys)
 }
 static int ISP_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_isp(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: the whole multimedia cluster fails to power
+	 * *down* the same way the display domain does -- see
+	 * DIS_sys_disable_op() below for the mechanism.  Caught on the ISP
+	 * domain when the imgsys/camsys CG providers moved into the first stage
+	 * and 16 SMI LARBs started binding: mtk_drm_kms_lateinit() ->
+	 * mtk_smi_init_power_off() released larb9, its runtime_suspend
+	 * clk_unprepare()d "scp-isp", and spm_mtcmos_ctrl_isp(STA_POWER_DOWN)
+	 * spun forever on the first bus-protect handshake --
+	 *
+	 *   [clkmgr] SYS_ISP MTCMOS BUS hang at pdn flow step 0
+	 *   WARNING ... ram_console_update+0x228 [clk_mt6893_pg]
+	 *   spm_mtcmos_ctrl_isp / ISP_sys_disable_op / pg_unprepare
+	 *   clk_unprepare / mtk_smi_larb_suspend / mtk_smi_init_power_off
+	 *
+	 * INFRA_TOPAXI_PROTECTEN_MM_2 never acked ISP_PROT_STEP1_0_MASK; the
+	 * boot hung in mtk_drm_bind at t=32 s and the 256 KB ramoops buffer held
+	 * nothing but 70 ms of that WARN loop.  The pdn flow itself is byte
+	 * identical to 4.19's clk-mt6885-pg.c, so this is missing state, not a
+	 * transcription error: 4.19 drives the SMI clocks of the subsystem from
+	 * pg_callbacks (smi_drv.c smi_subsys_after_on/before_off), and the 6.6
+	 * SMI driver dropped those hooks for genpd notifiers that never fire
+	 * here, because these domains are clocks and not genpd domains.
+	 *
+	 * smi_init_power_on_wanted() in mtk-smi.c keeps these domains from being
+	 * powered up at all, so in a normal boot this op is never reached.  It
+	 * stays a suppression rather than the real flow so that a stray resume
+	 * (a camera driver, "echo on > .../power/control", clk_disable_unused()
+	 * on a domain the bootloader left on) degrades to a domain stuck on
+	 * instead of an unrecoverable WARN loop -- this device needs a manual
+	 * recovery trip to get out of one.
+	 */
+	pr_info_once("%s: bring-up: ISP MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int ISP2_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_isp2(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: ISP2 MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int IPE_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_ipe(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: IPE MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int VDE_sys_disable_op(struct subsys *sys)
 {
@@ -4342,19 +4381,31 @@ static int ADSP_sys_disable_op(struct subsys *sys)
 }
 static int CAM_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_cam(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: CAM MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int CAM_RAWA_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_cam_rawa(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: CAM_RAWA MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int CAM_RAWB_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_cam_rawb(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: CAM_RAWB MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int CAM_RAWC_sys_disable_op(struct subsys *sys)
 {
-	return spm_mtcmos_ctrl_cam_rawc(STA_POWER_DOWN);
+	/* op6893 6.6 bring-up: see ISP_sys_disable_op(). */
+	pr_info_once("%s: bring-up: CAM_RAWC MTCMOS power-down suppressed\n",
+		     __func__);
+	return 0;
 }
 static int DP_TX_sys_disable_op(struct subsys *sys)
 {
@@ -4976,9 +5027,27 @@ struct mtk_power_gate scp_clks[] = {
 	PGATE(SCP_SYS_MFG4, "PG_MFG4", "PG_MFG1", NULL, SYS_MFG4),
 	PGATE(SCP_SYS_MFG5, "PG_MFG5", "PG_MFG1", NULL, SYS_MFG5),
 	PGATE(SCP_SYS_MFG6, "PG_MFG6", "PG_MFG1", NULL, SYS_MFG6),
-	//PGATE(SCP_SYS_ISP, "PG_ISP", "PG_MDP", "img1_sel", SYS_ISP),
-	//PGATE(SCP_SYS_ISP2, "PG_ISP2", "PG_DIS", "img2_sel", SYS_ISP2), /* MDP*/
-	//PGATE(SCP_SYS_IPE, "PG_IPE", "PG_DIS", "ipe_sel", SYS_IPE), /* MDP */
+	/* op6893 6.6 bring-up: the camera cluster, third instance of the MDP/DIS
+	 * and AUDIO/ADSP story below -- same cause, same fix, same file.  The
+	 * 4.19 DTB reaches these domains as scpsys *clocks* too, and it does so
+	 * from 22 places: smi_larb9/10 (scp-isp), smi_larb11/12 (scp-isp2),
+	 * ipe_smi_subcom + smi_larb19/20 (scp-ipe), cam_smi_subcom + seninf_top +
+	 * camsys (scp-cam / ISP_SCP_SYS_CAM) and smi_larb16/17/18
+	 * (scp-cam-rawa/b/c).  While these seven lines were commented out
+	 * alloc_clk_data() left clks[12..14] and clks[23..26] as
+	 * ERR_PTR(-ENOENT), so devm_clk_get() failed and every one of those
+	 * probes stayed in deferred probe -- visible as
+	 * "ipe_smi_subcom: CLK0:scp-ipe get failed" and
+	 * "cam_smi_subcom: CLK0:scp-cam get failed".
+	 *
+	 * Text restored verbatim from 4.19's clk-mt6885-pg.c (lines 4992-4994 and
+	 * 5005-5008), which has all 26 entries live and boots this DTB: same
+	 * parents, same pre_clks, same pd_ids.  img1_sel/img2_sel/ipe_sel/cam_sel
+	 * all exist in clk_summary already, registered by clk-mt6893.ko.
+	 */
+	PGATE(SCP_SYS_ISP, "PG_ISP", "PG_MDP", "img1_sel", SYS_ISP),
+	PGATE(SCP_SYS_ISP2, "PG_ISP2", "PG_DIS", "img2_sel", SYS_ISP2), /* MDP*/
+	PGATE(SCP_SYS_IPE, "PG_IPE", "PG_DIS", "ipe_sel", SYS_IPE), /* MDP */
 	//PGATE(SCP_SYS_VDEC, "PG_VDEC", "PG_DIS", "vdec_sel", SYS_VDE),
 	//PGATE(SCP_SYS_VDEC2, "PG_VDEC2", "PG_DIS", "vdec_sel", SYS_VDE2),
 	//PGATE(SCP_SYS_VENC, "PG_VENC", "PG_DIS", "venc_sel", SYS_VEN),
@@ -5000,10 +5069,22 @@ struct mtk_power_gate scp_clks[] = {
 			"ifrao_audio26m",
 			"ifrao_audio", SYS_AUDIO),
 	PGATE(SCP_SYS_ADSP, "PG_ADSP", NULL, "adsp_sel", SYS_ADSP),
-	//PGATE(SCP_SYS_CAM, "PG_CAM", "PG_DIS", "cam_sel", SYS_CAM),
-//	PGATE(SCP_SYS_CAM_RAWA, "PG_CAM_RAWA", "PG_CAM", NULL, SYS_CAM_RAWA),
-//	PGATE(SCP_SYS_CAM_RAWB, "PG_CAM_RAWB", "PG_CAM", NULL, SYS_CAM_RAWB),
-//	PGATE(SCP_SYS_CAM_RAWC, "PG_CAM_RAWC", "PG_CAM", NULL, SYS_CAM_RAWC),
+	/* Second half of the camera cluster; see the comment above ISP. */
+	PGATE(SCP_SYS_CAM, "PG_CAM", "PG_DIS", "cam_sel", SYS_CAM),
+	PGATE(SCP_SYS_CAM_RAWA, "PG_CAM_RAWA", "PG_CAM", NULL, SYS_CAM_RAWA),
+	PGATE(SCP_SYS_CAM_RAWB, "PG_CAM_RAWB", "PG_CAM", NULL, SYS_CAM_RAWB),
+	PGATE(SCP_SYS_CAM_RAWC, "PG_CAM_RAWC", "PG_CAM", NULL, SYS_CAM_RAWC),
+	/* Still off, and each one is referenced by the DTB, so each is still a
+	 * dead consumer: MD1 (mddriver), CONN (consys@18000000), VDEC/VDEC2/
+	 * VENC/VENC_CORE1 (smi_larb4-8, the codec larbs), DP_TX (dp_tx@14800000)
+	 * and VPU (apusys_power + m4u@19010000/19015000).  Held back because
+	 * their consumers are modules this port does not load yet, which means
+	 * nothing would claim the domain and clk_disable_unused() would power it
+	 * down at late_initcall -- fine for a domain that is already down, but
+	 * not something to hand to MD1 or CONN untested while their firmware
+	 * side is unknown.  The camera seven above are safe on that count: the
+	 * SMI larb and subcom drivers are loaded and do clk_prepare_enable().
+	 */
 	//PGATE(SCP_SYS_DP_TX, "PG_DP_TX", "PG_DIS", NULL, SYS_DP_TX),
 	/* Gary Wang: no need to turn of disp mtcmos*/
 	//PGATE3(SCP_SYS_VPU, "PG_VPU", NULL, "ipu_if_sel", "dsp_sel",
