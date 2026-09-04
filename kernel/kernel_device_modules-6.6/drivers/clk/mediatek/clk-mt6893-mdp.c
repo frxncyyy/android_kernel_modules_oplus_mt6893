@@ -203,6 +203,19 @@ static int clk_mt6893_mdp_probe(struct platform_device *pdev)
 
 static const struct of_device_id of_match_clk_mt6893_mdp[] = {
 	{ .compatible = "mediatek,mt6893-mdpsys_config", },
+	/*
+	 * op6893: the 4.19 DTB describes the same 0x1f000000 block twice --
+	 * syscon@1f000000 "mediatek,mt6893-mdpsys" is the provider (it is the
+	 * one with #clock-cells and the phandle every consumer references), and
+	 * mdpsys_config@1f000000 "mediatek,mdpsys_config" is a consumer with a
+	 * clocks list and no #clock-cells.  Neither spelling matches the entry
+	 * above, so nothing bound and mdp-smi0/1/2 never existed: mdp_smi_common
+	 * and sysram_smi_common failed devm_clk_get() and stayed in deferred
+	 * probe (157 retry lines in 190 s), and 1f027000.m4u logged
+	 * "get clk failed".  clk-mt6893-ipe.c already matches its sibling node
+	 * the same way, "mediatek,mt6893-ipesys", and does bind.
+	 */
+	{ .compatible = "mediatek,mt6893-mdpsys", },
 	{}
 };
 
