@@ -452,6 +452,20 @@ static const struct of_device_id mt635x_efuse_of_match[] = {
 		.compatible = "mediatek,mt6358-efuse",
 		.data = &mt6359p_efuse_data
 	}, {
+		/*
+		 * op6893 6.6 bring-up: this 4.19 DTB spells the MT6359P efuse
+		 * node "mediatek,mt6359-efuse", which is also what
+		 * mt6397-core.c's mt6359p_legacy_devs[] cell asks for -- so the
+		 * platform device is already there (as
+		 * 10026000.pwrap:mt6359-pmic/mt6359-efuse) and was simply
+		 * sitting unbound for want of this line.  Same silicon and the
+		 * same register layout as mt6359p-efuse below; the only
+		 * consumer so far is mt6359p-accdet.c, which needs rows
+		 * 109/111/112/113 for its auxadc and moisture calibration.
+		 */
+		.compatible = "mediatek,mt6359-efuse",
+		.data = &mt6359p_efuse_data
+	}, {
 		.compatible = "mediatek,mt6359p-efuse",
 		.data = &mt6359p_efuse_data
 	}, {

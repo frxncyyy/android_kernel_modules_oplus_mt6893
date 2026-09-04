@@ -28,6 +28,7 @@
 #include <sound/soc.h>
 #include <sound/jack.h>
 #include <linux/mfd/mt6397/core.h>
+#include <dt-bindings/mfd/mt6359-irq.h>
 #include "mt6359p-accdet.h"
 #include "mt6359p.h"
 #if IS_ENABLED(CONFIG_SND_SOC_FSA)
@@ -141,24 +142,28 @@ static struct accdet_priv mt6359_accdet[] = {
 };
 
 /*
- * This 4.19 DTB's accdet node is
+ * Two DT shapes reach this driver.  Upstream, and the MT6833 boards this tree
+ * came from, nest the block under the MT6359 MFD as
+ * "mediatek,mt6359p-accdet", and the MFD hands down three things: the PMIC
+ * regmap (parent drvdata), the "mt63xx-accdet-efuse" nvmem phandle and the
+ * accdet interrupts.  This 4.19 DTB spells the same block
  *
  *   accdet { compatible = "mediatek,pmic-accdet";
  *            io-channels = <&pmic_auxadc 9>;
  *            io-channel-names = "pmic_accdet"; ... status = "okay"; }
  *
- * i.e. the other name the binding documents for this same block (see
- * Documentation/devicetree/bindings/sound/mt6359p-accdet.txt).  It is
- * deliberately NOT listed below yet: it is a *top-level* node, so the platform
- * device has no parent and accdet_probe()'s very first statement,
- * dev_get_drvdata(pdev->dev.parent), would fault -- and past that it still
- * needs the "pmic_accdet" iio channel and the "mt63xx-accdet-efuse" nvmem
- * cell, neither of which has a provider in this port yet.  Until those three
- * are handled the node stays unbound, @accdet stays NULL, and the card comes up
- * without a headset jack (see mt6359p_accdet_init()).
+ * -- the other name the binding documents (see
+ * Documentation/devicetree/bindings/sound/mt6359p-accdet.txt) -- as a
+ * *top-level* node.  So pdev->dev.parent is the platform bus, which carries no
+ * drvdata, and none of those three arrive: the iio channel is the only thing
+ * the node itself provides.  accdet_probe() now fetches the other three by
+ * hand, the way the 4.19 driver did; see the helpers above it.
  */
 const struct of_device_id accdet_of_match[] = {
 	{
+		.compatible = "mediatek,pmic-accdet",
+		.data = &mt6359_accdet,
+	}, {
 		.compatible = "mediatek,mt6359p-accdet",
 		.data = &mt6359_accdet,
 	}, {
@@ -3405,7 +3410,135 @@ int mt6359p_accdet_set_drvdata(struct snd_soc_card *card)
 }
 EXPORT_SYMBOL_GPL(mt6359p_accdet_set_drvdata);
 
-static int accdet_probe(struct platform_device *pdev)
+/*
+ * op6893 6.6 bring-up: what follows stands in for the MFD parent that the
+ * top-level "mediatek,pmic-accdet" node does not have (see the note above
+ * accdet_of_match).  Each helper returns -EPROBE_DEFER when the provider is
+ * merely late -- the PMIC MFD and nvmem-mt635x-efuse.ko are separate modules
+ * and Android's first stage loads modules.load in parallel -- and -ENODEV when
+ * this DT does not describe it at all.
+ */
+#define MT6359_PMIC_COMPATIBLE		"mediatek,mt6359-pmic"
+#define MT6359_EFUSE_COMPATIBLE		"mediatek,mt6359-efuse"
+
+/* The parent drvdata a nested node would have been given. */
+static struct mt6397_chip *accdet_pmic_chip(void)
+{
+	struct platform_device *pmic_pdev;
+	struct mt6397_chip *chip;
+	struct device_node *np;
+
+	np = of_find_compatible_node(NULL, NULL, MT6359_PMIC_COMPATIBLE);
+	if (!np)
+		return ERR_PTR(-ENODEV);
+
+	pmic_pdev = of_find_device_by_node(np);
+	of_node_put(np);
+	if (!pmic_pdev)
+		return ERR_PTR(-EPROBE_DEFER);
+
+	/*
+	 * NULL until mt6397_probe() has run, and back to NULL if it failed:
+	 * the driver core clears drvdata in device_unbind_cleanup().  The chip
+	 * itself is devm memory of a device that stays bound, so dropping the
+	 * reference here is safe.
+	 */
+	chip = platform_get_drvdata(pmic_pdev);
+	put_device(&pmic_pdev->dev);
+
+	if (!chip || !chip->regmap)
+		return ERR_PTR(-EPROBE_DEFER);
+
+	return chip;
+}
+
+static void accdet_efuse_put(void *efuse)
+{
+	nvmem_device_put(efuse);
+}
+
+/*
+ * The "mt63xx-accdet-efuse" nvmem phandle a nested node would have carried.
+ * The provider is the PMIC's own efuse child, so ask for it by node rather
+ * than by the name nvmem would otherwise match on.
+ */
+static struct nvmem_device *accdet_pmic_efuse(struct device *dev)
+{
+	struct nvmem_device *efuse;
+	struct device_node *np;
+	int ret;
+
+	np = of_find_compatible_node(NULL, NULL, MT6359_EFUSE_COMPATIBLE);
+	if (!np)
+		return ERR_PTR(-ENODEV);
+
+	/* -EPROBE_DEFER while nvmem-mt635x-efuse.ko has yet to register it */
+	efuse = nvmem_device_find(np, device_match_of_node);
+	of_node_put(np);
+	if (IS_ERR(efuse))
+		return efuse;
+
+	ret = devm_add_action_or_reset(dev, accdet_efuse_put, efuse);
+	if (ret)
+		return ERR_PTR(ret);
+
+	return efuse;
+}
+
+/*
+ * The accdet interrupts a nested node would have received from
+ * devm_mfd_add_devices()'s irq domain argument.  The PMIC is its own
+ * interrupt-controller with #interrupt-cells = <2>, and its hwirq numbering is
+ * the one in dt-bindings/mfd/mt6359-irq.h -- the DTB agrees, it pairs
+ * "accdet", "accdet_eint0" and "accdet_eint1" with 0x85, 0x86 and 0x87 in
+ * mediatek,pmic-irqs.
+ */
+static int accdet_pmic_irq(struct device *dev, unsigned int hwirq)
+{
+	struct of_phandle_args spec = { };
+	unsigned int virq;
+
+	spec.np = of_find_compatible_node(NULL, NULL, MT6359_PMIC_COMPATIBLE);
+	if (!spec.np)
+		return -ENODEV;
+
+	spec.args_count = 2;
+	spec.args[0] = hwirq;
+	spec.args[1] = IRQ_TYPE_LEVEL_HIGH;
+
+	/* 0 if the PMIC's irq domain is not up yet, or on a translate error */
+	virq = irq_create_of_mapping(&spec);
+	of_node_put(spec.np);
+	if (!virq) {
+		dev_dbg(dev, "no mapping for PMIC hwirq %u\n", hwirq);
+		return -EPROBE_DEFER;
+	}
+
+	return virq;
+}
+
+/*
+ * Interrupts by resource index, with the PMIC hwirq to fall back on when -- as
+ * here -- the node has no "interrupts" property of its own.  Only EINT0 is ever
+ * asked for on this board: caps comes from accdet_get_dts_data(), and with no
+ * "headset-eint-num" in the DTB it defaults to EINT0, which is also what 4.19
+ * was built with (CONFIG_ACCDET_SUPPORT_EINT0=y).
+ */
+static int accdet_get_irq(struct platform_device *pdev, unsigned int index,
+			  unsigned int hwirq)
+{
+	int irq;
+
+	irq = platform_get_irq_optional(pdev, index);
+	if (irq > 0)
+		return irq;
+	if (irq < 0 && irq != -ENXIO)
+		return irq;
+
+	return accdet_pmic_irq(&pdev->dev, hwirq);
+}
+
+static int __accdet_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	struct resource *res;
@@ -3458,6 +3591,15 @@ static int accdet_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!mt6397_chip || !mt6397_chip->regmap)
+		mt6397_chip = accdet_pmic_chip();
+	ret = PTR_ERR_OR_ZERO(mt6397_chip);
+	if (ret) {
+		if (ret != -EPROBE_DEFER)
+			dev_dbg(&pdev->dev, "Error: Get regmap failed (%d)\n",
+				ret);
+		return ret;
+	}
 	accdet->regmap = mt6397_chip->regmap;
 	accdet->dev = &pdev->dev;
 
@@ -3475,6 +3617,16 @@ static int accdet_probe(struct platform_device *pdev)
 	/* get pmic efuse handler */
 	accdet->accdet_efuse = devm_nvmem_device_get(&pdev->dev,
 			"mt63xx-accdet-efuse");
+	if (IS_ERR(accdet->accdet_efuse)) {
+		/*
+		 * Without the phandle nvmem_device_get() falls back to matching
+		 * a provider *named* "mt63xx-accdet-efuse", which nothing here
+		 * is, so this comes back -EPROBE_DEFER rather than -ENOENT --
+		 * i.e. there is nothing to distinguish "late" from "absent" and
+		 * the fallback has to run for either.
+		 */
+		accdet->accdet_efuse = accdet_pmic_efuse(&pdev->dev);
+	}
 	ret = PTR_ERR_OR_ZERO(accdet->accdet_efuse);
 	if (ret) {
 		if (ret != -EPROBE_DEFER)
@@ -3486,11 +3638,12 @@ static int accdet_probe(struct platform_device *pdev)
 	accdet_get_efuse();
 
 	/* register pmic interrupt */
-	accdet->accdet_irq = platform_get_irq(pdev, 0);
+	accdet->accdet_irq = accdet_get_irq(pdev, 0, INT_ACCDET);
 	if (accdet->accdet_irq < 0) {
-		dev_dbg(&pdev->dev,
-			"Error: Get accdet irq failed (%d)\n",
-			accdet->accdet_irq);
+		if (accdet->accdet_irq != -EPROBE_DEFER)
+			dev_dbg(&pdev->dev,
+				"Error: Get accdet irq failed (%d)\n",
+				accdet->accdet_irq);
 		return accdet->accdet_irq;
 	}
 	ret = devm_request_threaded_irq(&pdev->dev, accdet->accdet_irq,
@@ -3505,7 +3658,8 @@ static int accdet_probe(struct platform_device *pdev)
 	}
 
 	if (HAS_CAP(accdet->data->caps, ACCDET_PMIC_EINT0)) {
-		accdet->accdet_eint0 = platform_get_irq(pdev, 1);
+		accdet->accdet_eint0 = accdet_get_irq(pdev, 1,
+						      INT_ACCDET_EINT0);
 		if (accdet->accdet_eint0 < 0) {
 			dev_dbg(&pdev->dev,
 				"Error: Get eint0 irq failed (%d)\n",
@@ -3524,7 +3678,8 @@ static int accdet_probe(struct platform_device *pdev)
 			return ret;
 		}
 	} else if (HAS_CAP(accdet->data->caps, ACCDET_PMIC_EINT1)) {
-		accdet->accdet_eint1 = platform_get_irq(pdev, 2);
+		accdet->accdet_eint1 = accdet_get_irq(pdev, 2,
+						      INT_ACCDET_EINT1);
 		if (accdet->accdet_eint1 < 0) {
 			dev_dbg(&pdev->dev,
 				"Error: Get eint1 irq failed (%d)\n",
@@ -3543,7 +3698,8 @@ static int accdet_probe(struct platform_device *pdev)
 			return ret;
 		}
 	} else if (HAS_CAP(accdet->data->caps, ACCDET_PMIC_BI_EINT)) {
-		accdet->accdet_eint0 = platform_get_irq(pdev, 1);
+		accdet->accdet_eint0 = accdet_get_irq(pdev, 1,
+						      INT_ACCDET_EINT0);
 		if (accdet->accdet_eint0 < 0) {
 			dev_dbg(&pdev->dev,
 				"Error: Get eint0 irq failed (%d)\n",
@@ -3561,7 +3717,8 @@ static int accdet_probe(struct platform_device *pdev)
 				ret);
 			return ret;
 		}
-		accdet->accdet_eint1 = platform_get_irq(pdev, 2);
+		accdet->accdet_eint1 = accdet_get_irq(pdev, 2,
+						      INT_ACCDET_EINT1);
 		if (accdet->accdet_eint1 < 0) {
 			dev_dbg(&pdev->dev,
 				"Error: Get eint1 irq failed (%d)\n",
@@ -3683,6 +3840,24 @@ err_device_create:
 	class_destroy(accdet->accdet_class);
 err_chrdevregion:
 	pr_notice("%s error. now exit.!\n", __func__);
+	return ret;
+}
+
+/*
+ * op6893 6.6 bring-up: now that a compatible in this DTB matches, this driver
+ * can for the first time actually fail or defer -- and every error path above
+ * returns with @accdet still pointing at memory devres has just freed, which
+ * mt6359p_accdet_init() would then hand to the sound card as its jack.  Publish
+ * the global only for a probe that ran to the end.
+ */
+static int accdet_probe(struct platform_device *pdev)
+{
+	int ret;
+
+	ret = __accdet_probe(pdev);
+	if (ret)
+		accdet = NULL;
+
 	return ret;
 }
 
