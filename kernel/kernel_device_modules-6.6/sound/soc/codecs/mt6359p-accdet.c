@@ -122,9 +122,24 @@ struct mt63xx_accdet_data {
 	u32 moisture_ext_r;
 	u32 moisture_int_r;
 	u32 moisture_vm;
-	u32 moisture_vdd_offset;
-	u32 moisture_offset;
-	u32 moisture_eint_offset;
+	/*
+	 * op6893 6.6 bring-up: signed, because accdet_get_efuse() sign-extends
+	 * all three by hand -- see the "2'complement" comment there -- and then
+	 * divides by two.  As u32 that division was unsigned: with row 113 = 0xff
+	 * the offset is -1, so moisture_offset / 2 came out 0x7fffffff instead of
+	 * 0, and the internal-resistor moisture_vm was logged at -2147483330 mV
+	 * rather than 319.  4.19 declares these int for the same reason.
+	 *
+	 * Nothing on this board reads that result: moisture_vm is only used by
+	 * get_moisture_sw_auxadc_check(), which is gated on moisture_detect_mode
+	 * 1/2/3 and this DTB asks for 5, the analog comparator.  So the symptom
+	 * here is one nonsense boot line -- but a mode that did take the software
+	 * path would have compared an auxadc reading in mV against 2^31 and never
+	 * once called the jack wet.
+	 */
+	int moisture_vdd_offset;
+	int moisture_offset;
+	int moisture_eint_offset;
 };
 static struct mt63xx_accdet_data *accdet;
 
