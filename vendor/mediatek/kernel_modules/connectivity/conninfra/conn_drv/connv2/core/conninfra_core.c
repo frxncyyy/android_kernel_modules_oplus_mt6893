@@ -2465,15 +2465,20 @@ int conninfra_core_init(const unsigned int support_drv)
 		g_pre_cal_mode = PRE_CAL_ALL_DISABLED;
 	}
 	/*
-	 * op6893 6.6 bring-up: consys_hw_drv_support() falls back to the default
-	 * radio mask 0x2f (BT+WIFI+GPS+FM) because this DTB carries no
-	 * drv-support property (count=-22), so the check above sees WiFi as
-	 * present and leaves power-on pre-cal enabled.  But no WiFi subdrv (wlan)
-	 * is loaded to run the calibration, so conninfra_core_pre_cal_blocking()
-	 * spins on every BT power-on until its not-registered timeout.  Force
-	 * pre-cal off until the WiFi driver is actually brought up here.
+	 * op6893 6.6 bring-up: consys_hw_drv_support() has no drv-support property
+	 * in this DTB (count=-22) and falls back to the default radio mask 0x2f
+	 * (BT+WIFI+GPS+FM), so the check above sees both BT and WiFi present and
+	 * keeps g_pre_cal_mode at the conninfra.cfg value (pre_cal_mode=3,
+	 * PRE_CAL_SCREEN_ON_DISABLED -- power-on pre-cal on, screen-on pre-cal off).
+	 *
+	 * Earlier in the port this was force-overridden to PRE_CAL_ALL_DISABLED
+	 * because no WiFi subdrv (wlan) existed to service the pre-cal callback,
+	 * which made conninfra_core_pre_cal_blocking() spin on every BT power-on.
+	 * The wlan driver (wlan_drv_gen4m_6893) is now loaded and registers its
+	 * pre-cal callback, and gen4m's wlan_func_on_by_chrdev() blocks WiFi
+	 * turn-on until is_cal_flow_finished(), so the override is removed: with it
+	 * in place WiFi func-on always timed out (pre_cal_flow never finishes).
 	 */
-	g_pre_cal_mode = PRE_CAL_ALL_DISABLED;
 
 	INIT_WORK(&infra_ctx->cal_info.pre_cal_work, conninfra_core_pre_cal_work_handler);
 	osal_sleepable_lock_init(&infra_ctx->cal_info.pre_cal_lock);
