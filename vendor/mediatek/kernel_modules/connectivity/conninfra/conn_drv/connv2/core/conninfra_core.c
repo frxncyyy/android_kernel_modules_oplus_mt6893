@@ -2464,6 +2464,16 @@ int conninfra_core_init(const unsigned int support_drv)
 		pr_info("[%s] support_drv=%u, disable pre-cal", __func__, support_drv);
 		g_pre_cal_mode = PRE_CAL_ALL_DISABLED;
 	}
+	/*
+	 * op6893 6.6 bring-up: consys_hw_drv_support() falls back to the default
+	 * radio mask 0x2f (BT+WIFI+GPS+FM) because this DTB carries no
+	 * drv-support property (count=-22), so the check above sees WiFi as
+	 * present and leaves power-on pre-cal enabled.  But no WiFi subdrv (wlan)
+	 * is loaded to run the calibration, so conninfra_core_pre_cal_blocking()
+	 * spins on every BT power-on until its not-registered timeout.  Force
+	 * pre-cal off until the WiFi driver is actually brought up here.
+	 */
+	g_pre_cal_mode = PRE_CAL_ALL_DISABLED;
 
 	INIT_WORK(&infra_ctx->cal_info.pre_cal_work, conninfra_core_pre_cal_work_handler);
 	osal_sleepable_lock_init(&infra_ctx->cal_info.pre_cal_lock);

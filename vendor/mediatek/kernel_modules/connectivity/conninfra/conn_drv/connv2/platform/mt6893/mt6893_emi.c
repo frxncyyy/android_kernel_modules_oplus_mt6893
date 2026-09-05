@@ -40,6 +40,18 @@
 #define	DOMAIN_CONN	2
 #define	DOMAIN_SCP	3
 
+/*
+ * op6893 6.6 bring-up: the MD<->CONSYS shared-EMI window (MCIF) reaches
+ * get_smem_phy_start_addr(), which lives in ccci_md_all -- i.e. the whole modem
+ * stack, which this port does not load (no ccci in early-modules.list,
+ * CONFIG_MTK_CONN_MD is not set).  It is a WiFi/LTE coex feature, not needed for
+ * BT/WiFi bring-up, and mt6893_pos.c already skips the region setup when the
+ * base comes back 0.  Defining this takes the vendor's own "ECCCI not
+ * supported" branch below, so conninfra.ko stops depending on ccci_md_all --
+ * the same move the audio stack made by dropping mtk-usip.c.
+ */
+#define OP6893_NO_MD_CONSYS_COEX 1
+
 /*******************************************************************************
 *                    E X T E R N A L   R E F E R E N C E S
 ********************************************************************************
@@ -111,7 +123,7 @@ void consys_emi_get_md_shared_emi_mt6893(phys_addr_t* base, unsigned int* size)
 	phys_addr_t mdPhy = 0;
 	int ret = 0;
 
-#if IS_ENABLED(CONFIG_MTK_ECCCI_DRIVER)
+#if IS_ENABLED(CONFIG_MTK_ECCCI_DRIVER) && !defined(OP6893_NO_MD_CONSYS_COEX)
 	mdPhy = get_smem_phy_start_addr(MD_SYS1, SMEM_USER_RAW_MD_CONSYS, &ret);
 	pr_info("MCIF base=0x%llx size=0x%x", mdPhy, ret);
 #else

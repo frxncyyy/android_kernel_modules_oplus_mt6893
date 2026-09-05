@@ -202,10 +202,20 @@ int consys_plt_pmic_get_from_dts(struct platform_device *pdev, struct conninfra_
 		}
 		/* Set VS2 to 1.4625V */
 #if COMMON_KERNEL_PMIC_SUPPORT
-		regmap_update_bits(g_regmap,
-			PMIC_RG_BUCK_VS2_VOSEL_ADDR,
-			PMIC_RG_BUCK_VS2_VOSEL_MASK << PMIC_RG_BUCK_VS2_VOSEL_SHIFT,
-			0x35 << PMIC_RG_BUCK_VS2_VOSEL_SHIFT);
+		/*
+		 * op6893 6.6 bring-up: guard against a NULL PMIC regmap.  A
+		 * missing regmap used to translation-fault right here (the 4.19
+		 * DTB has no "pmic" phandle on consys@18000000); pmic_mng.c now
+		 * finds it by compatible, but skip rather than crash the daily
+		 * driver if it is ever still absent.
+		 */
+		if (g_regmap)
+			regmap_update_bits(g_regmap,
+				PMIC_RG_BUCK_VS2_VOSEL_ADDR,
+				PMIC_RG_BUCK_VS2_VOSEL_MASK << PMIC_RG_BUCK_VS2_VOSEL_SHIFT,
+				0x35 << PMIC_RG_BUCK_VS2_VOSEL_SHIFT);
+		else
+			pr_err("VS2 voltage not set: no PMIC regmap\n");
 #else
 		KERNEL_pmic_set_register_value(PMIC_RG_BUCK_VS2_VOSEL, 0x35);
 #endif

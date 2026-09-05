@@ -96,7 +96,14 @@ void consys_emi_get_md_shared_emi_mt6877(phys_addr_t* base, unsigned int* size)
 	int ret = 0;
 
 #ifndef CONFIG_FPGA_EARLY_PORTING
-#if IS_ENABLED(CONFIG_MTK_ECCCI_DRIVER)
+/*
+ * op6893 6.6 bring-up: this MT6877 sibling is compiled into conninfra.ko only
+ * because the defconfig enables every CONFIG_MTK_COMBO_CHIP_CONSYS_* at once;
+ * the runtime target is mt6893.  Force the "ECCCI not supported" path so this
+ * dead-for-us object stops importing get_smem_phy_start_addr from ccci_md_all
+ * (the modem stack this port never loads).  See mt6893_emi.c for the rationale.
+ */
+#if 0 && IS_ENABLED(CONFIG_MTK_ECCCI_DRIVER)
 	mdPhy = get_smem_phy_start_addr(MD_SYS1, SMEM_USER_RAW_MD_CONSYS, &ret);
 #else
 	pr_info("[%s] ECCCI Driver is not supported.\n", __func__);

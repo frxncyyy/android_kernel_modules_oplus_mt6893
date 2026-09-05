@@ -5018,7 +5018,17 @@ struct mtk_power_gate {
 /* MT6893: preclks */
 struct mtk_power_gate scp_clks[] = {
 	//PGATE(SCP_SYS_MD1, "PG_MD1", NULL, NULL, SYS_MD1),
-	//PGATE(SCP_SYS_CONN, "PG_CONN", NULL, NULL, SYS_CONN),
+	/*
+	 * op6893 6.6 bring-up: CONN un-gated to power consys@18000000 for the
+	 * connsys/BT/WiFi stack.  consys asks for this domain as
+	 * "clocks = <&scpsys 1>" (SCP_SYS_CONN == 1); conninfra's
+	 * consys_clk_get_from_dts() -> devm_clk_get(dev, "conn") returns -ENOENT
+	 * without this line, so consys never powers up -- the same dead-consumer
+	 * shape that kept the sound card missing until PG_AUDIO below was
+	 * restored.  Sequence data (CONN_sys_ops, PWR_STA_MASK) is complete in
+	 * this file.  MD1/DP_TX/VPU stay off (see the end of the array).
+	 */
+	PGATE(SCP_SYS_CONN, "PG_CONN", NULL, NULL, SYS_CONN),
 	/* op6893 6.6 bring-up: MDP and DIS were left commented out by the
 	 * vendor, presumably because their 6.6 DTS drives those two domains
 	 * through genpd instead.  The 4.19 DTB we boot still expresses them the
@@ -5098,14 +5108,15 @@ struct mtk_power_gate scp_clks[] = {
 	PGATE(SCP_SYS_CAM_RAWB, "PG_CAM_RAWB", "PG_CAM", NULL, SYS_CAM_RAWB),
 	PGATE(SCP_SYS_CAM_RAWC, "PG_CAM_RAWC", "PG_CAM", NULL, SYS_CAM_RAWC),
 	/* Still off, and each one is referenced by the DTB, so each is still a
-	 * dead consumer: MD1 (mddriver), CONN (consys@18000000), DP_TX
-	 * (dp_tx@14800000) and VPU (apusys_power + m4u@19010000/19015000).
-	 * Held back because their consumers are modules this port does not load
-	 * yet, and because MD1 and CONN are not something to hand out untested
-	 * while their firmware side is unknown.  The multimedia domains above
-	 * are safe on that count: their SMI larb and subcom drivers are loaded,
-	 * nothing resumes them (see smi_init_power_on_wanted() in mtk-smi.c) and
-	 * their power-down is suppressed either way.
+	 * dead consumer: MD1 (mddriver), DP_TX (dp_tx@14800000) and VPU
+	 * (apusys_power + m4u@19010000/19015000).  Held back because their
+	 * consumers are modules this port does not load yet, and because MD1 is
+	 * not something to hand out untested while its firmware side is unknown.
+	 * CONN was in this list until the connsys bring-up; it is live at the
+	 * top of the array now.  The multimedia domains above are safe on that
+	 * count: their SMI larb and subcom drivers are loaded, nothing resumes
+	 * them (see smi_init_power_on_wanted() in mtk-smi.c) and their power-down
+	 * is suppressed either way.
 	 */
 	//PGATE(SCP_SYS_DP_TX, "PG_DP_TX", "PG_DIS", NULL, SYS_DP_TX),
 	/* Gary Wang: no need to turn of disp mtcmos*/

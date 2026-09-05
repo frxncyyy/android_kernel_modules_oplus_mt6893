@@ -198,8 +198,20 @@ static void pmic_mng_get_regmap(struct platform_device *pdev)
 
 	pmic_node = of_parse_phandle(pdev->dev.of_node, "pmic", 0);
 	if (!pmic_node) {
-		pr_info("get pmic_node fail\n");
-		return;
+		/*
+		 * op6893 6.6 bring-up: the preserved 4.19 consys@18000000 node
+		 * has no "pmic" phandle (the 6.6 DTs add one pointing at the
+		 * MT6359 MFD).  Fall back to finding the PMIC by compatible --
+		 * the same way mt6359p-accdet.c does on this port -- so g_regmap
+		 * gets the real MT6359P regmap instead of staying NULL and
+		 * faulting the VS2 write in consys_plt_pmic_get_from_dts().
+		 */
+		pmic_node = of_find_compatible_node(NULL, NULL,
+						    "mediatek,mt6359-pmic");
+		if (!pmic_node) {
+			pr_info("get pmic_node fail\n");
+			return;
+		}
 	}
 
 	pmic_pdev = of_find_device_by_node(pmic_node);

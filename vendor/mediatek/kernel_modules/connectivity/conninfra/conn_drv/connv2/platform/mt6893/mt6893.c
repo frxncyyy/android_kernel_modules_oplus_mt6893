@@ -31,6 +31,22 @@
 #include "mt6893_pos.h"
 #include "clock_mng.h"
 
+/*
+ * op6893 6.6 bring-up: clock_mng.h defines this to 1 for every kernel >= 5.4,
+ * which routes consys power-on through pm_runtime/genpd (pm_runtime_get_sync +
+ * dev_pm_syscore_device) instead of the clk API.  But the preserved 4.19 DTB
+ * wires consys@18000000 the old way -- "clocks = <&scpsys 1>", no
+ * "power-domains" -- and scpsys@10006000 is a clock provider, not a genpd, so
+ * no power domain can ever attach here.  pm_runtime_get_sync() would then
+ * return 0 having powered nothing and conninfra would touch consys MMIO with
+ * the domain dark; worse, dev_pm_syscore_device() is a static-inline stub in
+ * 6.6, so none of this fails to build.  Force the clk path (the #else branches
+ * below), which takes PG_CONN from clk-mt6893-pg.ko via
+ * devm_clk_get(dev, "conn") -- exactly how 4.19 drives it.
+ */
+#undef COMMON_KERNEL_CLK_SUPPORT
+#define COMMON_KERNEL_CLK_SUPPORT 0
+
 #if COMMON_KERNEL_CLK_SUPPORT
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeup.h>
@@ -258,7 +274,18 @@ int consys_clock_buffer_ctrl(unsigned int enable)
 	 * clock buffer is HW controlled, not SW controlled.
 	 * Keep this function call to update status.
 	 */
-#if (!COMMON_KERNEL_CLK_SUPPORT)
+	/*
+	 * op6893 6.6 bring-up: this used to key off !COMMON_KERNEL_CLK_SUPPORT,
+	 * but now that we force that macro to 0 (see the top of this file) the
+	 * proxy no longer holds: connadp only exports
+	 * connectivity_export_clk_buf_ctrl()/CLK_BUF_CONN behind the legacy
+	 * CONFIG_MACH_* guard in connectivity_build_in_adapter.h, none of which
+	 * this GKI build defines, so KERNEL_clk_buf_ctrl and CLK_BUF_CONN are
+	 * undeclared here.  Gate on the API's own CONNADP_HAS_CLOCK_BUF_CTRL
+	 * instead -- the XO_WCN buffer is HW-controlled on this SoC anyway, so
+	 * dropping the call is the same no-op 4.19 got.
+	 */
+#if defined(CONNADP_HAS_CLOCK_BUF_CTRL)
 	if (enable)
 		KERNEL_clk_buf_ctrl(CLK_BUF_CONN, true);	/*open XO_WCN*/
 	else

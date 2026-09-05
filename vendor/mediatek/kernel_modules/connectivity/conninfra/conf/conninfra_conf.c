@@ -618,8 +618,22 @@ int conninfra_conf_set_cfg_file(const char *name)
 
 const struct conninfra_conf *conninfra_conf_get_cfg(void)
 {
-	if (g_conninfra_conf.cfg_exist == 0)
-		return NULL;
+	if (g_conninfra_conf.cfg_exist == 0) {
+		/*
+		 * op6893 6.6 bring-up: conninfra probes in first-stage init,
+		 * before /vendor/firmware is mounted, so conninfra_conf_init()'s
+		 * request_firmware("conninfra.cfg") failed with -2 and cfg_exist
+		 * stayed 0.  Every later consys power-on then aborted in
+		 * consys_co_clock_type_mt6893() ("Get conf fail") and BT never
+		 * turned on.  Retry the load lazily -- by the time anything
+		 * powers consys up the file is readable -- so the cfg
+		 * (co_clock_flag=1) is actually applied.  Runs in the sleepable
+		 * power-on msg thread; once cfg_exist flips to 1 this is a no-op.
+		 */
+		conninfra_conf_init();
+		if (g_conninfra_conf.cfg_exist == 0)
+			return NULL;
+	}
 
 	return &g_conninfra_conf;
 }
