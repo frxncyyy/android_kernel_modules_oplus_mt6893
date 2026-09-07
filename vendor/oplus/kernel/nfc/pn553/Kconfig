@@ -1,0 +1,12 @@
+#
+# NXP PN553/SN100 NCI (I2C) NFC driver for op6893
+#
+
+config NFC_PN553_DEVICES
+	tristate "NXP pn553/SN100 NCI protocol (I2C) driver"
+	default n
+	help
+	  NXP PN553/PN557/SN100 family NFC controller over I2C, exposing the
+	  legacy /dev/nq-nci char device.  Ported from the mt6893 4.19 tree for
+	  the 6.6 GKI port; binds the DTB's nxp,pn544 node (i2c8@0x28).  Say M
+	  to build it as a loadable module.

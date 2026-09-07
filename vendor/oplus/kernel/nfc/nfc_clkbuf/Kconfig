@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0
+config NFC_CLKBUF
+	tristate "Force-enable MT6359P XO_NFC clock buffer for op6893"
+	default n
+	help
+	  Small shim that binds the legacy DTB node "mediatek,pmic_clock_buffer"
+	  and forces the MT6359P XO_NFC (EXTBUF3) clock buffer into SW mode with
+	  EN_M=1, supplying the external 26 MHz reference the NXP SN100T NFC
+	  controller needs.  Needed on the 6.6 GKI port because the in-tree
+	  clkbuf driver only binds the new-schema "mediatek,mtXXXX-clkbuf" nodes.
+	  Say M to build it as a loadable module.
