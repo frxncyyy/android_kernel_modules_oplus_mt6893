@@ -74,9 +74,9 @@
 #define I2C_RD_TRANAC_VALUE		0x0001
 #define I2C_SCL_MIS_COMP_VALUE		0x0000
 #define I2C_CHN_CLR_FLAG		0x0000
-#ifndef OPLUS_FEATURE_CHG_BASIC
+
+/* Used unconditionally: the revert-disable-IBI workaround below. */
 #define I2C_DEBUGCTRL_BUS		0x0004
-#endif
 
 #define I2C_DMA_CON_TX			0x0000
 #define I2C_DMA_CON_RX			0x0001
@@ -956,9 +956,7 @@ static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
 {
 	u16 control_reg;
 	u16 intr_stat_reg;
-#ifndef OPLUS_FEATURE_CHG_BASIC
 	u16 debugctrl_reg;
-#endif
 	u16 intr_stat_reg_scp;
 	u16 intr_stat_reg_ccu;
 	unsigned long flags;
@@ -1021,15 +1019,19 @@ static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
 	/* config scp i2c ch2 intr to ap */
 	if (i2c->ch_offset_i2c == i2c->i2c_offset_scp)
 		mtk_i2c_writew(i2c, I2C_CCU_INTR_EN, OFFSET_MCU_INTR);
-/* workaround for revert disable IBI 230515154944573363 */
-#ifndef OPLUS_FEATURE_CHG_BASIC
+/*
+ * Workaround for revert disable IBI 230515154944573363.
+ * Applied unconditionally (not only when !OPLUS_FEATURE_CHG_BASIC): on
+ * op6893 i2c8 is the only bus with I3C_EN set, and its NFC device (SN100T)
+ * stops ACK-ing its address once the NCI firmware is up unless the
+ * DEBUGCTRL BUS bit is cleared.  The 4.19 vendor driver runs this same
+ * workaround on every boot.
+ */
 	if ((i2c->ch_offset_i2c != i2c->i2c_offset_scp) &&
 		(mtk_i2c_readw_shadow(i2c, OFFSET_DMA_FSM_DEBUG) & I2C_I3C_EN)) {
 		debugctrl_reg = mtk_i2c_readw_shadow(i2c, OFFSET_DEBUGCTRL);
 		mtk_i2c_writew_shadow(i2c, debugctrl_reg & (~I2C_DEBUGCTRL_BUS), OFFSET_DEBUGCTRL);
 	}
-#endif
-/* end workaround 230515154944573363 */
 	/* Set ioconfig */
 	if (i2c->use_push_pull)
 		mtk_i2c_writew(i2c, I2C_IO_CONFIG_PUSH_PULL, OFFSET_IO_CONFIG);
@@ -2075,7 +2077,8 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 			    I2C_ARB_LOST | I2C_TRANSAC_COMP, OFFSET_INTR_STAT);
 
 	if (i2c->ch_offset_i2c)
-		mtk_i2c_writew(i2c, I2C_FIFO_ADDR_CLR_MCH, OFFSET_FIFO_ADDR_CLR);
+		mtk_i2c_writew(i2c, I2C_FIFO_ADDR_CLR_MCH | I2C_FIFO_ADDR_CLR,
+			       OFFSET_FIFO_ADDR_CLR);
 	if ((i2c->speed_hz > I2C_MAX_FAST_MODE_PLUS_FREQ) &&
 		(mtk_i2c_readw(i2c, OFFSET_DMA_FSM_DEBUG) & I2C_I3C_EN)) {
 		mtk_i2c_writew(i2c, I2C_HFIFO_ADDR_CLR | I2C_FIFO_ADDR_CLR,
@@ -2295,6 +2298,15 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 			dev_info(i2c->dev, "I2C fifo status: 0x%x maybe not ready!\n",
 				fifo_data_len);
 	}
+	/*
+	 * 4.19 vendor i2c-mtk.c writes MCU_INTR on every transfer (ver 0x2):
+	 * the multi-channel interrupt routing to the AP is not sticky across
+	 * transactions.  Without this the transfer after an early-exit error
+	 * path (which skips init_hw) never raises its completion interrupt
+	 * and times out -- the -ENXIO / -ETIMEDOUT alternation seen on the
+	 * op6893 NFC bus.
+	 */
+	mtk_i2c_writew(i2c, I2C_MCU_INTR_EN, OFFSET_MCU_INTR);
 	mtk_i2c_writew(i2c, start_reg, OFFSET_START);
 
 	if (poll_en) {
@@ -2424,6 +2436,41 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 				 mtk_i2c_readw(i2c, OFFSET_EXT_CONF),
 				 mtk_i2c_readw(i2c, OFFSET_IO_CONFIG),
 				 mtk_i2c_readw(i2c, OFFSET_DMA_FSM_DEBUG));
+		}
+		/*
+		 * Match the 4.19 vendor i2c-mtk.c recovery policy: when the
+		 * transaction still completed (TRANSAC_COMP set) with no bus
+		 * error, the controller is healthy and must NOT be re-inited.
+		 * Running init_hw unconditionally here (upstream behaviour)
+		 * breaks the multi-channel arbitration state, and the *next*
+		 * transfer then times out -- seen on op6893 i2c8 as the
+		 * -ENXIO / -ETIMEDOUT alternation that keeps the SN100T NFC
+		 * controller from ever finishing its NCI reset retry loop.
+		 * The FIFO still has to be fully cleared (bit2 multi-channel
+		 * and bit0 normal) before returning, exactly like the vendor
+		 * driver does, or the next transfer hangs waiting on the FIFO.
+		 */
+		if (i2c->ch_offset_i2c)
+			mtk_i2c_writew(i2c,
+				       I2C_FIFO_ADDR_CLR_MCH | I2C_FIFO_ADDR_CLR,
+				       OFFSET_FIFO_ADDR_CLR);
+		else
+			mtk_i2c_writew(i2c, I2C_FIFO_ADDR_CLR,
+				       OFFSET_FIFO_ADDR_CLR);
+		if ((i2c->irq_stat & I2C_TRANSAC_COMP) && i2c->ch_offset_i2c &&
+		    !(i2c->irq_stat & I2C_CONFERR)) {
+			/*
+			 * The hardware raises RESUME_ARBIT (START bit1) in the
+			 * channel window after the transaction; while it is
+			 * pending a new TRANSAC_START write is swallowed and
+			 * the transfer times out.  Release it, like the timeout
+			 * path does, before leaving this early-exit path.
+			 */
+			mtk_i2c_writew_shadow(i2c, I2C_RESUME_ARBIT,
+					      OFFSET_START);
+			dev_info(i2c->dev, "addr: %x, trans done with error\n",
+				 msgs->addr);
+			return -ENXIO;
 		}
 		mtk_i2c_init_hw(i2c);
 		if (i2c->ch_offset_i2c) {
