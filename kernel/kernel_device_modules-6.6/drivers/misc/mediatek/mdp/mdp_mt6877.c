@@ -576,7 +576,7 @@ void cmdq_mdp_init_module_base_VA(void)
 	gCmdqMdpModuleBaseVA.VENC =
 		cmdq_dev_alloc_reference_VA_by_name("venc");
 	gCmdqMdpModuleBaseVA.MM_MUTEX =
-		cmdq_dev_alloc_reference_VA_by_name("mm-mutex");
+		cmdq_dev_alloc_reference_VA_by_name("mm_mutex");
 }
 
 void cmdq_mdp_deinit_module_base_VA(void)
@@ -693,18 +693,18 @@ void cmdq_mdp_enable_clock(bool enable, u32 engine)
 /* Common Clock Framework */
 void cmdq_mdp_init_module_clk(void)
 {
-	cmdq_dev_get_module_clock_by_name("mmsys-config", "MDP_APB_BUS",
+	cmdq_dev_get_module_clock_by_name("mmsys_config", "MDP_APB_BUS",
 		&gCmdqMdpModuleClock.clk_APB);
-	cmdq_dev_get_module_clock_by_name("mm-mutex", "MDP_MUTEX0",
+	cmdq_dev_get_module_clock_by_name("mm_mutex", "MDP_MUTEX0",
 		&gCmdqMdpModuleClock.clk_MDP_MUTEX0);
-	cmdq_dev_get_module_clock_by_name("mmsys-config", "MDP_IMG_DL_ASYNC0",
+	cmdq_dev_get_module_clock_by_name("mmsys_config", "MDP_IMG_DL_ASYNC0",
 		&gCmdqMdpModuleClock.clk_MDP_IMG_DL_ASYNC0);
-	cmdq_dev_get_module_clock_by_name("mmsys-config", "MDP_IMG_DL_ASYNC1",
+	cmdq_dev_get_module_clock_by_name("mmsys_config", "MDP_IMG_DL_ASYNC1",
 		&gCmdqMdpModuleClock.clk_MDP_IMG_DL_ASYNC1);
-	cmdq_dev_get_module_clock_by_name("mmsys-config",
+	cmdq_dev_get_module_clock_by_name("mmsys_config",
 		"MDP_IMG_DL_RELAY0_ASYNC0",
 		&gCmdqMdpModuleClock.clk_MDP_IMG_DL_RELAY0_ASYNC0);
-	cmdq_dev_get_module_clock_by_name("mmsys-config",
+	cmdq_dev_get_module_clock_by_name("mmsys_config",
 		"MDP_IMG_DL_RELAY1_ASYNC1",
 		&gCmdqMdpModuleClock.clk_MDP_IMG_DL_RELAY1_ASYNC1);
 	cmdq_dev_get_module_clock_by_name("mdp_rdma0", "MDP_RDMA0",

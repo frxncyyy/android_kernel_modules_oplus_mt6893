@@ -2331,7 +2331,7 @@ static int cmdq_mdp_init_pq_readback(struct platform_device *pdev)
 	u16 rb_thread_id = 0, rb_event_lock = 0, rb_event_unlock = 0;
 
 	ret = of_property_read_u16(pdev->dev.of_node,
-		"dre30-hist-sram-start", &hist_sram_start);
+		"dre30_hist_sram_start", &hist_sram_start);
 	if (ret != 0 || !hist_sram_start)
 		hist_sram_start = LEGACY_DRE30_HIST_SRAM_START;
 
@@ -2339,19 +2339,19 @@ static int cmdq_mdp_init_pq_readback(struct platform_device *pdev)
 
 #if defined(CMDQ_SECURE_PATH_SUPPORT)
 	ret = of_property_read_u16(pdev->dev.of_node,
-		"pq-rb-thread-id", &rb_thread_id);
+		"pq_rb_thread_id", &rb_thread_id);
 	if (ret != 0)
 		CMDQ_MSG("pq-rb-thread-id is not defined\n");
 	mdp_ctx.pq_readback.rb_thread_id = rb_thread_id;
 
 	ret = of_property_read_u16(pdev->dev.of_node,
-		"pq-rb-event-lock", &rb_event_lock);
+		"pq_rb_event_lock", &rb_event_lock);
 	if (ret != 0)
 		CMDQ_MSG("pq-rb-event-lock is not defined\n");
 	mdp_ctx.pq_readback.rb_event_lock = rb_event_lock;
 
 	ret = of_property_read_u16(pdev->dev.of_node,
-		"pq-rb-event-unlock", &rb_event_unlock);
+		"pq_rb_event_unlock", &rb_event_unlock);
 	if (ret != 0)
 		CMDQ_MSG("pq-rb-event-unlock is not defined\n");
 	mdp_ctx.pq_readback.rb_event_unlock = rb_event_unlock;
@@ -2703,7 +2703,7 @@ static u32 cmdq_mdp_get_larb_count_virtual(void)
 
 void cmdq_mdp_map_mmsys_VA(void)
 {
-	cmdq_mmsys_base = cmdq_dev_alloc_reference_VA_by_name("mmsys-config");
+	cmdq_mmsys_base = cmdq_dev_alloc_reference_VA_by_name("mmsys_config");
 }
 
 void cmdq_mdp_unmap_mmsys_VA(void)

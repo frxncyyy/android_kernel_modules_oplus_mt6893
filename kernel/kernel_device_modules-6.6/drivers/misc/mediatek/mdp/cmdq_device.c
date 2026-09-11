@@ -104,6 +104,18 @@ void cmdq_dev_deinit_module_base_VA(void)
 	cmdq_mdp_get_func()->deinitModuleBaseVA();
 }
 
+/*
+ * op6893: the reference (phandle) names handed to these helpers, and the DT
+ * property names read further down this file, are spelled with underscores,
+ * not hyphens.  This project boots the original 4.19 DTB, whose property
+ * names all predate the hyphen convention -- of_parse_phandle() and
+ * of_property_read_u32() compare with plain strcmp, so asking for
+ * "mmsys-config" against a "mmsys_config" property fails and every MDP
+ * register base and module clock comes back NULL/ERR_PTR.  The MDP then
+ * cannot run the blit HWC's video path depends on, and HWC aborts in
+ * BliterNode::invalidate().  Do not "modernise" these back to hyphens
+ * without also renaming the DT properties.
+ */
 unsigned long cmdq_dev_alloc_reference_VA_by_name(const char *ref_name)
 {
 	unsigned long VA = 0L;
@@ -286,7 +298,7 @@ void cmdq_dev_init_MDP_PA(struct device_node *node)
 	u32 *pMDPBaseAddress = cmdq_core_get_dts_data()->MDPBaseAddress;
 	phys_addr_t module_pa_start = 0;
 
-	module_pa_start = cmdq_dev_get_reference_PA("mm-mutex", 0);
+	module_pa_start = cmdq_dev_get_reference_PA("mm_mutex", 0);
 
 	if (!module_pa_start)
 		CMDQ_ERR("DEV: init mm_mutex PA fail!!\n");
@@ -426,7 +438,7 @@ void cmdq_dev_init_resource(CMDQ_DEV_INIT_RESOURCE_CB init_cb)
 	u32 count;
 
 	status = of_property_read_u32(gCmdqDev.pDev->of_node,
-		"sram-share-cnt", &count);
+		"sram_share_cnt", &count);
 	if (status < 0)
 		return;
 
@@ -434,12 +446,12 @@ void cmdq_dev_init_resource(CMDQ_DEV_INIT_RESOURCE_CB init_cb)
 		u32 engine = 0, event = 0;
 
 		status = of_property_read_u32_index(
-			gCmdqDev.pDev->of_node, "sram-share-engine",
+			gCmdqDev.pDev->of_node, "sram_share_engine",
 			index, &engine);
 		if (status < 0)
 			return;
 		status = of_property_read_u32_index(
-			gCmdqDev.pDev->of_node, "sram-share-event",
+			gCmdqDev.pDev->of_node, "sram_share_event",
 			index, &event);
 		if (status < 0)
 			return;
@@ -457,7 +469,7 @@ void cmdq_dev_init_device_tree(struct device_node *node)
 	gThreadCount = 16;
 	gMMSYSDummyRegOffset = 0;
 	cmdq_core_init_dts_data();
-	status = of_property_read_u32(node, "thread-count", &thread_count);
+	status = of_property_read_u32(node, "thread_count", &thread_count);
 	if (status >= 0)
 		gThreadCount = thread_count;
 	/* init GCE subsys */
@@ -495,7 +507,7 @@ void cmdq_dev_init(struct platform_device *pDevice)
 
 		gCmdqDev.pDev = &pDevice->dev;
 
-		mdpsys_base_va = cmdq_dev_alloc_reference_by_name("mmsys-config", &mdpsys_base_pa);
+		mdpsys_base_va = cmdq_dev_alloc_reference_by_name("mmsys_config", &mdpsys_base_pa);
 		gCmdqDev.regBaseVA = (unsigned long)mdpsys_base_va;
 		gCmdqDev.regBasePA = mdpsys_base_pa;
 		gCmdqDev.irqId = irq_of_parse_and_map(node, 0);
@@ -563,7 +575,7 @@ void cmdq_dev_init(struct platform_device *pDevice)
 			gCmdqDev.va2, gCmdqDev.irqId2);
 	} while (0);
 
-	ret = of_property_read_u32(gCmdqDev.pDev->of_node, "dma-mask-bit",
+	ret = of_property_read_u32(gCmdqDev.pDev->of_node, "dma_mask_bit",
 		&dma_mask_bit);
 	/* if not assign from dts, give default 32bit for legacy chip */
 	if (ret != 0 || !dma_mask_bit)
