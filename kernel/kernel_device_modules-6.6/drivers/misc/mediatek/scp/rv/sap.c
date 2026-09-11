@@ -272,7 +272,7 @@ uint32_t sap_get_secure_dump_size(void)
 		return 0;
 	}
 
-	of_property_read_u32(node, "secure-dump-size", &dump_size);
+	scp_dt_read_u32(node, "secure-dump-size", &dump_size);
 	return dump_size;
 }
 
@@ -393,7 +393,7 @@ static bool sap_parse_ipi_table(struct mtk_mbox_device *mbox_dev,
 	struct mtk_mbox_pin_send *mbox_pin_send = NULL;
 	struct mtk_mbox_pin_recv *mbox_pin_recv = NULL;
 
-	of_property_read_u32(node, "mbox-count", &mbox_dev->count);
+	scp_dt_read_u32(node, "mbox-count", &mbox_dev->count);
 	if (!mbox_dev->count) {
 		pr_err("mbox count not found\n");
 		return false;
@@ -409,14 +409,14 @@ static bool sap_parse_ipi_table(struct mtk_mbox_device *mbox_dev,
 			recv_cells_num = recv_item_num;
 	}
 
-	mbox_dev->send_count = of_property_count_u32_elems(node, "send-table")
+	mbox_dev->send_count = scp_dt_count_u32_elems(node, "send-table")
 				/ send_item_num;
 	if (mbox_dev->send_count <= 0) {
 		pr_err("ipi send table not found\n");
 		return false;
 	}
 
-	mbox_dev->recv_count = of_property_count_u32_elems(node,
+	mbox_dev->recv_count = scp_dt_count_u32_elems(node,
 		"recv-table") / recv_cells_num;
 	if (mbox_dev->recv_count <= 0) {
 		pr_err("ipi recv table not found\n");
@@ -443,13 +443,13 @@ static bool sap_parse_ipi_table(struct mtk_mbox_device *mbox_dev,
 
 	mbox_pin_send = mbox_dev->pin_send_table;
 	for (i = 0; i < mbox_dev->send_count; ++i) {
-		ret = of_property_read_u32_index(node, "send-table",
+		ret = scp_dt_read_u32_index(node, "send-table",
 			i * send_item_num, &mbox_pin_send[i].chan_id);
 		if (ret) {
 			pr_err("get chan_id fail for send_tbl %u\n", i);
 			return false;
 		}
-		ret = of_property_read_u32_index(node, "send-table",
+		ret = scp_dt_read_u32_index(node, "send-table",
 			i * send_item_num + 1, &mbox);
 		if (ret || mbox >= mbox_dev->count) {
 			pr_err("get mbox id fail for send_tbl %u\n", i);
@@ -457,7 +457,7 @@ static bool sap_parse_ipi_table(struct mtk_mbox_device *mbox_dev,
 		}
 		/* because mbox and recv_opt is a bit-field */
 		mbox_pin_send[i].mbox = mbox;
-		ret = of_property_read_u32_index(node, "send-table",
+		ret = scp_dt_read_u32_index(node, "send-table",
 			i * send_item_num + 2, &mbox_pin_send[i].msg_size);
 		if (ret) {
 			pr_err("get msg_size fail for send_tbl %u", i);
@@ -473,13 +473,13 @@ static bool sap_parse_ipi_table(struct mtk_mbox_device *mbox_dev,
 
 	mbox_pin_recv = mbox_dev->pin_recv_table;
 	for (i = 0; i < mbox_dev->recv_count; ++i) {
-		ret = of_property_read_u32_index(node, "recv-table",
+		ret = scp_dt_read_u32_index(node, "recv-table",
 			i * recv_cells_num, &mbox_pin_recv[i].chan_id);
 		if (ret) {
 			pr_err("get chan_id fail for recv_tbl %u\n", i);
 			return false;
 		}
-		ret = of_property_read_u32_index(node, "recv-table",
+		ret = scp_dt_read_u32_index(node, "recv-table",
 			i * recv_cells_num + 1,	&mbox);
 		if (ret || mbox >= mbox_dev->count) {
 			pr_err("get mbox_id fail for recv_tbl %u\n", i);
@@ -487,13 +487,13 @@ static bool sap_parse_ipi_table(struct mtk_mbox_device *mbox_dev,
 		}
 		/* because mbox and recv_opt is a bit-field */
 		mbox_pin_recv[i].mbox = mbox;
-		ret = of_property_read_u32_index(node, "recv-table",
+		ret = scp_dt_read_u32_index(node, "recv-table",
 			i * recv_cells_num + 2,	&mbox_pin_recv[i].msg_size);
 		if (ret) {
 			pr_err("get msg_size fail for recv_tbl %u\n", i);
 			return false;
 		}
-		ret = of_property_read_u32_index(node, "recv-table",
+		ret = scp_dt_read_u32_index(node, "recv-table",
 			i * recv_cells_num + 3,	&recv_opt);
 		if (ret) {
 			pr_err("get recv_opt fail for recv_tbl %u\n", i);
@@ -502,7 +502,7 @@ static bool sap_parse_ipi_table(struct mtk_mbox_device *mbox_dev,
 		/* because mbox and recv_opt is a bit-field */
 		mbox_pin_recv[i].recv_opt = recv_opt;
 		if (recv_cells_mode == 1) {
-			ret = of_property_read_u32_index(node, "recv-table",
+			ret = scp_dt_read_u32_index(node, "recv-table",
 				i * recv_cells_num + 4,	&lock);
 			if (ret) {
 				pr_err("get lock fail for recv_tbl %u\n", i);
@@ -510,7 +510,7 @@ static bool sap_parse_ipi_table(struct mtk_mbox_device *mbox_dev,
 			}
 			/* because lock is a bit-field */
 			mbox_pin_recv[i].lock = lock;
-			ret = of_property_read_u32_index(node, "recv-table",
+			ret = scp_dt_read_u32_index(node, "recv-table",
 				i * recv_cells_num + 5,	&buf_full_opt);
 			if (ret) {
 				pr_err("get buf_full_opt fail for recv_tbl %u\n", i);
@@ -518,7 +518,7 @@ static bool sap_parse_ipi_table(struct mtk_mbox_device *mbox_dev,
 			}
 			/* because buf_full_opt is a bit-field */
 			mbox_pin_recv[i].buf_full_opt = buf_full_opt;
-			ret = of_property_read_u32_index(node, "recv-table",
+			ret = scp_dt_read_u32_index(node, "recv-table",
 				i * recv_cells_num + 6,	&cb_ctx_opt);
 			if (ret) {
 				pr_err("get cb_ctx_opt fail for recv_tbl %u\n", i);

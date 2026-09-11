@@ -1717,7 +1717,7 @@ static int scp_reserve_memory_ioremap(struct platform_device *pdev)
 		return -1;
 	}
 	/* Get reserved memory */
-	ret = of_property_read_string(pdev->dev.of_node, "scp-mem-key",
+	ret = scp_dt_read_string(pdev->dev.of_node, "scp-mem-key",
 			&mem_key);
 	if (ret) {
 		pr_info("[SCP] cannot find property\n");
@@ -1757,7 +1757,7 @@ static int scp_reserve_memory_ioremap(struct platform_device *pdev)
 	}
 
 	/* Set reserved memory table */
-	scp_mem_num = of_property_count_u32_elems(
+	scp_mem_num = scp_dt_count_u32_elems(
 				pdev->dev.of_node,
 				"scp-mem-tbl")
 				/ MEMORY_TBL_ELEM_NUM;
@@ -1767,7 +1767,7 @@ static int scp_reserve_memory_ioremap(struct platform_device *pdev)
 	}
 
 	for (i = 0; i < scp_mem_num; i++) {
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 				"scp-mem-tbl",
 				i * MEMORY_TBL_ELEM_NUM,
 				&m_idx);
@@ -1787,7 +1787,7 @@ static int scp_reserve_memory_ioremap(struct platform_device *pdev)
 			m_size = scp_get_secure_dump_size();
 			m_size += sap_get_secure_dump_size();
 		} else {
-			ret = of_property_read_u32_index(pdev->dev.of_node,
+			ret = scp_dt_read_u32_index(pdev->dev.of_node,
 					"scp-mem-tbl",
 					(i * MEMORY_TBL_ELEM_NUM) + 1,
 					&m_size);
@@ -1798,7 +1798,7 @@ static int scp_reserve_memory_ioremap(struct platform_device *pdev)
 		}
 
 		/* Probe memory alignment of feature that user register */
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 				"scp-mem-tbl",
 				(i * MEMORY_TBL_ELEM_NUM) + 2,
 				&m_alignment);
@@ -2438,7 +2438,7 @@ static int scp_feature_table_probe(struct platform_device *pdev)
 	};
 	int i, ret, feature_num, feature_id, frequency, core_id;
 
-	feature_num = of_property_count_u32_elems(
+	feature_num = scp_dt_count_u32_elems(
 			pdev->dev.of_node, "scp-feature-tbl")
 			/ 3;
 	if (feature_num <= 0) {
@@ -2447,7 +2447,7 @@ static int scp_feature_table_probe(struct platform_device *pdev)
 	}
 
 	for (i = 0; i < feature_num; ++i) {
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 			"scp-feature-tbl",
 			i * feaure_tbl_item_size,
 			&feature_id);
@@ -2458,15 +2458,27 @@ static int scp_feature_table_probe(struct platform_device *pdev)
 			return -1;
 		}
 
-		if (feature_id != feature_table[i].feature) {
-			pr_notice("[SCP] %s: feature id don't match(%d:%d):line %d\n",
-				__func__, feature_id, feature_table[i].feature,
-				__LINE__);
+		/*
+		 * op6893 6.6 bring-up: take the 4.19 parsing semantics back.
+		 * The 4.19 driver used the DTB's feature id as the index into
+		 * feature_table[] (feature_table[feature_id].freq = ...) and did
+		 * not care about ordering.  This tree instead requires the DTB to
+		 * list every feature in table order and bails out on the first
+		 * mismatch -- but the preserved 4.19 DTB lists only 9 entries,
+		 * ids 0..7 and then 0x0d, skipping the VOW_VENDOR_A/G and
+		 * DUAL_MIC variants this tree's table has at index 8..12.  The
+		 * check therefore tripped on the 9th entry and probe returned
+		 * -1, which released the devres ioremaps and left scpreg.sram
+		 * dangling for scp_region_info_init() to fault on.
+		 */
+		if (feature_id < 0 || feature_id >= NUM_FEATURE_ID) {
+			pr_notice("[SCP] %s: feature id out of range(%d):line %d\n",
+				__func__, feature_id, __LINE__);
 			return -1;
 		}
 
 		/* because feature_table data member is bit-field */
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 			"scp-feature-tbl",
 			i * feaure_tbl_item_size + 1,
 			&frequency);
@@ -2476,9 +2488,9 @@ static int scp_feature_table_probe(struct platform_device *pdev)
 				__func__, i, __LINE__);
 			return -1;
 		}
-		feature_table[i].freq = frequency;
+		feature_table[feature_id].freq = frequency;
 
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 			"scp-feature-tbl",
 			i * feaure_tbl_item_size + 2,
 			&core_id);
@@ -2488,7 +2500,7 @@ static int scp_feature_table_probe(struct platform_device *pdev)
 				__func__, i, __LINE__);
 			return -1;
 		}
-		feature_table[i].sys_id = core_id;
+		feature_table[feature_id].sys_id = core_id;
 	}
 	return 0;
 }
@@ -2501,7 +2513,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 	};
 	u32 i, ret, mbox_id, recv_opt, recv_cells_mode, recv_cells_num, lock, buf_full_opt,
 			cb_ctx_opt;
-	ret = of_property_read_u32(pdev->dev.of_node, "mbox-count"
+	ret = scp_dt_read_u32(pdev->dev.of_node, "mbox-count"
 						, &scp_mboxdev->count);
 	if (ret) {
 		pr_notice("[SCP] mbox count not found\n");
@@ -2524,7 +2536,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 			recv_cells_num = recv_item_num;
 	}
 
-	scp_mboxdev->send_count = of_property_count_u32_elems(
+	scp_mboxdev->send_count = scp_dt_count_u32_elems(
 				pdev->dev.of_node, "send-table")
 				/ send_item_num;
 	if (scp_mboxdev->send_count <= 0) {
@@ -2532,7 +2544,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 		return false;
 	}
 
-	scp_mboxdev->recv_count = of_property_count_u32_elems(
+	scp_mboxdev->recv_count = scp_dt_count_u32_elems(
 				pdev->dev.of_node, "recv-table")
 				/ recv_cells_num;
 	if (scp_mboxdev->recv_count <= 0) {
@@ -2560,7 +2572,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 	}
 	scp_mbox_pin_send = scp_mboxdev->pin_send_table;
 	for (i = 0; i < scp_mboxdev->send_count; ++i) {
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 				"send-table",
 				i * send_item_num,
 				&scp_mbox_pin_send[i].chan_id);
@@ -2568,7 +2580,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 			pr_notice("[SCP]%s:Cannot get ipi id (%d):%d\n", __func__, i,__LINE__);
 			return false;
 		}
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 				"send-table",
 				i * send_item_num + 1,
 				&mbox_id);
@@ -2578,7 +2590,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 		}
 		/* because mbox and recv_opt is a bit-field */
 		scp_mbox_pin_send[i].mbox = mbox_id;
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 				"send-table",
 				i * send_item_num + 2,
 				&scp_mbox_pin_send[i].msg_size);
@@ -2599,7 +2611,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 	}
 	scp_mbox_pin_recv = scp_mboxdev->pin_recv_table;
 	for (i = 0; i < scp_mboxdev->recv_count; ++i) {
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 				"recv-table",
 				i * recv_cells_num,
 				&scp_mbox_pin_recv[i].chan_id);
@@ -2608,7 +2620,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 						__LINE__);
 			return false;
 		}
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 				"recv-table",
 				i * recv_cells_num + 1,
 				&mbox_id);
@@ -2619,7 +2631,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 		}
 		/* because mbox and recv_opt is a bit-field */
 		scp_mbox_pin_recv[i].mbox = mbox_id;
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 				"recv-table",
 				i * recv_cells_num + 2,
 				&scp_mbox_pin_recv[i].msg_size);
@@ -2628,7 +2640,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 						__LINE__);
 			return false;
 		}
-		ret = of_property_read_u32_index(pdev->dev.of_node,
+		ret = scp_dt_read_u32_index(pdev->dev.of_node,
 				"recv-table",
 				i * recv_cells_num + 3,
 				&recv_opt);
@@ -2640,7 +2652,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 		/* because mbox and recv_opt is a bit-field */
 		scp_mbox_pin_recv[i].recv_opt = recv_opt;
 		if (recv_cells_mode == 1) {
-			ret = of_property_read_u32_index(pdev->dev.of_node,
+			ret = scp_dt_read_u32_index(pdev->dev.of_node,
 					"recv-table",
 					i * recv_cells_num + 4,
 					&lock);
@@ -2651,7 +2663,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 			}
 			/* because lock is a bit-field */
 			scp_mbox_pin_recv[i].lock = lock;
-			ret = of_property_read_u32_index(pdev->dev.of_node,
+			ret = scp_dt_read_u32_index(pdev->dev.of_node,
 					"recv-table",
 					i * recv_cells_num + 5,
 					&buf_full_opt);
@@ -2662,7 +2674,7 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 			}
 			/* because buf_full_opt is a bit-field */
 			scp_mbox_pin_recv[i].buf_full_opt = buf_full_opt;
-			ret = of_property_read_u32_index(pdev->dev.of_node,
+			ret = scp_dt_read_u32_index(pdev->dev.of_node,
 					"recv-table",
 					i * recv_cells_num + 6,
 					&cb_ctx_opt);
@@ -2679,36 +2691,36 @@ static bool scp_ipi_table_init(struct mtk_mbox_device *scp_mboxdev, struct platf
 
 
 	/* wrapper_ipi_init */
-	if (!of_get_property(pdev->dev.of_node, "legacy-table", NULL)) {
+	if (!scp_dt_get_property(pdev->dev.of_node, "legacy-table", NULL)) {
 		pr_notice("[SCP]%s: wrapper_ipi don't exist\n", __func__);
 		return true;
 	}
-	ret = of_property_read_u32_index(pdev->dev.of_node,
+	ret = scp_dt_read_u32_index(pdev->dev.of_node,
 			"legacy-table", 0, &scp_ipi_legacy_id[0].out_id_0);
 	if (ret) {
 		pr_notice("[SCP]%s:Cannot get out_id_0\n", __func__);
 	}
-	ret = of_property_read_u32_index(pdev->dev.of_node,
+	ret = scp_dt_read_u32_index(pdev->dev.of_node,
 			"legacy-table", 1, &scp_ipi_legacy_id[0].out_id_1);
 	if (ret) {
 		pr_notice("[SCP]%s:Cannot get out_id_1\n", __func__);
 	}
-	ret = of_property_read_u32_index(pdev->dev.of_node,
+	ret = scp_dt_read_u32_index(pdev->dev.of_node,
 			"legacy-table", 2, &scp_ipi_legacy_id[0].in_id_0);
 	if (ret) {
 		pr_notice("[SCP]%s:Cannot get in_id_0\n", __func__);
 	}
-	ret = of_property_read_u32_index(pdev->dev.of_node,
+	ret = scp_dt_read_u32_index(pdev->dev.of_node,
 			"legacy-table", 3, &scp_ipi_legacy_id[0].in_id_1);
 	if (ret) {
 		pr_notice("[SCP]%s:Cannot get in_id_1\n", __func__);
 	}
-	ret = of_property_read_u32_index(pdev->dev.of_node,
+	ret = scp_dt_read_u32_index(pdev->dev.of_node,
 			"legacy-table", 4, &scp_ipi_legacy_id[0].out_size);
 	if (ret) {
 		pr_notice("[%s]:Cannot get out_size\n", __func__);
 	}
-	ret = of_property_read_u32_index(pdev->dev.of_node,
+	ret = scp_dt_read_u32_index(pdev->dev.of_node,
 			"legacy-table", 5, &scp_ipi_legacy_id[0].in_size);
 	if (ret) {
 		pr_notice("[SCP]%s:Cannot get in_size\n", __func__);
@@ -2898,6 +2910,14 @@ static bool scp_resource_dump_init(struct platform_device *pdev)
 	return true;
 }
 
+/*
+ * op6893 6.6 bring-up: whether scp_device_probe() ran to completion.  See the
+ * scp_region_info_init() caller in scp_init() -- on a failed probe the driver
+ * core has already unmapped scpreg.sram, and the probe's own scp_enable[] flag
+ * is set too early to be a proxy for this.
+ */
+static bool scp_probe_ok;
+
 static int scp_device_probe(struct platform_device *pdev)
 {
 	int ret = 0, i = 0;
@@ -3056,7 +3076,7 @@ static int scp_device_probe(struct platform_device *pdev)
 
 	/* secure_dump */
 	scpreg.secure_dump = 0;
-	if (!of_property_read_string(pdev->dev.of_node, "secure-dump", &secure_dump)) {
+	if (!scp_dt_read_string(pdev->dev.of_node, "secure-dump", &secure_dump)) {
 		if (!strncmp(secure_dump, "enable", strlen("enable"))) {
 			pr_notice("[SCP] secure dump enabled\n");
 			scpreg.secure_dump = 1;
@@ -3301,6 +3321,7 @@ static int scp_device_probe(struct platform_device *pdev)
 		}
 	}
 
+	scp_probe_ok = true;
 	return ret;
 }
 
@@ -3381,6 +3402,24 @@ static struct platform_driver mtk_scp_device = {
 };
 
 static const struct of_device_id scpsys_of_ids[] = {
+	/*
+	 * op6893 6.6 bring-up: this device only exists to ioremap the register
+	 * block INFRA_IRQ_SET/STA/CLEAR live in (scpreg.scpsys + 0x0b14/0x0b10/
+	 * 0x0b18) for the direct-access path used when
+	 * scp-dvfs/scp-scpsys-regmap is not enabled -- which is this board.
+	 *
+	 * The preserved 4.19 DTB puts that block in its own node,
+	 * scp_infra@10001000 ("mediatek,scpinfra", "syscon"), and that is what
+	 * the 4.19 driver matched.  This tree matches the *same address* through
+	 * the infracfg_ao node's last compatible instead -- but clk-mt6893
+	 * claims that node through its first one (mediatek,mt6893-infracfg_ao),
+	 * and a platform device binds a single driver, so this probe never ran:
+	 * scpreg.scpsys stayed NULL and the first mtk_ipi_send() through
+	 * scp_awake_lock() wrote to NULL + 0x0b14 and took the device down.
+	 *
+	 * Keep both: the 4.19 node for this board, infracfg_ao for newer DTBs.
+	 */
+	{ .compatible = "mediatek,scpinfra", },
 	{ .compatible = "mediatek,infracfg_ao", },
 	{}
 };
@@ -3495,6 +3534,22 @@ static int __init scp_init(void)
 	/* skip initial if dts status = "disable" */
 	if (!scp_enable[SCP_A_ID]) {
 		pr_notice("[SCP] scp disabled!!\n");
+		goto err;
+	}
+
+	/*
+	 * op6893 6.6 bring-up: everything below reads the SCP through scpreg's
+	 * devres-managed ioremaps, which scp_device_probe() installed.  If that
+	 * probe did not run to completion the driver core has already released
+	 * them, so scpreg.sram and friends are dangling -- scp_region_info_init()
+	 * alone faults in kernel space (SCP_TCM + 4) and takes the device down
+	 * before anything useful reaches the log.  scp_enable[] cannot stand in
+	 * for this: the probe sets it early, while later probe steps can still
+	 * fail.  A probe that did not finish means the SCP cannot come up either
+	 * way, so unwind cleanly and say so.
+	 */
+	if (!scp_probe_ok) {
+		pr_notice("[SCP] scp probe did not complete, disabling SCP\n");
 		goto err;
 	}
 

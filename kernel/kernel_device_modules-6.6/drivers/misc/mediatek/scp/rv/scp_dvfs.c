@@ -77,7 +77,15 @@
 #define PROPNAME_SCP_VCORE             "sshub-vcore"
 #define PROPNAME_SCP_VSRAM             "sshub-vsram"
 #define PROPNAME_SCP_DVFS_OPP          "dvfs-opp"
-#define OPP_ELEM_CNT                   (7)
+/*
+ * u32 per dvfs-opp entry in the DT.  op6893 6.6 bring-up: the preserved 4.19
+ * DTB's entries are 8 wide because the 4.19 struct dvfs_opp carried a trailing
+ * uv_idx; this tree dropped that field and its entries are 7 wide.  The first
+ * seven are the same fields in the same order, so keep the DTB's stride and
+ * read only +0..+6 -- with 7 the count check below fails outright
+ * (40 % 7 != 0) and dvfs init never completes.
+ */
+#define OPP_ELEM_CNT                   (8)
 #define NO_DVFSRC_OPP                  (0xff)
 #define PROPNAME_DO_U2_CALI            "do-ulposc-cali"
 #define PROPNAME_FM_CLK                "fmeter-clksys"
@@ -162,6 +170,27 @@ static struct scp_dvfs_hw g_dvfs_dev;
 static struct regulator *dvfsrc_vscp_power;
 static struct regulator *reg_vcore;
 static struct regulator *reg_vsram;
+
+/*
+ * op6893 6.6 bring-up: the SCP rails are optional regulators
+ * ("sshub-vcore"/"sshub-vsram") that this board does not register -- the 4.19
+ * driver drove them through the PMIC wrapper (pmic_scp_set_vcore /
+ * pmic_scp_ctrl_enable) instead.  mt_scp_dts_init() treats their absence as
+ * "not available, skip the rest" and exits through PASS, so both handles stay
+ * NULL; every use below then has to tolerate that rather than dereference it.
+ * "Absent" is reported as success, which is what the PASS exit implies.
+ */
+static int scp_reg_set_voltage(struct regulator *reg, unsigned int min_uv,
+			       unsigned int max_uv)
+{
+	return IS_ERR_OR_NULL(reg) ? 0
+				   : regulator_set_voltage(reg, min_uv, max_uv);
+}
+
+static int scp_reg_enable(struct regulator *reg)
+{
+	return IS_ERR_OR_NULL(reg) ? 0 : regulator_enable(reg);
+}
 
 static int scp_pm_event(struct notifier_block *notifier, unsigned long pm_event, void *unused);
 
@@ -415,11 +444,11 @@ static int scp_set_pmic_vcore(unsigned int cur_freq)
 		if (ret > 0)
 			g_dvfs_dev.opp[idx].tuned_vcore = ret;
 
-		ret_vc = regulator_set_voltage(reg_vcore,
+		ret_vc = scp_reg_set_voltage(reg_vcore,
 				g_dvfs_dev.opp[idx].tuned_vcore,
 				g_dvfs_dev.opp[g_dvfs_dev.scp_opp_nums - 1].vcore + 100000);
 
-		ret_vs = regulator_set_voltage(reg_vsram,
+		ret_vs = scp_reg_set_voltage(reg_vsram,
 				g_dvfs_dev.opp[idx].vsram,
 				g_dvfs_dev.opp[g_dvfs_dev.scp_opp_nums - 1].vsram + 100000);
 	} else {
@@ -1410,12 +1439,12 @@ static void __init mt_pmic_sshub_init(void)
 
 	if (g_dvfs_dev.pmic_sshub_en) {
 		/* set SCP VCORE voltage */
-		if (regulator_set_voltage(reg_vcore, g_dvfs_dev.opp[0].tuned_vcore,
+		if (scp_reg_set_voltage(reg_vcore, g_dvfs_dev.opp[0].tuned_vcore,
 				max_vcore) != 0)
 			pr_notice("Set wrong vcore voltage\n");
 
 		/* set SCP VSRAM voltage */
-		if (regulator_set_voltage(reg_vsram, g_dvfs_dev.opp[0].vsram,
+		if (scp_reg_set_voltage(reg_vsram, g_dvfs_dev.opp[0].vsram,
 				max_vsram) != 0)
 			pr_notice("Set wrong vsram voltage\n");
 	}
@@ -1439,9 +1468,9 @@ static void __init mt_pmic_sshub_init(void)
 				&g_dvfs_dev.pmic_regs->_pmrc_en);
 		}
 
-		if (regulator_enable(reg_vcore) != 0)
+		if (scp_reg_enable(reg_vcore) != 0)
 			pr_notice("Enable vcore failed!!!\n");
-		if (regulator_enable(reg_vsram) != 0)
+		if (scp_reg_enable(reg_vsram) != 0)
 			pr_notice("Enable vsram failed!!!\n");
 	}
 #endif
@@ -2151,8 +2180,19 @@ static int __init mt_scp_dts_get_cali_hw_regs(struct device_node *node,
 	/* find the version of ulposc calibration algorithm */
 	ret = of_property_read_u32(node, PROPNAME_U2_CALI_ALG_VER,
 		&cali_hw->cali_alg_ver);
-	if (ret)
+	if (ret) {
+		/*
+		 * op6893 6.6 bring-up: the preserved 4.19 DTB predates
+		 * ulposc-cali-alg-ver (the 4.19 driver had no notion of a cali
+		 * algorithm version at all), and absence is meant to mean "use
+		 * the default" -- the line below says as much.  But `ret` was
+		 * left carrying the read failure and returned at the end of the
+		 * function, so the default was applied and the probe still
+		 * failed with -EINVAL.  Clear it.
+		 */
 		cali_hw->cali_alg_ver = U2_CALI_ALG_V0; /* as default version */
+		ret = 0;
+	}
 	if (cali_hw->cali_alg_ver >= U2_CALI_ALG_MAX) {
 		pr_notice("[%s] Unknown cali algorithm: %u\n",
 				__func__, g_dvfs_dev.ulposc_hw.cali_alg_ver);
@@ -2376,7 +2416,7 @@ static int __init mt_scp_dts_init_cali_regmap(struct device_node *node,
 		}
 	}
 
-	cali_hw->ulposc_regmap = syscon_regmap_lookup_by_phandle(node,
+	cali_hw->ulposc_regmap = scp_dt_regmap_by_phandle(node,
 							PROPNAME_ULPOSC_CLK);
 	if (IS_ERR(cali_hw->ulposc_regmap)) {
 		pr_notice("ulposc regmap init failed: %ld\n",
@@ -2416,7 +2456,8 @@ static int __init mt_scp_dts_ulposc_cali_init(struct device_node *node,
 	ret = mt_scp_dts_init_scp_clk_hw(node);
 	if (ret)
 		return ret;
-	g_dvfs_dev.clk_hw->scp_clk_regmap = syscon_regmap_lookup_by_phandle(node,
+	/* op6893 6.6 bring-up: DTB spells these "ulposc_clksys"/"scp_clk_ctrl" */
+	g_dvfs_dev.clk_hw->scp_clk_regmap = scp_dt_regmap_by_phandle(node,
 						PROPNAME_SCP_CLK_CTRL);
 	if (!g_dvfs_dev.clk_hw->scp_clk_regmap) {
 		pr_notice("[%s]: get scp clk regmap failed\n", __func__);
@@ -2629,8 +2670,19 @@ static int __init mt_scp_dts_regmap_init(struct platform_device *pdev,
 
 	pmic_node = of_parse_phandle(node, PROPNAME_PMIC, 0);
 	if (!pmic_node) {
-		dev_notice(&pdev->dev, "fail to find pmic node\n");
-		goto REGMAP_FIND_FAILED;
+		/*
+		 * op6893 6.6 bring-up: the preserved 4.19 DTB's scp_dvfs node has
+		 * no "pmic" phandle -- it declares pmic-sshub-support and leaves
+		 * the PMIC to the SCP firmware over SSHub.  The 4.19 driver had no
+		 * PMIC regmap at all (mt_scp_dts_regmap_init() was a stub that
+		 * returned 0), so a missing phandle must not fail the probe: it
+		 * means exactly "no PMIC register access", which is what
+		 * bypass_pmic_rg_access says, and every use of pmic_regmap is
+		 * already gated on it.
+		 */
+		g_dvfs_dev.bypass_pmic_rg_access = true;
+		dev_notice(&pdev->dev, "no pmic phandle, bypass pmic rg access\n");
+		goto BYPASS_PMIC;
 	}
 
 	pmic_pdev = of_find_device_by_node(pmic_node);
@@ -2793,6 +2845,23 @@ static int __init mt_scp_dts_init(struct platform_device *pdev)
 		ret = mt_scp_dts_fmeter_get(node, PROPNAME_FM_ARGS_U2_CALI,
 			&g_dvfs_dev.ccf_fmeter_id,
 			&g_dvfs_dev.ccf_fmeter_type);
+		if (ret) {
+			/*
+			 * op6893 6.6 bring-up: the preserved 4.19 DTB carries the
+			 * fmeter id alone (fmeter-id-ulposc2 = <0x24>), not this
+			 * tree's {id, type} pair, and the 4.19 driver read it
+			 * through mt_get_abist_freq() -- i.e. type ABIST.  Build
+			 * the pair from it instead of failing the probe.
+			 */
+			ret = of_property_read_u32(node, "fmeter-id-ulposc2",
+						   &g_dvfs_dev.ccf_fmeter_id);
+			if (!ret) {
+				g_dvfs_dev.ccf_fmeter_type =
+						scp_fm_map[FM_TYPE_ABIST];
+				pr_notice("[%s]: fmeter-id-ulposc2=%d, assume ABIST\n",
+					__func__, g_dvfs_dev.ccf_fmeter_id);
+			}
+		}
 		if (ret)
 			goto DTS_FAILED;
 		pr_notice("[%s]: init u2 cali fmeter: id: %d, type: %d\n",
@@ -2850,6 +2919,14 @@ static int __init mt_scp_dts_init(struct platform_device *pdev)
 		if (IS_ERR(reg_vcore) || !reg_vcore) {
 			pr_notice("regulator vcore sshub supply is not available\n");
 			ret = PTR_ERR(reg_vcore);
+			/*
+			 * op6893 6.6 bring-up: leave NULL behind rather than the
+			 * error pointer.  The PASS exit means "this board has no
+			 * such rail" and every caller tests the handle for NULL
+			 * (see scp_reg_set_voltage()); an ERR_PTR reads as valid
+			 * there and crashes inside regulator_set_voltage().
+			 */
+			reg_vcore = NULL;
 			goto PASS;
 		}
 
@@ -2857,6 +2934,7 @@ static int __init mt_scp_dts_init(struct platform_device *pdev)
 		if (IS_ERR(reg_vsram) || !reg_vsram) {
 			pr_notice("regulator vsram sshub supply is not available\n");
 			ret = PTR_ERR(reg_vsram);
+			reg_vsram = NULL;	/* see the vcore note above */
 			goto PASS;
 		}
 	}

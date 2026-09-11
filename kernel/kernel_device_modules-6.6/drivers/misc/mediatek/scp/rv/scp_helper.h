@@ -10,6 +10,9 @@
 #include <linux/notifier.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/of.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
 #include <linux/soc/mediatek/mtk_sip_svc.h>
 #include "scp_reg.h"
 #include "scp_feature_define.h"
@@ -17,6 +20,102 @@
 #include <linux/regulator/consumer.h>
 
 #define ROUNDUP(a, b)		        (((a) + ((b)-1)) & ~((b)-1))
+
+/*
+ * op6893 6.6 bring-up: this port boots the preserved 4.19 DTB, whose SCP node
+ * spells its properties with underscores -- mbox_count, send_table, recv_table,
+ * legacy_table, scp_feature_tbl, scp_mem_key, scp_mem_tbl, secure_dump,
+ * secure_dump_size -- because that is how the 4.19 driver read them.  The
+ * of_property_* helpers compare names with plain strcmp, so every dash-spelled
+ * lookup silently failed.
+ *
+ * One of those failures was not harmless: scp_ipi_table_init() returns false
+ * when mbox-count is missing, the probe returns -ENODEV, and the driver core
+ * releases the devres mappings on probe failure -- so scpreg.sram became a
+ * dangling pointer and the following scp_region_info_init() faulted on
+ * SCP_TCM + 4, taking the whole device down before the SCP ever booted.
+ *
+ * Retry each of these lookups with the underscore spelling before giving up.
+ * (Names that also change case -- scp_sramSize -- are handled separately.)
+ */
+static inline const char *scp_dt_alt_name(const char *name, char *buf, size_t len)
+{
+	size_t i;
+
+	if (strlen(name) >= len)
+		return NULL;
+	for (i = 0; name[i]; i++)
+		buf[i] = (name[i] == '-') ? '_' : name[i];
+	buf[i] = '\0';
+	return buf;
+}
+
+static inline int scp_dt_read_u32(const struct device_node *np,
+				  const char *name, u32 *out)
+{
+	char alt[64];
+	int ret = of_property_read_u32(np, name, out);
+
+	if (ret < 0 && scp_dt_alt_name(name, alt, sizeof(alt)))
+		ret = of_property_read_u32(np, alt, out);
+	return ret;
+}
+
+static inline int scp_dt_read_u32_index(const struct device_node *np,
+					const char *name, u32 index, u32 *out)
+{
+	char alt[64];
+	int ret = of_property_read_u32_index(np, name, index, out);
+
+	if (ret < 0 && scp_dt_alt_name(name, alt, sizeof(alt)))
+		ret = of_property_read_u32_index(np, alt, index, out);
+	return ret;
+}
+
+static inline int scp_dt_read_string(const struct device_node *np,
+				     const char *name, const char **out)
+{
+	char alt[64];
+	int ret = of_property_read_string(np, name, out);
+
+	if (ret < 0 && scp_dt_alt_name(name, alt, sizeof(alt)))
+		ret = of_property_read_string(np, alt, out);
+	return ret;
+}
+
+static inline int scp_dt_count_u32_elems(const struct device_node *np,
+					 const char *name)
+{
+	char alt[64];
+	int ret = of_property_count_u32_elems(np, name);
+
+	if (ret < 0 && scp_dt_alt_name(name, alt, sizeof(alt)))
+		ret = of_property_count_u32_elems(np, alt);
+	return ret;
+}
+
+static inline const void *scp_dt_get_property(const struct device_node *np,
+					      const char *name, int *lenp)
+{
+	char alt[64];
+	const void *ret = of_get_property(np, name, lenp);
+
+	if (!ret && scp_dt_alt_name(name, alt, sizeof(alt)))
+		ret = of_get_property(np, alt, lenp);
+	return ret;
+}
+
+static inline struct regmap *scp_dt_regmap_by_phandle(struct device_node *np,
+						      const char *name)
+{
+	char alt[64];
+	struct regmap *ret = syscon_regmap_lookup_by_phandle(np, name);
+
+	if (IS_ERR_OR_NULL(ret) && scp_dt_alt_name(name, alt, sizeof(alt)))
+		ret = syscon_regmap_lookup_by_phandle(np, alt);
+	return ret;
+}
+
 
 /* scp config reg. definition */
 #define SCP_PREFIX_PATTERN	(0x53435000)
