@@ -650,6 +650,13 @@ static int mtk_mm_heap_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
 	unsigned int i;
 	int ret;
 
+	/*
+	 * op6893: mapping every mtk_mm buffer write-combine (not just the
+	 * uncached ones) was tried on 2026-09-10 against the green-screen
+	 * symptom and made no difference -- the video layer that scans out
+	 * green is not CPU-written through this heap.  Reverted; see the
+	 * memory note before trying it again.
+	 */
 	if (buffer->uncached)
 		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
 
