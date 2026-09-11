@@ -117,9 +117,10 @@ static char *vcodec_param_string = "";
 
 inline unsigned int ipi_id_to_inst_id(int id)
 {
-	if (id == IPI_VDEC_RESOURCE)
-		return VCU_RESOURCE;
-
+	/* 4.19 numbering: every channel below IPI_VENC_COMMON is a decoder
+	 * channel (IPI_VDEC_COMMON, then one per codec), the rest are encoder
+	 * channels.  That is exactly how the vendor vpud splits its receivers.
+	 */
 	if (id < IPI_VENC_COMMON && id >= IPI_VCU_INIT)
 		return VCU_VDEC;
 	else
@@ -144,6 +145,10 @@ inline unsigned int ipi_id_to_inst_id(int id)
 
 /* Default vcu_mtkdev[0] handle vdec, vcu_mtkdev[1] handle mdp */
 static struct mtk_vcu *vcu_mtkdev[MTK_VCU_NR_MAX];
+
+/* op6893 bring-up diagnostic: bounded trace of the AP<->vpud ipi sequence */
+#define VCU_DBG_MAX 400
+static atomic_t vcu_dbg_cnt = ATOMIC_INIT(0);
 
 static struct task_struct *vcud_task;
 
@@ -606,6 +611,11 @@ int vcu_ipi_send(struct platform_device *pdev,
 		return -EPERM;
 	}
 
+	/* op6893 bring-up diagnostic: trace the AP->vpud ipi sequence. */
+	if (atomic_inc_return(&vcu_dbg_cnt) <= VCU_DBG_MAX)
+		pr_info("[VCUDBG] send id=%d msg=0x%X len=%u tgid=%d comm=%s\n",
+			id, *(u32 *)buf, len, current->tgid, current->comm);
+
 	i = ipi_id_to_inst_id(id);
 	timeout = msecs_to_jiffies(IPI_TIMEOUT_MS);
 
@@ -643,6 +653,9 @@ int vcu_ipi_send(struct platform_device *pdev,
 
 	if (vcu_ptr->abort || ret == 0) {
 		dev_info(&pdev->dev, "vcu ipi %d ack time out !%d", id, ret);
+		pr_info("[VCUDBG] TIMEOUT id=%d msg=0x%X abort=%d comm=%s\n",
+			id, *(u32 *)buf, (int)vcu_ptr->abort, current->comm);
+		dump_stack();
 		mutex_lock(&vpud_task_mutex);
 		if (!vcu_ptr->abort && vcud_task) {
 			send_sig(SIGTERM, vcud_task, 0);
@@ -1996,6 +2009,11 @@ static int vcu_ipi_handler(struct mtk_vcu *vcu, unsigned long arg)
 	}
 
 	i = ipi_id_to_inst_id(share_buff_data.id);
+
+	if (atomic_inc_return(&vcu_dbg_cnt) <= VCU_DBG_MAX)
+		pr_info("[VCUDBG] recv id=%d msg=0x%X len=%u comm=%s\n",
+			share_buff_data.id, *(u32 *)share_buff_data.share_buf,
+			share_buff_data.len, current->comm);
 
 	if (vcu->abort) {
 		pr_info("[VCU] aborted not handled: %s %d %d: ipi %d\n",

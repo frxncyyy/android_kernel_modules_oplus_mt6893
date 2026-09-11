@@ -241,7 +241,13 @@ static int vdec_vcp_ipi_send(struct vdec_inst *inst, void *msg, int len,
 	memcpy(obj.share_buf, msg, len);
 
 	if (is_res) {
-		obj.id = IPI_VDEC_RESOURCE;
+		/* op6893: the 4.19 channel numbering this port follows has no
+		 * separate resource channel (upstream's slot 2 is IPI_VDEC_H264
+		 * there), so resource messages share the common decoder channel.
+		 * This file is only built with CONFIG_MTK_TINYSYS_VCP_SUPPORT,
+		 * which this board does not enable.
+		 */
+		obj.id = IPI_VDEC_COMMON;
 		msg_signaled = &inst->vcu.signaled_res;
 		msg_wq = &inst->vcu.wq_res;
 		vcu_in_ipi = &inst->vcu.in_res_ipi;

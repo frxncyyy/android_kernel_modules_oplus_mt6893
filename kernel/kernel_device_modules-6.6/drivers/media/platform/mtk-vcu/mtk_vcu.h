@@ -62,17 +62,47 @@ typedef int (*ipi_handler_t)(void *data,
  * @IPI_MAX:            The maximum IPI number
  */
 
+/*
+ * op6893: this enum is the IPI channel numbering of the 4.19 vendor driver,
+ * not the one this tree shipped with.  The channel id is handed to (and echoed
+ * back by) the userspace daemon /vendor/bin/vpud, which is a 4.19 binary, so it
+ * has to be numbered the way that binary expects: per-codec decoder channels
+ * 2..13, IPI_VENC_COMMON 14, per-codec encoder channels 15..21.  The upstream
+ * numbering here put VENC_COMMON at 3 (which 4.19 reads as IPI_VDEC_H265) and
+ * had no per-codec channels at all, so every encoder IPI landed on a decoder
+ * channel and was dropped -- vpud then never acked and the kernel SIGKILLed it.
+ * IPI_VDEC_RESOURCE (2 upstream) is gone: 2 is IPI_VDEC_H264; the messages that
+ * used it now travel on the instance's own channel.
+ */
 enum ipi_id {
 	IPI_VCU_INIT = 0,
 	IPI_VDEC_COMMON,
-	IPI_VDEC_RESOURCE,
+	IPI_VDEC_H264,
+	IPI_VDEC_H265,
+	IPI_VDEC_HEIF,
+	IPI_VDEC_VP8,
+	IPI_VDEC_VP9,
+	IPI_VDEC_MPEG4,
+	IPI_VDEC_H263,
+	IPI_VDEC_MPEG12,
+	IPI_VDEC_WMV,
+	IPI_VDEC_RV30,
+	IPI_VDEC_RV40,
+	IPI_VDEC_AV1,
 	IPI_VENC_COMMON,
+	IPI_VENC_H264,
+	IPI_VENC_H265,
+	IPI_VENC_HEIF,
+	IPI_VENC_VP8,
+	IPI_VENC_MPEG4,
+	IPI_VENC_HYBRID_H264,
+	IPI_VENC_H263,
 	IPI_MDP,
 	IPI_MDP_1,
 	IPI_MDP_2,
 	IPI_MDP_3,
 	IPI_CAMERA,
-	IPI_MAX = 20,
+	IPI_MAX = 50,
 };
 
 enum vcu_codec_ipi_type {

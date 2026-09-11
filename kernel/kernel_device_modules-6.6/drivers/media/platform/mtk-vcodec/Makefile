@@ -24,7 +24,8 @@ mtk-vcodec-enc-$(CONFIG_DEVICE_MODULES_VIDEO_MEDIATEK_VCODEC) += mtk_vcodec_enc_
 
 mtk-vcodec-common-$(CONFIG_DEVICE_MODULES_VIDEO_MEDIATEK_VCODEC) += mtk_vcodec_intr.o \
 		mtk_vcodec_util.o \
-		mtk_vcodec_fence.o
+		mtk_vcodec_fence.o \
+		mtk_vcodec_svp_stub.o
 
 ifeq ($(CONFIG_VIDEO_MEDIATEK_VCODEC_V1),y)
 	obj-$(CONFIG_DEVICE_MODULES_VIDEO_MEDIATEK_VCODEC) += mtk-vcodec-dec-v1.o \

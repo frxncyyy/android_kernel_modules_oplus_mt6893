@@ -141,7 +141,9 @@ struct mtk_video_fmt {
 	__u32	fourcc;
 	__u32	type;   /* enum mtk_fmt_type */
 	__u32	num_planes;
-	__u32	reserved;
+	/* op6893: no "reserved" here -- the 4.19 vpud fills these tables with a
+	 * 12-byte stride, so a 16-byte struct here read every entry after [0]
+	 * from the wrong offset. */
 };
 
 /**
@@ -152,7 +154,7 @@ struct mtk_codec_framesizes {
 	__u32	fourcc;
 	__u32	profile;
 	__u32	level;
-	__u32	reserved;
+	/* op6893: no "reserved" here -- the 4.19 vpud fills this struct. */
 	struct	v4l2_frmsize_stepwise	stepwise;
 };
 

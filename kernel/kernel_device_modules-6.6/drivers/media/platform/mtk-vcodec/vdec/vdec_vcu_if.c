@@ -46,7 +46,7 @@ static void handle_query_cap_ack_msg(struct vdec_vcu_inst *vcu,
 
 	if (vcu == NULL)
 		return;
-	mtk_vcodec_debug(vcu, "+ ap_inst_addr = 0x%lx, vcu_data_addr = 0x%llx, id = %d",
+	mtk_vcodec_debug(vcu, "+ ap_inst_addr = 0x%lx, vcu_data_addr = 0x%x, id = %d",
 		(uintptr_t)msg->ap_inst_addr, msg->vcu_data_addr, msg->id);
 	/* mapping VCU address to kernel virtual address */
 	data = VCU_FPTR(vcu_mapping_dm_addr)(vcu->dev, msg->vcu_data_addr);
@@ -479,10 +479,11 @@ static int vcodec_vcu_send_msg(struct vdec_vcu_inst *vcu, void *msg, int len)
 	vcu->failure = 0;
 	vcu->signaled = 0;
 
-	if (*(__u32 *)msg == AP_IPIMSG_DEC_FRAME_BUFFER)
-		err = VCU_FPTR(vcu_ipi_send)(vcu->dev, IPI_VDEC_RESOURCE, msg, len, vcu->ctx->dev);
-	else
-		err = VCU_FPTR(vcu_ipi_send)(vcu->dev, vcu->id, msg, len, vcu->ctx->dev);
+	/* op6893: no IPI_VDEC_RESOURCE channel exists in the 4.19 numbering --
+	 * 2 is IPI_VDEC_H264 there.  Every message for this instance travels on
+	 * the instance's own channel, which is also the only one vpud has a
+	 * receiver registered on. */
+	err = VCU_FPTR(vcu_ipi_send)(vcu->dev, vcu->id, msg, len, vcu->ctx->dev);
 
 	if (err) {
 		mtk_vcodec_err(vcu, "send fail vcu_id=%d msg_id=%X status=%d",
@@ -575,13 +576,6 @@ int vcu_dec_init(struct vdec_vcu_inst *vcu)
 	err = VCU_FPTR(vcu_ipi_register)(vcu->dev, vcu->id, vcu->handler, NULL, vcu->ctx->dev);
 	if (err != 0) {
 		mtk_vcodec_err(vcu, "vcu_ipi_register %d fail status=%d", vcu->id, err);
-		return err;
-	}
-
-	err = VCU_FPTR(vcu_ipi_register)(vcu->dev, IPI_VDEC_RESOURCE,
-		vcu->handler, NULL, vcu->ctx->dev);
-	if (err != 0) {
-		mtk_vcodec_err(vcu, "vcu_ipi_register resource fail status=%d", err);
 		return err;
 	}
 
@@ -682,8 +676,12 @@ int vcu_dec_query_cap(struct vdec_vcu_inst *vcu, unsigned int id, void *out)
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_id = AP_IPIMSG_DEC_QUERY_CAP;
 	msg.id = id;
-	msg.ctx_id = vcu->ctx->id;
+	/*
+	 * 4.19 vpud echoes ap_inst_addr back in the ack; this driver's
+	 * handler matches it against ctx->id, so send the ctx id.
+	 */
 	msg.ap_inst_addr = (unsigned long)vcu->ctx->id;
+	msg.ap_data_addr = (uintptr_t)out;
 
 	vcu_dec_set_pid(vcu);
 	err = vcodec_vcu_send_msg(vcu, &msg, sizeof(msg));

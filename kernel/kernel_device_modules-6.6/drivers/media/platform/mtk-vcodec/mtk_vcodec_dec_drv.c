@@ -466,10 +466,15 @@ static int mtk_vcodec_dec_probe(struct platform_device *pdev)
 	}
 #endif
 
+	/*
+	 * The preserved 4.19 DTB's vdec/venc nodes predate the
+	 * "mediatek,platform" string property; it only feeds cap->card/
+	 * bus_info, so fall back to a constant instead of failing probe.
+	 */
 	ret = of_property_read_string(pdev->dev.of_node, "mediatek,platform", &dev->platform);
 	if (ret != 0) {
-		mtk_v4l2_err("failed to find mediatek,platform\n");
-		return ret;
+		mtk_v4l2_debug(0, "no mediatek,platform in DTB, use default");
+		dev->platform = "mt6885";
 	}
 	mtk_v4l2_debug(0, "%s", dev->platform);
 	mtk_vcodec_get_chipid(&dev->chip_id);

@@ -63,7 +63,13 @@ enum vdec_ipi_msg_id {
 	AP_IPIMSG_DEC_SET_PARAM,
 	AP_IPIMSG_DEC_FRAME_BUFFER,
 	/** ipi with no driver inst **/
-	AP_IPIMSG_DEC_QUERY_CAP = AP_IPIMSG_VDEC_SEND_BASE + IPIMSG_NO_INST_OFFSET,
+	/*
+	 * op6893 bring-up: the vendor vpud daemon is the 4.19 build, whose
+	 * protocol numbers QUERY_CAP as the 7th message of the plain
+	 * AP_IPIMSG_VDEC_SEND_BASE series (0xA006), not the
+	 * "no-inst +0x100" block (0xA100) this tree uses.  Pin the value.
+	 */
+	AP_IPIMSG_DEC_QUERY_CAP = 0xA006,
 	AP_IPIMSG_DEC_BACKUP,
 	AP_IPIMSG_DEC_RESUME,
 	AP_IPIMSG_DEC_PWR_CTRL,
@@ -75,7 +81,8 @@ enum vdec_ipi_msg_id {
 	VCU_IPIMSG_DEC_SET_PARAM_DONE,
 	VCU_IPIMSG_DEC_DONE,
 	/** ack for ipi with no driver inst **/
-	VCU_IPIMSG_DEC_QUERY_CAP_DONE = VCU_IPIMSG_VDEC_ACK_BASE + IPIMSG_NO_INST_OFFSET,
+	/* 4.19 vpud acks QUERY_CAP with 0xB006 -- see the send-side note. */
+	VCU_IPIMSG_DEC_QUERY_CAP_DONE = 0xB006,
 	VCU_IPIMSG_DEC_BACKUP_DONE,
 	VCU_IPIMSG_DEC_RESUME_DONE,
 	VCU_IPIMSG_DEC_PWR_CTRL_DONE,
@@ -374,17 +381,27 @@ struct vdec_ap_ipi_set_param {
  * @id      : query capability type
  * @vdec_inst     : AP query data address
  */
+/*
+ * op6893 bring-up: keep the 4.19 vpud wire layout {msg_id, id,
+ * ap_inst_addr, ap_data_addr} -- the vendor daemon parses this struct
+ * directly and does not know this tree's ctx_id/status/reserved prefix.
+ */
 struct vdec_ap_ipi_query_cap {
-	VDEC_MSG_PREFIX;
+	__u32 msg_id;
+	__u32 id;
 #ifndef CONFIG_64BIT
+	union {
+		__u64 ap_inst_addr_64;
+		__u32 ap_inst_addr;
+	};
 	union {
 		__u64 ap_data_addr_64;
 		__u32 ap_data_addr;
 	};
 #else
+	__u64 ap_inst_addr;
 	__u64 ap_data_addr;
 #endif
-	__u32 id;
 };
 
 /**
@@ -394,18 +411,30 @@ struct vdec_ap_ipi_query_cap {
  * @ap_data_addr   : AP query data address
  * @vcu_data_addr  : VCU query data address
  */
+/*
+ * op6893 bring-up: keep the 4.19 vpud wire layout {msg_id, status,
+ * ap_inst_addr, id, ap_data_addr, vcu_data_addr(u32)} -- see the
+ * send-side note above.
+ */
 struct vdec_vcu_ipi_query_cap_ack {
-	VDEC_MSG_PREFIX;
+	__u32 msg_id;
+	__s32 status;
 #ifndef CONFIG_64BIT
+	union {
+		__u64 ap_inst_addr_64;
+		__u32 ap_inst_addr;
+	};
+	__u32 id;
 	union {
 		__u64 ap_data_addr_64;
 		__u32 ap_data_addr;
 	};
 #else
+	__u64 ap_inst_addr;
+	__u32 id;
 	__u64 ap_data_addr;
 #endif
-	__u64 vcu_data_addr;
-	__u32 id;
+	__u32 vcu_data_addr;
 };
 
 /*

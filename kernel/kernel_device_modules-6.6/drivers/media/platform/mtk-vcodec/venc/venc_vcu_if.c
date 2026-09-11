@@ -34,7 +34,7 @@ static void handle_query_cap_ack_msg(struct venc_vcu_inst *vcu,
 
 	if (vcu == NULL)
 		return;
-	mtk_vcodec_debug(vcu, "+ ap_inst_addr = 0x%lx, vcu_data_addr = 0x%llx, id = %d",
+	mtk_vcodec_debug(vcu, "+ ap_inst_addr = 0x%lx, vcu_data_addr = 0x%x, id = %d",
 		(uintptr_t)msg->ap_inst_addr, msg->vcu_data_addr, msg->id);
 	/* mapping VCU address to kernel virtual address */
 	data = VCU_FPTR(vcu_mapping_dm_addr)(vcu->dev, msg->vcu_data_addr);
@@ -492,8 +492,12 @@ int vcu_enc_query_cap(struct venc_vcu_inst *vcu, unsigned int id, void *out)
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_id = AP_IPIMSG_ENC_QUERY_CAP;
 	msg.id = id;
+	/*
+	 * 4.19 vpud echoes ap_inst_addr back in the ack; this driver's handler
+	 * matches it against ctx->id, so send the ctx id.
+	 */
 	msg.ap_inst_addr = (unsigned long)vcu->ctx->id;
-	msg.ctx_id = vcu->ctx->id;
+	msg.ap_data_addr = (uintptr_t)out;
 
 	vcu_enc_set_pid(vcu);
 	err = vcu_enc_send_msg(vcu, &msg, sizeof(msg));

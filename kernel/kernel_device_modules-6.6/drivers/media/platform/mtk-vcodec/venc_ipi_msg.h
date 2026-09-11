@@ -29,7 +29,17 @@ enum venc_ipi_msg_id {
 	AP_IPIMSG_ENC_ENCODE,
 	AP_IPIMSG_ENC_DEINIT,
 	/** ipi with no driver inst **/
-	AP_IPIMSG_ENC_QUERY_CAP = AP_IPIMSG_VENC_SEND_BASE + IPIMSG_NO_INST_OFFSET,
+	/*
+	 * op6893 bring-up: the vendor vpud daemon is the 4.19 build, whose
+	 * encoder protocol numbers QUERY_CAP as the 5th message of the plain
+	 * AP_IPIMSG_VENC_BASE (0xC000) series -- 0xC004 -- not the
+	 * "no-inst +0x100" block (0x1100) this tree uses.  Pin the value and
+	 * the matching ack, and see the 4.19 wire layouts below: sending the
+	 * upstream 0x1100 on channel IPI_VENC_COMMON is what made vpud drop
+	 * the message and get SIGKILLed by the kernel on every codec
+	 * enumeration.
+	 */
+	AP_IPIMSG_ENC_QUERY_CAP = 0xC004,
 	AP_IPIMSG_ENC_BACKUP,
 	AP_IPIMSG_ENC_PWR_CTRL,
 	AP_IPIMSG_ENC_RESUME,
@@ -41,7 +51,8 @@ enum venc_ipi_msg_id {
 	VCU_IPIMSG_ENC_DEINIT_DONE,
 	VCU_IPIMSG_ENC_TRACE,
 	/** ack for ipi with no driver inst **/
-	VCU_IPIMSG_ENC_QUERY_CAP_DONE = VCU_IPIMSG_VENC_ACK_BASE + IPIMSG_NO_INST_OFFSET,
+	/* 4.19 vpud acks QUERY_CAP with 0xD004 -- see the send-side note. */
+	VCU_IPIMSG_ENC_QUERY_CAP_DONE = 0xD004,
 	VCU_IPIMSG_ENC_BACKUP_DONE,
 	VCU_IPIMSG_ENC_PWR_CTRL_DONE,
 	VCU_IPIMSG_ENC_RESUME_DONE,
@@ -191,17 +202,27 @@ struct venc_ap_ipi_msg_init {
  * @id      : query capability type
  * @vdec_inst     : AP query data address
  */
+/*
+ * op6893 bring-up: keep the 4.19 vpud wire layout {msg_id, id, ap_inst_addr,
+ * ap_data_addr} -- the vendor daemon parses this struct directly and does not
+ * know this tree's ctx_id/status/reserved prefix.
+ */
 struct venc_ap_ipi_query_cap {
-	VENC_MSG_PREFIX;
+	__u32 msg_id;
+	__u32 id;
 #ifndef CONFIG_64BIT
+	union {
+		__u64 ap_inst_addr_64;
+		__u32 ap_inst_addr;
+	};
 	union {
 		__u64 ap_data_addr_64;
 		__u32 ap_data_addr;
 	};
 #else
+	__u64 ap_inst_addr;
 	__u64 ap_data_addr;
 #endif
-	__u32 id;
 };
 
 /**
@@ -211,18 +232,30 @@ struct venc_ap_ipi_query_cap {
  * @ap_data_addr   : AP query data address
  * @vcu_data_addr  : VCU query data address
  */
+/*
+ * op6893 bring-up: keep the 4.19 vpud wire layout {msg_id, status,
+ * ap_inst_addr, id, ap_data_addr, vcu_data_addr(u32)} -- see the send-side
+ * note above.
+ */
 struct venc_vcu_ipi_query_cap_ack {
-	VENC_MSG_PREFIX;
+	__u32 msg_id;
+	__s32 status;
 #ifndef CONFIG_64BIT
+	union {
+		__u64 ap_inst_addr_64;
+		__u32 ap_inst_addr;
+	};
+	__u32 id;
 	union {
 		__u64 ap_data_addr_64;
 		__u32 ap_data_addr;
 	};
 #else
+	__u64 ap_inst_addr;
+	__u32 id;
 	__u64 ap_data_addr;
 #endif
-	__u64 vcu_data_addr;
-	__u32 id;
+	__u32 vcu_data_addr;
 };
 
 /**
