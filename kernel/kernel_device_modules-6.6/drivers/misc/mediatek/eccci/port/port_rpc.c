@@ -360,6 +360,13 @@ static int get_eint_attr_val(struct device_node *node, int index)
 	return ret;
 }
 
+static const char *md_dt_eint_node_name[] = {
+	"md1_sim1_hot_plug_eint",
+	"md1_sim2_hot_plug_eint",
+	"md1_sim3_hot_plug_eint",
+	"md1_sim4_hot_plug_eint",
+};
+
 void get_dtsi_eint_node(void)
 {
 	static int init; /*default is 0*/
@@ -376,6 +383,21 @@ void get_dtsi_eint_node(void)
 		}
 		node = of_find_node_by_name(NULL,
 			eint_node_prop.name[i].node_name);
+		if (node == NULL) {
+			/*
+			 * The preserved 4.19 DTB spells these nodes lower-case:
+			 * md1_sim1_hot_plug_eint.  4.19's of_find_node_by_name()
+			 * compared np->name with of_node_cmp() == strcasecmp(),
+			 * so the upper-case names above matched; 6.6 compares the
+			 * basename of full_name with strncmp(), which is
+			 * case-sensitive, so every lookup missed and
+			 * get_eint_attr() answered -11 for every SIM hot-plug
+			 * EINT query.  Fall back to the spelling the DTB uses.
+			 */
+			if (i < ARRAY_SIZE(md_dt_eint_node_name))
+				node = of_find_node_by_name(NULL,
+					md_dt_eint_node_name[i]);
+		}
 		if (node != NULL) {
 			eint_node_prop.ExistFlag |= (1U << i);
 			get_eint_attr_val(node, i);
@@ -952,7 +974,12 @@ static void ccci_rpc_work_helper(struct port_t *port, struct rpc_pkt *pkt,
 				kfree(eint_name);
 			} else {
 				tmp_data[0] = ret;
-				CCCI_DEBUG_LOG(0, RPC,
+				/* A failed SIM hot-plug EINT query used to leave no
+				 * trace anywhere (CCCI_DEBUG_LOG writes only to
+				 * printk, and only in CCCI_LOG_ALL_UART), so a
+				 * DT-name mismatch looked like the MD going silent.
+				 */
+				CCCI_BOOTUP_LOG(0, RPC,
 					"[0x%08X] fail: name:%s, len:%d, type:%d, ret:%d\n",
 					p_rpc_buf->op_id, eint_name, name_len,
 					type, ret);

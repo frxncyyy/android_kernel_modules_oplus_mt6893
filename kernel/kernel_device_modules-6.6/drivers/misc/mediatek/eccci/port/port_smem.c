@@ -59,7 +59,19 @@
 #define MD_META_PAGE_SIZE (65*1024)
 #define MD_META_PAGE_NUM (8)
 
-#define AP_META_PAGE_SIZE (65*1024)
+/*
+ * op6893 6.6 bring-up: the 4.19 driver carries this table verbatim --
+ *   kernel 4.14: MT6765/GEN93, MT6833/GEN97, MT6853/GEN97 used (65*1024),
+ *                everything else (63*1024)
+ *   kernel 4.19: (63*1024) everywhere
+ * This device runs the 4.19 modem image (MOLY.NR15.R3.TC16.S.PR2.SP.V2.P88),
+ * which sizes its META uplink buffer at 63K x 8.  Leaving 65K here made
+ * ccb_configs[] sum to 0x17C000 where 4.19 sums to 0x178000, so the AP
+ * advertised a CCB_SHARE_MEMORY size 16K larger than the one the MD firmware
+ * was built against.  Verified on-device: "ccb data size (include dsp raw)"
+ * is now 0x178000, matching the 4.19 log exactly.
+ */
+#define AP_META_PAGE_SIZE (63*1024)
 #define AP_META_PAGE_NUM (8)
 
 struct ccci_ccb_config ccb_configs[] = {
