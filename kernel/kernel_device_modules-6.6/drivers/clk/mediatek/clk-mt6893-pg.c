@@ -5017,7 +5017,13 @@ struct mtk_power_gate {
 /* MT6893: TODO:FIXME: all values needed to be verified */
 /* MT6893: preclks */
 struct mtk_power_gate scp_clks[] = {
-	//PGATE(SCP_SYS_MD1, "PG_MD1", NULL, NULL, SYS_MD1),
+	/* op6893 6.6 bring-up: MD1 was held back until the modem port; the
+	 * 4.19 DTB's mddriver node asks for "scp-sys-md1-main", so without
+	 * this PGATE the modem's MTCMOS clock lookup fails and the MD bootrom
+	 * never comes up.  Sequence data (MD1_sys_ops, MD1_PWR_STA_MASK) is
+	 * complete in this file, same as CONN/MDP/DIS above.
+	 */
+	PGATE(SCP_SYS_MD1, "PG_MD1", NULL, NULL, SYS_MD1),
 	/*
 	 * op6893 6.6 bring-up: CONN un-gated to power consys@18000000 for the
 	 * connsys/BT/WiFi stack.  consys asks for this domain as
