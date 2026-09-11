@@ -3001,10 +3001,12 @@ static int dpmaif_init_cap(struct device *dev)
 
 	if (of_property_read_u32(dev->of_node,
 			"mediatek,dpmaif-cap", &dpmaif_ctl->capability)) {
-		dpmaif_ctl->capability = 0;
+		/* op6893 6.6 bring-up: 4.19 DTB has no dpmaif-cap (its
+		 * dpmaif_capability means something else); MT6893 official value. */
+		dpmaif_ctl->capability = 0x4;
 		CCCI_ERROR_LOG(0, TAG,
-			"[%s] read mediatek,dpmaif-cap fail!\n",
-			__func__);
+			"[%s] read mediatek,dpmaif-cap fail, default 0x%x\n",
+			__func__, dpmaif_ctl->capability);
 	}
 
 	dpmaif_ctl->support_lro = dpmaif_ctl->capability & MODEM_CAP_LRO;
@@ -3417,9 +3419,10 @@ static int dpmaif_probe(struct platform_device *pdev)
 
 	if (of_property_read_u32(pdev->dev.of_node,
 			"mediatek,dpmaif-ver", &g_dpmf_ver)) {
+		/* op6893 6.6 bring-up: 4.19 DTB has no dpmaif-ver; MT6893 is v2 */
 		CCCI_ERROR_LOG(0, TAG,
 			"[%s] error: not find mediatek,dpmaif-ver.\n", __func__);
-		g_dpmf_ver = MAX_DPMAIF_VER;
+		g_dpmf_ver = 2;
 	}
 
 	if (g_dpmf_ver == 0 || g_dpmf_ver > MAX_DPMAIF_VER) {
@@ -3431,7 +3434,7 @@ static int dpmaif_probe(struct platform_device *pdev)
 
 	if (of_property_read_u32(pdev->dev.of_node,
 			"mediatek,plat-info", &g_plat_inf))
-		g_plat_inf = DEFAULT_PLAT_INF;
+		g_plat_inf = 6893;	/* op6893 6.6 bring-up: 4.19 DTB has no plat-info */
 
 	CCCI_NORMAL_LOG(0, TAG,
 		"[%s] g_dpmf_ver: %u; g_plat_inf: %u\n",

@@ -209,6 +209,9 @@ int mtk_ccci_args_key_val_init(void)
 
 	// From dts: AP Platform
 	ret = of_property_read_u32(node, "mediatek,ap-plat-info", &dt_value);
+	/* op6893 6.6 bring-up: 4.19 DTB spells this the underscore way */
+	if (ret < 0)
+		ret = of_property_read_u32(node, "mediatek,ap_plat_info", &dt_value);
 	if (ret < 0)
 		CCCI_UTIL_INF_MSG("Attr: [mediatek,ap-plat-info] not support\n");
 	else

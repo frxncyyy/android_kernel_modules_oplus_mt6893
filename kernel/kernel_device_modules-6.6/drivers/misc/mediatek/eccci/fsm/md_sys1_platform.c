@@ -18,6 +18,7 @@
 #include <linux/clk.h>
 #ifdef USING_PM_RUNTIME
 #include <linux/pm_runtime.h>
+#include <linux/pm_domain.h> /* op6893 6.6 bring-up: genpd attach check */
 #else
 #include <dt-bindings/clock/mt6779-clk.h>
 #endif
@@ -27,6 +28,8 @@
 #endif
 
 #include <linux/regulator/consumer.h> /* for MD PMIC */
+#include <linux/mfd/syscon.h> /* op6893 6.6 bring-up: ccci-topckgen fallback */
+#include <linux/regmap.h> /* op6893 6.6 bring-up: spm_sleep_base fallback */
 
 #include "ccci_core.h"
 #include "modem_sys.h"
@@ -968,7 +971,12 @@ static int md_cd_power_off(struct ccci_modem *md, unsigned int timeout)
 #if IS_ENABLED(CONFIG_COMMON_CLK_PG_LEGACY_V1) || IS_ENABLED(CONFIG_COMMON_CLK_PG_LEGACY)
 	clk_disable_unprepare(clk_table[0].clk_ref);
 #else
-	ret = pm_runtime_put_sync(&md->plat_dev->dev);
+	/* op6893 6.6 bring-up: mirror the POWER ON path -- clock-driven MTCMOS when
+	 * no genpd is attached (4.19 DTB has no power-domains on mddriver). */
+	if (md->plat_dev->dev.pm_domain)
+		ret = pm_runtime_put_sync(&md->plat_dev->dev);
+	else
+		clk_disable_unprepare(clk_table[0].clk_ref);
 #endif
 
 	CCCI_BOOTUP_LOG(0, TAG,
@@ -1842,7 +1850,15 @@ static int md_cd_power_on(struct ccci_modem *md)
 #if IS_ENABLED(CONFIG_COMMON_CLK_PG_LEGACY_V1) || IS_ENABLED(CONFIG_COMMON_CLK_PG_LEGACY)
 	ret = clk_prepare_enable(clk_table[0].clk_ref);
 #else
-	ret = pm_runtime_get_sync(&md->plat_dev->dev);
+	/* op6893 6.6 bring-up: the stock 4.19 DTB has no power-domains property on
+	 * mddriver (MTCMOS was driven via the scp-sys-md1-main clock, whose PGATE
+	 * clk-mt6893-pg now provides again).  pm_runtime on an unattached device
+	 * returns 0 without powering anything up, so fall back to the clock path
+	 * whenever the device has no genpd attached. */
+	if (md->plat_dev->dev.pm_domain)
+		ret = pm_runtime_get_sync(&md->plat_dev->dev);
+	else
+		ret = clk_prepare_enable(clk_table[0].clk_ref);
 #endif
 	CCCI_BOOTUP_LOG(0, TAG,
 		"[POWER ON] MD MTCMOS ON end: ret = %d\n", ret);
@@ -1981,9 +1997,14 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 
 	ret = of_property_read_u32(dev_ptr->dev.of_node,
 		"mediatek,ap-plat-info", &ap_plat_info);
-	if (ret < 0)
-		CCCI_ERROR_LOG(0, TAG, "%s: get DTS: ap-plat-info fail\n", __func__);
-	else
+	if (ret < 0)	/* op6893 6.6 bring-up: 4.19 DTB spells this the underscore way */
+		ret = of_property_read_u32(dev_ptr->dev.of_node,
+			"mediatek,ap_plat_info", &ap_plat_info);
+	if (ret < 0) {
+		ap_plat_info = 6893;	/* op6893 */
+		CCCI_ERROR_LOG(0, TAG, "%s: ap-plat-info missing, default %u\n",
+			__func__, ap_plat_info);
+	} else
 		CCCI_NORMAL_LOG(0, TAG, "ap_plat_info: %u\n", ap_plat_info);
 
 
@@ -1993,13 +2014,19 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 	dev_cfg->minor_base = 0;
 	ret = of_property_read_u32(dev_ptr->dev.of_node,
 		"mediatek,cldma-capability", &dev_cfg->capability);
+	if (ret < 0)	/* op6893 6.6 bring-up: 4.19 DTB spells this the underscore way */
+		ret = of_property_read_u32(dev_ptr->dev.of_node,
+			"mediatek,cldma_capability", &dev_cfg->capability);
 	if (ret < 0) {
-		CCCI_ERROR_LOG(0, TAG, "%s:get DTS:cldma-capability fail\n",
-			__func__);
-		return -1;
+		dev_cfg->capability = 14;	/* MT6893: mdhif CLDMA|CCIF|DPMAIF */
+		CCCI_ERROR_LOG(0, TAG, "%s:get DTS:cldma-capability fail, default %d\n",
+			__func__, dev_cfg->capability);
 	}
 	ret = of_property_read_u32(dev_ptr->dev.of_node,
 		"mediatek,offset-epon-md1", &hw_info->md_epon_offset);
+	if (ret < 0)	/* op6893 6.6 bring-up: 4.19 DTB spells this the underscore way */
+		ret = of_property_read_u32(dev_ptr->dev.of_node,
+			"mediatek,offset_apon_md1", &hw_info->md_epon_offset);
 	if (ret < 0) {
 		CCCI_ERROR_LOG(0, TAG, "%s:get DTS:mediatek,offset-epon-md1 fail\n",
 			__func__);
@@ -2037,10 +2064,10 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 	hw_info->md_wdt_irq_flags = IRQF_TRIGGER_NONE;
 	ret = of_property_read_u32(dev_ptr->dev.of_node,
 		"mediatek,md-generation", &md_cd_plat_val_ptr.md_gen);
-	if (ret < 0) {
-		CCCI_ERROR_LOG(0, TAG, "%s:get DTS:md_gen fail\n",
-			__func__);
-		return -1;
+	if (ret < 0) {	/* op6893 6.6 bring-up: 4.19 DTB has no md-generation (compile-time there) */
+		md_cd_plat_val_ptr.md_gen = 6297;	/* MT6893: gen97 */
+		CCCI_ERROR_LOG(0, TAG, "%s:get DTS:md_gen fail, default %d\n",
+			__func__, md_cd_plat_val_ptr.md_gen);
 	}
 
 	/* "mediatek,md-sub-version" = 0 or can't find this properity
@@ -2083,8 +2110,14 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 	md_cd_plat_val_ptr.topckgen_clk_base =
 			syscon_regmap_lookup_by_phandle(dev_ptr->dev.of_node,
 			"ccci-topckgen");
-	if (IS_ERR(md_cd_plat_val_ptr.topckgen_clk_base))
-		CCCI_ERROR_LOG(0, TAG, "topckgen_clk_base fail: NULL!\n");
+	if (IS_ERR(md_cd_plat_val_ptr.topckgen_clk_base)) {
+		/* op6893 6.6 bring-up: 4.19 DTB has no ccci-topckgen phandle; the
+		 * topckgen syscon is registered by clk-mt6893's probe. */
+		md_cd_plat_val_ptr.topckgen_clk_base =
+			syscon_regmap_lookup_by_compatible("mediatek,topckgen");
+		if (IS_ERR(md_cd_plat_val_ptr.topckgen_clk_base))
+			CCCI_ERROR_LOG(0, TAG, "topckgen_clk_base fail: NULL!\n");
+	}
 
 /*
  * md_cd_plat_val_ptr.power_flow_config will decide use which flow:
@@ -2096,9 +2129,14 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 		"mediatek,power-flow-config",
 		&md_cd_plat_val_ptr.power_flow_config);
 	if (ret < 0) {
-		md_cd_plat_val_ptr.power_flow_config = 0;
-		CCCI_ERROR_LOG(0, TAG, "%s:get DTS:power-flow-config fail\n",
-			__func__);
+		/* op6893 6.6 bring-up: 4.19 DTB has no power-flow-config, and the
+		 * 4.19 driver unconditionally ran srclkena + srclken_o1 (26 MHz MD
+		 * boot reference clock).  Match that behaviour so bootrom can start. */
+		md_cd_plat_val_ptr.power_flow_config =
+			(1 << SRCLKEN_O1_BIT) | (1 << SRCCLKENA_SETTING_BIT);
+		CCCI_ERROR_LOG(0, TAG,
+			"%s:get DTS:power-flow-config fail, default 0x%x\n",
+			__func__, md_cd_plat_val_ptr.power_flow_config);
 	} else
 		CCCI_NORMAL_LOG(0, TAG,
 			"%s:power_flow_config=0x%x\n",
@@ -2107,10 +2145,12 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 	ret = of_property_read_u32(dev_ptr->dev.of_node,
 		"mediatek,srclken-o1", &md_cd_plat_val_ptr.srclken_o1_bit);
 	if (ret < 0) {
+		/* op6893 6.6 bring-up: 4.19 DTB has no srclken-o1; the 4.19 driver
+		 * hard-coded bit21 (0x200000) for the 26 MHz MD boot clock. */
+		md_cd_plat_val_ptr.srclken_o1_bit = 0x200000;
 		CCCI_ERROR_LOG(0, TAG,
-			"%s:get DTS: srclken-o1 fail, no need set\n",
-			__func__);
-		md_cd_plat_val_ptr.srclken_o1_bit = -1;
+			"%s:get DTS: srclken-o1 fail, default 0x%x\n",
+			__func__, md_cd_plat_val_ptr.srclken_o1_bit);
 	} else
 		CCCI_NORMAL_LOG(0, TAG,
 			"%s:srclken_o1_bit=0x%x\n",
@@ -2126,9 +2166,11 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 		"mediatek,boot-status-value",
 		&md_cd_plat_val_ptr.boot_status_value);
 	if (ret < 0) {
-		md_cd_plat_val_ptr.boot_status_value = 0;
-		CCCI_ERROR_LOG(0, TAG, "%s:get DTS:boot-status-value fail\n",
-			__func__);
+		/* op6893 6.6 bring-up: 4.19 DTB has no boot-status-value; MT6893
+		 * expects 0x5443000c (the value the MD reports in boot_status_0). */
+		md_cd_plat_val_ptr.boot_status_value = 0x5443000c;
+		CCCI_ERROR_LOG(0, TAG, "%s:get DTS:boot-status-value fail, default 0x%x\n",
+			__func__, md_cd_plat_val_ptr.boot_status_value);
 	} else
 		CCCI_NORMAL_LOG(0, TAG, "%s: boot_status_value = 0x%x\n",
 			__func__, md_cd_plat_val_ptr.boot_status_value);
@@ -2137,11 +2179,42 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 	md_cd_plat_val_ptr.spm_sleep_base =
 			syscon_regmap_lookup_by_phandle(dev_ptr->dev.of_node,
 			"ccci-spmsleep");
-	if (IS_ERR(md_cd_plat_val_ptr.spm_sleep_base))
-		CCCI_ERROR_LOG(0, TAG,
-			"%s: get spm_sleep_base reg failed\n",
-			__func__);
-	else
+	if (IS_ERR(md_cd_plat_val_ptr.spm_sleep_base)) {
+		/* op6893 6.6 bring-up: 4.19 DTB has no ccci-spmsleep phandle; the
+		 * 4.19 driver ioremapped the "mediatek,sleep" node directly
+		 * (sleep@10006000).  Fall back to that so srclken_o1 (bit21 of
+		 * spm_sleep_base+8) can still be set for the MD boot clock. */
+		struct device_node *sleep_node =
+			of_find_compatible_node(NULL, NULL, "mediatek,sleep");
+		void __iomem *sleep_base = NULL;
+
+		if (sleep_node)
+			sleep_base = of_iomap(sleep_node, 0);
+		if (sleep_base) {
+			static struct regmap_config ccci_sleep_regmap = {
+				.reg_bits = 32,
+				.val_bits = 32,
+				.reg_stride = 4,
+			};
+
+			md_cd_plat_val_ptr.spm_sleep_base =
+				devm_regmap_init_mmio(&dev_ptr->dev,
+					sleep_base, &ccci_sleep_regmap);
+			if (IS_ERR(md_cd_plat_val_ptr.spm_sleep_base))
+				CCCI_ERROR_LOG(0, TAG,
+					"%s: fallback spm_sleep_base regmap init failed\n",
+					__func__);
+			else
+				CCCI_INIT_LOG(-1, TAG,
+					"spm_sleep_base(fallback):0x%lx\n",
+					(unsigned long)md_cd_plat_val_ptr.spm_sleep_base);
+		} else {
+			CCCI_ERROR_LOG(0, TAG,
+				"%s: get spm_sleep_base reg failed\n",
+				__func__);
+			md_cd_plat_val_ptr.spm_sleep_base = ERR_PTR(-ENODEV);
+		}
+	} else
 		CCCI_INIT_LOG(-1, TAG, "spm_sleep_base:0x%lx\n",
 			(unsigned long)md_cd_plat_val_ptr.spm_sleep_base);
 
@@ -2161,11 +2234,23 @@ static int md_cd_get_modem_hw_info(struct platform_device *dev_ptr,
 	ret = clk_prepare_enable(clk_table[0].clk_ref);
 	CCCI_NORMAL_LOG(0, TAG, "[POWER ON] dummy: clk: MD MTCMOS ON %d\n", ret);
 #else
-	pm_runtime_enable(&dev_ptr->dev);
-	dev_pm_syscore_device(&dev_ptr->dev, true);
-	retval = pm_runtime_get_sync(&dev_ptr->dev);
-	CCCI_NORMAL_LOG(0, TAG,
-		"[POWER ON] dummy: pm: MD MTCMOS ON %d\n", retval);
+	/* op6893 6.6 bring-up: keep this in step with md_cd_power_on/off, which
+	 * fall back to the scp-sys-md1-main clock when the device has no genpd
+	 * (the stock 4.19 DTB has no power-domains on mddriver).  Taking the
+	 * pm_runtime reference here while power_off releases the clock made the
+	 * refcounts asymmetric and tripped a WARN in md_cd_power_off right after
+	 * BROM PASS, which is what kept HS1 from ever arriving. */
+	if (dev_ptr->dev.pm_domain) {
+		pm_runtime_enable(&dev_ptr->dev);
+		dev_pm_syscore_device(&dev_ptr->dev, true);
+		retval = pm_runtime_get_sync(&dev_ptr->dev);
+		CCCI_NORMAL_LOG(0, TAG,
+			"[POWER ON] dummy: pm: MD MTCMOS ON %d\n", retval);
+	} else {
+		ret = clk_prepare_enable(clk_table[0].clk_ref);
+		CCCI_NORMAL_LOG(0, TAG,
+			"[POWER ON] dummy: clk: MD MTCMOS ON %d\n", ret);
+	}
 #endif
 
 	return 0;

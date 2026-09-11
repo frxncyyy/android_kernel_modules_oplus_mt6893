@@ -182,6 +182,7 @@ static int fsm_md_data_ioctl(unsigned int cmd, unsigned long arg)
 
 	node = of_find_compatible_node(NULL, NULL,
 		"mediatek,mddriver");
+	md_gen = 6297;	/* op6893 6.6 bring-up: 4.19 DTB has no md-generation */
 	of_property_read_u32(node,
 		"mediatek,md-generation", &md_gen);
 

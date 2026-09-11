@@ -1254,6 +1254,10 @@ static u32 ccmni_get_capability_from_dts_node(unsigned int hw_type)
 		node = of_find_compatible_node(NULL, NULL, "mediatek,dpmaif");
 		if (node) {
 			ret = of_property_read_u32(node, "mediatek,dpmaif-cap", &capability);
+			/* op6893 6.6 bring-up: 4.19 DTB spells this the underscore way */
+			if (ret < 0)
+				ret = of_property_read_u32(node, "mediatek,dpmaif_capability",
+							   &capability);
 			if (ret < 0) {
 				pr_info("cannot find dpmaif-cap in dts node\n");
 				return -1;
@@ -1265,6 +1269,10 @@ static u32 ccmni_get_capability_from_dts_node(unsigned int hw_type)
 		node = of_find_compatible_node(NULL, NULL, "mediatek,ccci_cldma");
 		if (node) {
 			ret = of_property_read_u32(node, "mediatek,cldma-capability", &capability);
+			/* op6893 6.6 bring-up: 4.19 DTB spells this the underscore way */
+			if (ret < 0)
+				ret = of_property_read_u32(node, "mediatek,cldma_capability",
+							   &capability);
 			if (ret < 0) {
 				pr_info("cannot find cldma-cap in dts node\n");
 				return -1;
@@ -1284,6 +1292,9 @@ static u32 ccmni_get_capability_from_dts(void)
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mddriver");
 	if (node) {
 		ret = of_property_read_u32(node, "mediatek,mdhif-type", &hw_type);
+		/* op6893 6.6 bring-up: 4.19 DTB spells this the underscore way */
+		if (ret < 0)
+			ret = of_property_read_u32(node, "mediatek,mdhif_type", &hw_type);
 		if (ret < 0) {
 			pr_info("cannot find mdhif-type in dts file\n");
 			return -1;

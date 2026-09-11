@@ -1643,11 +1643,14 @@ static int ccif_hif_hw_init(struct device *dev, struct md_ccif_ctrl *ccif_ctrl)
 	}
 	/* get data from mddriver node */
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mddriver");
-	of_property_read_u32(node, "mediatek,md-generation",
-		&ccif_ctrl->plat_val.md_gen);
+	/* op6893 6.6 bring-up: 4.19 DTB has neither property (compile-time there) */
+	if (of_property_read_u32(node, "mediatek,md-generation",
+		&ccif_ctrl->plat_val.md_gen))
+		ccif_ctrl->plat_val.md_gen = 6297;	/* MT6893: gen97 */
 
-	of_property_read_u32(node, "mediatek,ap-plat-info",
-		&ccif_ctrl->plat_val.ap_plat_info);
+	if (of_property_read_u32(node, "mediatek,ap-plat-info",
+		&ccif_ctrl->plat_val.ap_plat_info))
+		ccif_ctrl->plat_val.ap_plat_info = 6893;	/* op6893 */
 
 	ccif_ctrl->plat_val.infra_ao_base = syscon_regmap_lookup_by_phandle(
 		node, "ccci-infracfg");

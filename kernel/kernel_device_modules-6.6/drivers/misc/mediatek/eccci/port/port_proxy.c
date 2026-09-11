@@ -1864,10 +1864,14 @@ int ccci_port_init(void)
 	if (node)
 		ret = of_property_read_u32(node,
 			"mediatek,md-generation", &port_md_gen);
+	/* op6893 6.6 bring-up: 4.19 DTB has no md-generation (compile-time there) */
+	if (ret < 0)
+		ret = of_property_read_u32(node,
+			"mediatek,md_generation", &port_md_gen);
 	if (ret < 0) {
-		CCCI_ERROR_LOG(0, CHAR, "%s:get md_gen from dts fail\n",
-			__func__);
-		return -1;
+		port_md_gen = 6297;	/* MT6893: gen97 */
+		CCCI_ERROR_LOG(0, CHAR, "%s:get md_gen from dts fail, default %d\n",
+			__func__, port_md_gen);
 	}
 
 	CCCI_NORMAL_LOG(0, TAG, "%s: port_md_gen=%d\n",
