@@ -2999,13 +2999,23 @@ static int scp_device_probe(struct platform_device *pdev)
 	of_property_read_u32(pdev->dev.of_node, "scp-sram-size"
 						, &scpreg.scp_tcmsize);
 	if (!scpreg.scp_tcmsize) {
+		/* op6893 6.6 bring-up: the stock 4.19 DTB spells these with
+		 * underscores (scp_sramSize / core_0 / core_nums) because that is
+		 * what the 4.19 driver read.  Without them the SCP probe bails out
+		 * with -ENODEV, SCP never boots, and the MD asserts in ccismcore
+		 * when it cannot set up CCISM_SCP. */
+		of_property_read_u32(pdev->dev.of_node, "scp_sramSize"
+						, &scpreg.scp_tcmsize);
+	}
+	if (!scpreg.scp_tcmsize) {
 		pr_notice("[SCP] total_tcmsize not found\n");
 		return -ENODEV;
 	}
 	pr_debug("[SCP] scpreg.scp_tcmsize = %d\n", scpreg.scp_tcmsize);
 
 	/* scp core 0 */
-	if (of_property_read_string(pdev->dev.of_node, "core-0", &core_status))
+	if (of_property_read_string(pdev->dev.of_node, "core-0", &core_status) &&
+	    of_property_read_string(pdev->dev.of_node, "core_0", &core_status))
 		return -1;
 
 	if (strcmp(core_status, "enable") != 0)
@@ -3030,6 +3040,9 @@ static int scp_device_probe(struct platform_device *pdev)
 	}
 
 	of_property_read_u32(pdev->dev.of_node, "core-nums"
+						, &scpreg.core_nums);
+	if (!scpreg.core_nums)
+		of_property_read_u32(pdev->dev.of_node, "core_nums"
 						, &scpreg.core_nums);
 	if (!scpreg.core_nums) {
 		pr_notice("[SCP] core number not found\n");

@@ -823,8 +823,11 @@ void wait_scp_dvfs_init_done(void)
 		mdelay(1);
 		count++;
 		if (count > 3000) {
+			/* op6893 6.6 bring-up: don't WARN in a tight loop forever;
+			 * give up after 3s and let the caller continue. */
 			pr_notice("SCP dvfs driver init fail\n");
-			WARN_ON(1);
+			WARN_ON_ONCE(1);
+			break;
 		}
 	}
 }
@@ -1395,6 +1398,7 @@ static int mt_scp_dvfs_create_procfs(void)
 
 static const struct of_device_id scpdvfs_of_ids[] = {
 	{.compatible = "mediatek,scp-dvfs",},
+	{.compatible = "mediatek,scp_dvfs",},	/* op6893 6.6 bring-up: 4.19 DTB spelling */
 	{}
 };
 
@@ -2705,7 +2709,16 @@ static int __init mt_scp_dts_init(struct platform_device *pdev)
 
 
 	ret = of_property_read_u32(node, PROPNAME_SCP_DVFS_DISABLE, &is_scp_dvfs_disable);
-	if (ret || is_scp_dvfs_disable == 1) {
+	if (ret) {
+		/* op6893 6.6 bring-up: a missing property only means "not
+		 * disabled" -- the stock 4.19 DTB has no scp-dvfs-disable and
+		 * signals the opposite via scp-dvfs-feature = "enable".  Reading
+		 * the failure as "disabled" skipped mt_scp_dts_init() entirely
+		 * and with it the scp_resource_req(0x1) that was the first thing
+		 * this SCP port needed. */
+		is_scp_dvfs_disable = 0;
+	}
+	if (is_scp_dvfs_disable == 1) {
 		pr_notice("SCP DVFS is disabled, so bypass its init\n");
 		return 0;
 	}
