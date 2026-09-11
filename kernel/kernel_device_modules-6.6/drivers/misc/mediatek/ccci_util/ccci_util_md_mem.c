@@ -93,7 +93,17 @@ static struct rt_smem_region_lk_fmt gen6297_noncacheable_tbl[] = {
 {0ULL, 0ULL, {SMEM_USER_32K_LOW_POWER,	0,	0*1024,  0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_RESERVED,        0, 18*1024,	 0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_MD_DRDI,         0, 0, 0, SMEM_NO_CLR_FIRST, 0}},
-{0ULL, 0ULL, {SMEM_USER_RAW_ALIGN_PADDING, 0,	0xDE4400, 0,	0,	0}},
+/*
+ * op6893 6.6 bring-up: pad from the end of the small regions (0x210000, which
+ * is 0x20b800 of regions + the 18 KB SMEM_USER_RESERVED above) to the RAW_DFD
+ * offset 0x1000000.  The previous value, 0xde4400, was 0xbc00 short, so DFD
+ * landed at 0x0ff4400 and the bank totalled 0x17f4400 instead of the 0x1800000
+ * (= mblock-27-ap_md_nc_smem) that 4.19 advertises -- the same 0xbc00 showed up
+ * as set_md_mpu_noncached_total_size in the runtime data handed to the MD.
+ * Checked region by region against the 4.19 driver's init_smem_regions dump:
+ * every offset through CCISM_MCU_EXP already matches, DFD must be at 0x1000000.
+ */
+{0ULL, 0ULL, {SMEM_USER_RAW_ALIGN_PADDING, 0,	0xDF0000, 0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_RAW_DFD,	        0,	0,	0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_RAW_UDC_DATA,	0,	0,	0,	0,	0}},
 };
