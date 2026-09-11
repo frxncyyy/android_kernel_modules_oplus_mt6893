@@ -57,15 +57,26 @@ static struct rt_smem_region_lk_fmt *s_smem_hash_tbl[SMEM_USER_MAX];
 static struct rt_smem_region_lk_fmt gen6297_noncacheable_tbl[] = {
 /*
  * ap_p, ap_v,  id,                    ap_offset, size,  align,   flags, md_offset
+ *
+ * op6893 6.6 bring-up: the table is walked linearly (each region starts where
+ * the previous one ends), so order plus the two padding entries must reproduce
+ * the *non-linear* layout LK reserves for this bank -- that layout is what the
+ * MD firmware's MPU setup expects.  Verified against the 4.19 driver's
+ * init_smem_regions dump on the same device and DTB:
+ *
+ *   +0x000000  pad
+ *   +0x100000  MD_WIFI_PROXY .. CCISM_MCU_EXP     (the small regions)
+ *   +0x1000000 RAW_DFD (8 MB, filled in by get_dfd_size())
+ *   +0x1800000 end -- matches mblock-27-ap_md_nc_smem (24576 KiB)
+ *
+ * Getting this wrong made AP advertise a 9 MB bank (0x910000) to the MD, which
+ * then could not arm its MPU for the real 24 MB, so it never answered HS2.
  */
-{0ULL, 0ULL, {SMEM_USER_RAW_DFD,	        0,	0,	0,	0,	0}},
-{0ULL, 0ULL, {SMEM_USER_RAW_UDC_DATA,	0,	0,	0,	0,	0}},
-{0ULL, 0ULL, {SMEM_USER_MD_WIFI_PROXY,	0,	0,	0,	0,	0}},
-{0ULL, 0ULL, {SMEM_USER_SECURITY_SMEM,	0,	0,	0,	SMEM_NO_CLR_FIRST, 0}},
+{0ULL, 0ULL, {SMEM_USER_RAW_ALIGN_PADDING, 0,	1*1024*1024, 0,	0,	0}},
+{0ULL, 0ULL, {SMEM_USER_MD_WIFI_PROXY,	0,	64*1024,  0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_RAW_AMMS_POS,	0,	0,	0,	SMEM_NO_CLR_FIRST, 0}},
 {0ULL, 0ULL, {SMEM_USER_RAW_MDCCCI_DBG,	0,	2*1024,	 0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_RAW_MDSS_DBG,	0,	14*1024, 0,	0,	0}},
-{0ULL, 0ULL, {SMEM_USER_32K_LOW_POWER,	0,	0*1024,  0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_RAW_RESERVED,	0,	42*1024, 0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_RAW_RUNTIME_DATA, 0,	4*1024,	 0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_RAW_FORCE_ASSERT, 0,	1*1024,	 0,	0,	0}},
@@ -78,8 +89,13 @@ static struct rt_smem_region_lk_fmt gen6297_noncacheable_tbl[] = {
 {0ULL, 0ULL, {SMEM_USER_RAW_AUDIO,	0,	52*1024, 0,	SMEM_NO_CLR_FIRST, 0}},
 {0ULL, 0ULL, {SMEM_USER_CCISM_MCU,	0, (720+1)*1024, 0,	SMEM_NO_CLR_FIRST, 0}},
 {0ULL, 0ULL, {SMEM_USER_CCISM_MCU_EXP,   0, (120+1)*1024,	SMEM_NO_CLR_FIRST, 0}},
+{0ULL, 0ULL, {SMEM_USER_SECURITY_SMEM,	0,	0,	0,	SMEM_NO_CLR_FIRST, 0}},
+{0ULL, 0ULL, {SMEM_USER_32K_LOW_POWER,	0,	0*1024,  0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_RESERVED,        0, 18*1024,	 0,	0,	0}},
 {0ULL, 0ULL, {SMEM_USER_MD_DRDI,         0, 0, 0, SMEM_NO_CLR_FIRST, 0}},
+{0ULL, 0ULL, {SMEM_USER_RAW_ALIGN_PADDING, 0,	0xDE4400, 0,	0,	0}},
+{0ULL, 0ULL, {SMEM_USER_RAW_DFD,	        0,	0,	0,	0,	0}},
+{0ULL, 0ULL, {SMEM_USER_RAW_UDC_DATA,	0,	0,	0,	0,	0}},
 };
 
 static struct rt_smem_region_lk_fmt gen6297_cacheable_tbl[] = {
