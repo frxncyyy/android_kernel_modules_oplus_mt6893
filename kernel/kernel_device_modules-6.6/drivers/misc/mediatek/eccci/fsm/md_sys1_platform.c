@@ -1793,6 +1793,79 @@ int md_cd_vcore_config(unsigned int hold_req)
 	return 0;
 }
 
+/*
+ * op6893 6.6 bring-up: put the MD's own rails back before the bootrom starts.
+ *
+ * VMODEM (VBUCK1), VNR (VBUCK3) and VSRAM_MD (VBUCK4) sit on the MT6315 S3
+ * sub-PMIC, and the running MD's DVFS moves them: measured on this board,
+ * 3_vbuck1 reads 600000 uV just after boot and 550000 uV after a few hours of
+ * modem traffic.  The 4.19 driver for this SoC -- mt6885/md_sys1_platform.c,
+ * via md1_pmic_setting_on -> vmd1_pmic_setting_on -> mt6315_S3_default_vosel()
+ * -- snapshots the three VOSELs at the first power-on and writes that snapshot
+ * back on every later one, so the MD always restarts at the voltages it booted
+ * with.
+ *
+ * The 6.6 driver does the same job through the regulator framework, but it
+ * looks the supplies up by property name (md-vmodem, md-vsram, ...) and this
+ * board's DTB gives mddriver none of them, so md1_pmic_setting_on() silently
+ * does nothing at all -- its only output is "start" immediately followed by
+ * "end".  A cold boot never notices, because LK has just left the rails at
+ * their boot values; a restart boots the MD on whatever DVFS voltages it
+ * happened to stop at, and it then never answers HS1.  So look the rails up by
+ * regulator name instead, which is what 4.19's is_mt6315_S3_exist() does, and
+ * do nothing on a board that has no MT6315 S3.
+ *
+ * Ordering is inherited from the caller: md_cd_power_on() runs this before it
+ * turns the MD's MTCMOS on, exactly as 4.19 does.
+ */
+static const char * const md_s3_rail_name[] = {
+	"3_vbuck1",	/* VMODEM */
+	"3_vbuck3",	/* VNR */
+	"3_vbuck4",	/* VSRAM_MD */
+};
+
+static void md_s3_vosel_restore(void)
+{
+	static struct regulator *rail[ARRAY_SIZE(md_s3_rail_name)];
+	static int snap[ARRAY_SIZE(md_s3_rail_name)];
+	static int absent[ARRAY_SIZE(md_s3_rail_name)];
+	int i, v;
+
+	for (i = 0; i < ARRAY_SIZE(md_s3_rail_name); i++) {
+		if (absent[i])
+			continue;
+
+		if (rail[i] == NULL) {
+			struct regulator *r;
+
+			r = regulator_get_optional(NULL, md_s3_rail_name[i]);
+			if (IS_ERR(r)) {
+				absent[i] = 1;
+				CCCI_BOOTUP_LOG(0, TAG,
+					"[POWER ON]%s: no %s (%ld)\n",
+					__func__, md_s3_rail_name[i], PTR_ERR(r));
+				continue;
+			}
+			rail[i] = r;
+		}
+
+		if (snap[i] == 0) {
+			/* First power-on in this boot: this is what LK left. */
+			v = regulator_get_voltage(rail[i]);
+			if (v > 0)
+				snap[i] = v;
+			continue;
+		}
+
+		regulator_set_voltage(rail[i], snap[i], snap[i]);
+		regulator_sync_voltage(rail[i]);
+		CCCI_NORMAL_LOG(0, TAG,
+			"[POWER ON]%s: %s back to %d uV (now %d)\n",
+			__func__, md_s3_rail_name[i], snap[i],
+			regulator_get_voltage(rail[i]));
+	}
+}
+
 static int md_cd_power_on(struct ccci_modem *md)
 {
 	int ret = 0;
@@ -1804,6 +1877,9 @@ static int md_cd_power_on(struct ccci_modem *md)
 		md1_pmic_setting_on();
 	else
 		md1_dpsw_pmic_setting_on();
+
+	/* ...and the rails that driver cannot reach; see above */
+	md_s3_vosel_restore();
 
 	/* modem topclkgen on setting */
 	ret = md_cd_topclkgen_on(md);

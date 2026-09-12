@@ -12,7 +12,21 @@
 #define MT6315_SLAVE_ID_8	8
 #define MT6315_SLAVE_ID_15	15
 
-#define MT6315_ID_3_MAX		3
+/*
+ * op6893 6.6 bring-up: these bound the probe loop in mt6315-regulator.c, which
+ * stops at index _MAX, and the indices are the shared enum below --
+ * VBUCK1 = 0, VBUCK2 = 1, VBUCK3 = 2, VBUCK4 = 3.  The stock values of 3
+ * therefore cover only VBUCK1..VBUCK3, and since this board's DTB defines
+ * vbuck1, vbuck3 and vbuck4 and no vbuck2 at all, the rail the loop drops is
+ * always vbuck4.  On S3 that is VSRAM_MD, the modem's SRAM rail: 3_vbuck4 does
+ * not exist on 6.6 (it does on 4.19), so md_cd_power_on() cannot reach the one
+ * rail the MD's bootrom most depends on.  4 is the correct bound.
+ *
+ * 6 and 7 are left alone for now: raising them would additionally register
+ * 6_vbuck4 and 7_vbuck4, which is also what 4.19 does, but neither has been
+ * needed yet and this port's VGPU work was tuned against the current set.
+ */
+#define MT6315_ID_3_MAX		4	/* VBUCK1, VBUCK2, VBUCK3, VBUCK4 */
 #define MT6315_ID_6_MAX		3
 #define MT6315_ID_7_MAX		3
 #define MT6315_ID_8_MAX		3
