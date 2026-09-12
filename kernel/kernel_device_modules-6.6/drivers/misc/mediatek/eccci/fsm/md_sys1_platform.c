@@ -1817,6 +1817,20 @@ int md_cd_vcore_config(unsigned int hold_req)
  *
  * Ordering is inherited from the caller: md_cd_power_on() runs this before it
  * turns the MD's MTCMOS on, exactly as 4.19 does.
+ *
+ * Isolated 2026-09-12, because the fix went in as two changes and it was not
+ * obvious which one did the work: built again with this compiled out and the
+ * header change kept, everything else identical, and the reset failed exactly
+ * as it had before the fix (md_state 4 -> 7 -> 1 -> 2, no HS1,
+ * MD_BOOT_HS1_FAIL at +42 s, FSM wedged).  So this is the half that matters --
+ * registering 3_vbuck4 by itself is not enough -- while the header change is
+ * still needed, since without it the lookup below returns -19 and VSRAM_MD is
+ * never restored.  With the modem running and this not doing the write,
+ * 3_vbuck1 and 3_vbuck3 sit at 550000-650000 uV, so what gets written back
+ * here is not what the rails are already at; "back to N uV (now N)" below is
+ * the value *after* the write and never did show whether anything moved.
+ * Raw capture in the ksu-bringup checkout, logs/md-restart-isolation/ (that
+ * tree's logs/ is not versioned).
  */
 static const char * const md_s3_rail_name[] = {
 	"3_vbuck1",	/* VMODEM */
