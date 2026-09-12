@@ -26,6 +26,7 @@
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #include <linux/syscore_ops.h>
+#include <linux/mfd/syscon.h> /* op6893 6.6 bring-up: dpmaif-infracfg fallback */
 #include <linux/dma-mapping.h>
 #include <net/gro.h>
 #if IS_ENABLED(CONFIG_MTK_AEE_FEATURE)
@@ -3169,6 +3170,25 @@ static int dpmaif_init_register(struct device *dev)
 	struct device_node *node = dev->of_node;
 
 	dpmaif_ctl->infra_ao_base = syscon_regmap_lookup_by_phandle(node, "dpmaif-infracfg");
+	if (IS_ERR(dpmaif_ctl->infra_ao_base)) {
+		/*
+		 * op6893 6.6 bring-up: the preserved 4.19 boot DT's dpmaif node
+		 * carries no dpmaif-infracfg phandle.  The node it points at in
+		 * MTK's own mt6893.dtsi -- &infracfg_ao_clk -- is in that same
+		 * DT, at 10001000, with compatible "mediatek,infracfg_ao", so
+		 * find it by compatible instead of by phandle.  Same shape as
+		 * the scpsys_of_ids fix for the SCP.
+		 *
+		 * Not cosmetic: without it the probe returns -1, so
+		 * ccmni_ops.send_skb is never assigned, and every ccmni TX is
+		 * dropped in ccmni_start_xmit() ("[TX] error: hw_qno or send_skb
+		 * is NULL") -- the interface comes up, gets its address, and
+		 * no packet ever leaves.  The control path is unaffected, which
+		 * is why the modem still registers and reaches READY.
+		 */
+		dpmaif_ctl->infra_ao_base =
+			syscon_regmap_lookup_by_compatible("mediatek,infracfg_ao");
+	}
 	if (IS_ERR(dpmaif_ctl->infra_ao_base)) {
 		CCCI_ERROR_LOG(0, TAG,
 			"[%s] error: No dpmaif-infracfg register in dtsi.\n", __func__);
