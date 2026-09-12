@@ -846,6 +846,71 @@ static void mdee_info_prepare_v5(struct ccci_fsm_ee *mdee)
 
 }
 
+static void mdee_diag_dump_ee_pkg(struct mdee_dumper_v5 *dumper, int len)
+{
+	struct ex_overview_t *ov = (struct ex_overview_t *)dumper->ex_pl_info;
+	struct ex_brief_maininfo_v5 *b = &ov->ex_info;
+	char str[257];
+	int i, n = 0;
+
+	/* TEMP DIAG: decode the MD's own exception record (MD_EX_REC_OK
+	 * payload).  This is the MD's view of why it asserted -- the thing the
+	 * vendor image's missing emdlogger would otherwise have carried.
+	 */
+	pr_info("ccci-diag ee: len=%d verno=0x%x core_num=%u vpe_num=%u ect=0x%x ex_type=0x%x fmt=%u mctype=%u sys1=%u sys2=%u\n",
+		len, ov->overview_verno, ov->core_num, ov->mips_vpe_num,
+		ov->ect_status, b->ex_type, b->e_type_format,
+		b->maincontent_type, b->system_info1, b->system_info2);
+
+	for (i = 0; i < ov->core_num && i < MD_CORE_TOTAL_NUM; i++) {
+		if (!ov->main_reson[i].is_offender)
+			continue;
+		memcpy(str, ov->main_reson[i].core_name, MD_CORE_NAME_LEN);
+		str[MD_CORE_NAME_LEN] = '\0';
+		pr_info("ccci-diag ee: offender core[%d]=%s\n", i, str);
+	}
+
+	if (b->maincontent_type == MD_EX_CLASS_ASSET) {
+		memcpy(str, b->info.assert.filepath, 256);
+		str[256] = '\0';
+		pr_info("ccci-diag ee: ASSERT file=%s line=%u p1=0x%x p2=0x%x p3=0x%x lr=0x%x\n",
+			str, b->info.assert.line_number,
+			b->info.assert.para1, b->info.assert.para2,
+			b->info.assert.para3, b->info.assert.lr);
+	} else if (b->maincontent_type == MD_EX_CLASS_FATAL) {
+		memcpy(str, b->info.fatalerr.offender, 8);
+		str[8] = '\0';
+		pr_info("ccci-diag ee: FATAL code1=0x%x code2=0x%x code3=0x%x offender=%s status=0x%x sp=0x%x pc=0x%x lr=0x%x addr=0x%x cause=0x%x\n",
+			b->info.fatalerr.code1, b->info.fatalerr.code2,
+			b->info.fatalerr.code3, str,
+			b->info.fatalerr.error_status,
+			b->info.fatalerr.error_sp,
+			b->info.fatalerr.error_pc,
+			b->info.fatalerr.error_lr,
+			b->info.fatalerr.error_address,
+			b->info.fatalerr.error_cause);
+	}
+
+	/* raw fallback: first 32 bytes, in case the parse above is off */
+	for (i = 0; i < 32 && i < len; i += 4) {
+		memcpy(&n, dumper->ex_pl_info + i, 4);
+		pr_info("ccci-diag ee raw[%02d]=0x%08x\n", i, n);
+	}
+
+	/* The MD's own step trace up to the assert, plus the exception bookkeeping */
+	for (i = 0; i < MIPS_VPE_NUM; i++)
+		pr_info("ccci-diag ee step[%02d]=0x%08x t=%u\n", i,
+			ov->ex_step_logging[i].step,
+			ov->ex_step_logging[i].timestap);
+	pr_info("ccci-diag ee ect=0x%x afound_off=%u afound_size=%u usip_core=%u sonic_core=%u\n",
+		ov->ect_status, ov->afound_buffer_offset,
+		ov->afound_buffer_size, ov->usip_scq_offending_core,
+		ov->sonic_offending_core);
+	for (i = 0; i < MD_CORE_TOTAL_NUM; i++)
+		pr_info("ccci-diag ee core[%02d] exc_cnt=%u offset=0x%x\n", i,
+			ov->mcu_exception_count[i], ov->core_offset[i]);
+}
+
 static void mdee_dumper_v5_set_ee_pkg(struct ccci_fsm_ee *mdee,
 	char *data, int len)
 {
@@ -854,6 +919,7 @@ static void mdee_dumper_v5_set_ee_pkg(struct ccci_fsm_ee *mdee,
 	len > MD_HS1_FAIL_DUMP_SIZE ? MD_HS1_FAIL_DUMP_SIZE : len;
 
 	memcpy(dumper->ex_pl_info, data, cpy_len);
+	mdee_diag_dump_ee_pkg(dumper, cpy_len);
 }
 
 static void md_HS1_Fail_dump(char *ex_info, unsigned int len)
