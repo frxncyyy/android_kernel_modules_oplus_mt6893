@@ -44,6 +44,7 @@ python3 tools/nord2/tests/test_boot_layers.py
 python3 tools/nord2/tests/test_touch_irq.py
 python3 tools/nord2/tests/test_charging_binding.py
 python3 tools/nord2/tests/test_devapc_startup.py
+python3 tools/nord2/tests/test_tee500_memory.py
 ```
 
 The build script merges, in order, GKI, `mgk_64_k66_defconfig`,
@@ -77,6 +78,12 @@ duplicate-export error. The MT6893 driver also accepts the legacy DT binding
 and initializes without treating inherited boot status as a fatal runtime
 violation. GPU and display diagnostics pass with the driver bound; see
 [DEVAPC validation and limits](diagnostic/DEVAPC.md).
+
+The Nord 2 profile selects Trustonic 500 for the installed secure firmware's
+MCI 1.8 / NWD ABI 8.3. Version queries and anonymous/cached DMA-BUF memory
+registration work under 6.6. The 500 trusted-UI template and unrelated
+Microtrust stack are excluded; keymaster, encrypted-data unlock and trusted
+UI still require integration. See [Trustonic diagnostics](diagnostic/TEE.md).
 
 By default output is `out-nord2` beside the kernel checkout. A custom `--out`
 must be at the same depth below the common ancestor as the kernel checkout:

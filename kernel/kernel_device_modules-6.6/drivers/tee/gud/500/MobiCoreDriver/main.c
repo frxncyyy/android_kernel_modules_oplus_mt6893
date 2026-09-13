@@ -14,6 +14,7 @@
  */
 
 #include <linux/platform_device.h>
+#include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/cdev.h>
 #include <linux/debugfs.h>
@@ -569,8 +570,17 @@ static int mobicore_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 
-	if (pdev)
-		g_ctx.mcd->of_node = pdev->dev.of_node;
+	if (pdev) {
+		/* DMA-BUF exporters need the registered device and its DMA mask. */
+		g_ctx.mcd = &pdev->dev;
+#ifdef CONFIG_TRUSTONIC_TEE_LPAE
+		ret = dma_set_mask_and_coherent(g_ctx.mcd, DMA_BIT_MASK(48));
+#else
+		ret = dma_set_mask_and_coherent(g_ctx.mcd, DMA_BIT_MASK(32));
+#endif
+		if (ret)
+			return ret;
+	}
 
 #ifdef MOBICORE_COMPONENT_BUILD_TAG
 	mc_dev_info("MobiCore %s", MOBICORE_COMPONENT_BUILD_TAG);

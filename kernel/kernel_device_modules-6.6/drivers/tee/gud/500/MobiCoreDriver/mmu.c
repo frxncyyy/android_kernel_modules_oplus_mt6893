@@ -24,7 +24,8 @@
 #include <linux/device.h>
 #include <linux/version.h>
 #include <linux/dma-buf.h>
-#ifdef CONFIG_DMA_SHARED_BUFFER
+#include <linux/scatterlist.h>
+#ifdef CONFIG_ION
 #include <linux/ion.h>
 #ifdef CONFIG_MTK_ION
 /* for mtk_ion, struct ion_buffer is decleared here */
@@ -147,14 +148,20 @@ struct tee_mmu {
 	struct sg_table			*sgt;
 };
 
+static void tee_mmu_unpin_page(const struct tee_mmu *mmu, struct page *page)
+{
+	/* Secure-world writes must be visible to file-backed page writeback. */
+	unpin_user_pages_dirty_lock(&page, 1, mmu->flags & MC_IO_MAP_OUTPUT);
+}
+
 static void tee_mmu_delete(struct tee_mmu *mmu)
 {
 	unsigned long chunk, nr_pages_left = mmu->nr_pages;
 
 #ifdef CONFIG_DMA_SHARED_BUFFER
 	if (mmu->dma_buf) {
-		dma_buf_unmap_attachment(mmu->attach, mmu->sgt,
-					 DMA_BIDIRECTIONAL);
+		dma_buf_unmap_attachment_unlocked(mmu->attach, mmu->sgt,
+						  DMA_BIDIRECTIONAL);
 		dma_buf_detach(mmu->dma_buf, mmu->attach);
 		dma_buf_put(mmu->dma_buf);
 	}
@@ -178,11 +185,7 @@ static void tee_mmu_delete(struct tee_mmu *mmu)
 			int i;
 
 			for (i = 0; i < nr_pages; i++, page++)
-#if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
-				put_page(*page);
-#else
-				unpin_user_page(*page);
-#endif
+				tee_mmu_unpin_page(mmu, *page);
 
 			mmu->pages_locked -= nr_pages;
 		} else if (mmu->user) {
@@ -208,11 +211,7 @@ static void tee_mmu_delete(struct tee_mmu *mmu)
 #endif
 
 				/* pte_page() cannot return NULL */
-#if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
-				put_page(pte_page(pte));
-#else
-				unpin_user_page(pte_page(pte));
-#endif
+				tee_mmu_unpin_page(mmu, pte_page(pte));
 			}
 
 			mmu->pages_locked -= nr_pages;
@@ -292,33 +291,49 @@ end:
 	return ERR_PTR(ret);
 }
 
-static bool mmu_get_dma_buffer(struct tee_mmu *mmu, int va)
+static int mmu_get_dma_buffer(struct tee_mmu *mmu, int fd)
 {
 #ifdef CONFIG_DMA_SHARED_BUFFER
 	struct dma_buf *buf;
+	struct dma_buf_attachment *attach;
+	struct sg_table *sgt;
+	int ret;
 
-	buf = dma_buf_get(va);
+	buf = dma_buf_get(fd);
 	if (IS_ERR(buf))
-		return false;
+		return PTR_ERR(buf);
 
+	if (mmu->length > buf->size ||
+	    mmu->nr_pages > DIV_ROUND_UP(buf->size, PAGE_SIZE)) {
+		ret = -EINVAL;
+		goto err_put;
+	}
+	attach = dma_buf_attach(buf, g_ctx.mcd);
+	if (IS_ERR(attach)) {
+		ret = PTR_ERR(attach);
+		goto err_put;
+	}
+
+	sgt = dma_buf_map_attachment_unlocked(attach, DMA_BIDIRECTIONAL);
+	if (IS_ERR(sgt)) {
+		ret = PTR_ERR(sgt);
+		goto err_detach;
+	}
+
+	/* Publish ownership only after all steps succeed. */
 	mmu->dma_buf = buf;
-	mmu->attach = dma_buf_attach(mmu->dma_buf, g_ctx.mcd);
-	if (IS_ERR(mmu->attach))
-		goto err_attach;
+	mmu->attach = attach;
+	mmu->sgt = sgt;
+	return 0;
 
-	mmu->sgt = dma_buf_map_attachment(mmu->attach, DMA_BIDIRECTIONAL);
-	if (IS_ERR(mmu->sgt))
-		goto err_map;
-
-	return true;
-
-err_map:
-	dma_buf_detach(mmu->dma_buf, mmu->attach);
-
-err_attach:
-	dma_buf_put(mmu->dma_buf);
+err_detach:
+	dma_buf_detach(buf, attach);
+err_put:
+	dma_buf_put(buf);
+	return ret;
+#else
+	return -EOPNOTSUPP;
 #endif
-	return false;
 }
 
 /*
@@ -352,6 +367,8 @@ struct tee_mmu *tee_mmu_create(struct mm_struct *mm,
 	/* Check input arguments */
 	if (!(buf->flags & MMU_ION_BUF) && !buf->va)
 		return ERR_PTR(-EINVAL);
+	if ((buf->flags & MMU_ION_BUF) && buf->va > INT_MAX)
+		return ERR_PTR(-EINVAL);
 
 	if (buf->flags & MMU_ION_BUF)
 		/* buf->va is not a valid address. ION buffers are aligned */
@@ -373,9 +390,9 @@ struct tee_mmu *tee_mmu_create(struct mm_struct *mm,
 		 * va is the client's dma_buf fd, which should be converted
 		 * to a struct sg_table * directly.
 		 */
-		if (!mmu_get_dma_buffer(mmu, buf->va)) {
+		ret = mmu_get_dma_buffer(mmu, buf->va);
+		if (ret) {
 			mc_dev_err(ret, "mmu_get_dma_buffer failed");
-			ret = -EINVAL;
 			goto end;
 		}
 	}
@@ -417,26 +434,22 @@ struct tee_mmu *tee_mmu_create(struct mm_struct *mm,
 		/* Get pages */
 		if (mmu->dma_buf) {
 			/* Buffer is ION */
-			struct sg_mapping_iter miter;
-			struct page **page_ptr;
+			struct sg_page_iter piter;
 			unsigned int cnt = 0;
-			unsigned int global_cnt = 0;
 
-			page_ptr = pages;
-			sg_miter_start(&miter, mmu->sgt->sgl,
-				       mmu->sgt->nents,
-				       SG_MITER_FROM_SG);
-
-			while (sg_miter_next(&miter)) {
-				if (((global_cnt) >=
-				    (PTE_ENTRIES_MAX * chunk)) &&
-				    cnt < nr_pages) {
-					page_ptr[cnt] = miter.page;
-					cnt++;
-				}
-				global_cnt++;
+			/* Physical page tables use the original SG entries, which
+			 * DMA mapping may have merged into fewer DMA segments.
+			 */
+			for_each_sgtable_page(mmu->sgt, &piter,
+					     PTE_ENTRIES_MAX * chunk) {
+				pages[cnt++] = sg_page_iter_page(&piter);
+				if (cnt == nr_pages)
+					break;
 			}
-			sg_miter_stop(&miter);
+			if (cnt != nr_pages) {
+				ret = -EINVAL;
+				goto end;
+			}
 		} else if (mm) {
 			long gup_ret;
 
@@ -471,7 +484,7 @@ struct tee_mmu *tee_mmu_create(struct mm_struct *mm,
 			if (gup_ret != nr_pages) {
 				mc_dev_err((int)gup_ret,
 					   "failed to get user pages");
-				release_pages(pages, gup_ret);
+				unpin_user_pages(pages, gup_ret);
 				ret = -EINVAL;
 				goto end;
 			}
@@ -635,7 +648,7 @@ void tee_mmu_buffer(struct tee_mmu *mmu, struct mcp_buffer_map *map)
 	map->nr_pages = mmu->nr_pages;
 	map->flags = mmu->flags;
 	map->type = WSM_L1;
-#ifdef CONFIG_DMA_SHARED_BUFFER
+#ifdef CONFIG_ION
 	if (mmu->dma_buf) {
 		/* ION */
 		if (!(((struct ion_buffer *)mmu->dma_buf->priv)->flags
