@@ -128,6 +128,24 @@ GPIO-derived IRQs, and mapping/request errors; the original source fails it.
 This verifies basic physical input and display-driven resume, not Android
 input integration, precision, gesture wake or full system suspend.
 
+## Battery and charger work in progress
+
+A separate telemetry-only diagnostic read standard gauge registers at I2C
+bus 7, address 0x55, three times under 6.6. It reported 54% SOC, temperature
+3075 in tenths of kelvin (about 34.4 degrees C), and pack voltage 7941--7956 mV.
+The values agree with the preceding 4.19 recovery readings of 54%, 34.3 degrees
+C and 3974 mV per cell. No gauge control, unseal, calibration or flash commands
+were used. This establishes basic gauge access; no 6.6 battery power-supply
+integration or charging policy is validated.
+
+The v2 tree does contain `oplus_hal_mp2650.c`, selected by the misleadingly
+named `CONFIG_OPLUS_MP2762_CHARGER`. Compiling it exposed a missing pinctrl
+consumer header and pre-6.6 I2C probe/remove callbacks. With those corrected,
+the driver object and full vendor modpost/link pass when the option is selected
+through Make. The standard board profile still leaves it disabled. Its runtime
+initialization, required v2 DT properties, removal cleanup and charging limits
+need work before it can be enabled on this board.
+
 ## Automatic display and touch loading
 
 `nord2-display.sh` waits for USB ADB and the misc block node before loading

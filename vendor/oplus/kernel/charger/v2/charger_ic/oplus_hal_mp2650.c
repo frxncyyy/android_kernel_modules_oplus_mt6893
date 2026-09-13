@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/ctype.h>
+#include <linux/pinctrl/consumer.h>
 #ifdef CONFIG_OPLUS_CHARGER_MTK
 #include <linux/irq.h>
 #include <linux/miscdevice.h>
@@ -3476,8 +3477,12 @@ struct oplus_chg_ic_virq mp2650_virq_table[] = {
 	{ .virq_id = OPLUS_IC_VIRQ_PLUGIN },
 };
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0))
+static int mp2650_driver_probe(struct i2c_client *client)
+#else
 static int mp2650_driver_probe(struct i2c_client *client,
 			       const struct i2c_device_id *id)
+#endif
 {
 	int ret = 0;
 	struct chip_mp2650 *chg_ic;
@@ -3565,9 +3570,15 @@ reg_ic_err:
 
 static struct i2c_driver mp2650_i2c_driver;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+static void mp2650_driver_remove(struct i2c_client *client)
+#else
 static int mp2650_driver_remove(struct i2c_client *client)
+#endif
 {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
 	return 0;
+#endif
 }
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0))
