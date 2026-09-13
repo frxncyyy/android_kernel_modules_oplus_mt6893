@@ -699,7 +699,7 @@ static int __init oplus_gpio_init(void)
 	return platform_driver_register(&oplus_gpio_driver);
 }
 
-static void __init oplus_gpio_exit(void)
+static void __exit oplus_gpio_exit(void)
 {
 	OPLUS_GPIO_MSG("enter\n");
 
