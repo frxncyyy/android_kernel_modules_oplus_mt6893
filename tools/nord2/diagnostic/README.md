@@ -48,6 +48,22 @@ with I2C-dependent drivers. The early USB/UFS lists do not load I2C. This is a
 verified bring-up limit for this board, not a fix or validation of the 3.4 MHz
 path. Do not generalize it to other buses or claim high-speed I2C works.
 
+## Panel binding and GPIO ownership
+
+Loading the WL2868C alternate PMIC driver exposed a double release: its
+managed enable-GPIO request was freed manually and again when chip-ID probing
+failed. Module tracepoints showed one GPIO request and two releases, leaving
+`pinctrl_mt6885` at reference count -1. All later GPIO consumers then deferred,
+including the panel's bias GPIO.
+
+With the manual free removed, the same absent-chip probe has one request and
+one release. The pin-controller count returns to zero, and the panel then
+holds two references for bias and reset. With the I2C setting above, the
+YE05/non-PVT YE01 panel binds, `/dev/dri/card0` appears, and DSI reports connected
+with two 1080x2400 modes. This establishes resource acquisition and DRM
+registration; it does not yet establish visible scanout, brightness, refresh
+switching or suspend/resume.
+
 ## Assembly constraints
 
 Use a fresh copy of the working recovery ramdisk, keep `/system/bin/recovery`

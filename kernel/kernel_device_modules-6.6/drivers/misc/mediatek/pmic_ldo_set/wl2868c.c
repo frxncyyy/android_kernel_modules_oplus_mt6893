@@ -372,10 +372,8 @@ static int wl2868c_power_on(struct device *dev)
 	ret = devm_gpio_request_one(dev, wl2868c_data.en_gpio, GPIOF_OUT_INIT_HIGH, "wl2868c_en");
 	if (ret < 0)
 		pr_err("wl2868c_en request failed %d\n", ret);
-	else {
+	else
 		pr_err("%s: en request ok\n", __func__);
-		gpio_free(wl2868c_data.en_gpio);
-	}
 	return ret;
 }
 
