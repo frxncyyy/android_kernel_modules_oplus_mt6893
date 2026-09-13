@@ -43,6 +43,7 @@ python3 tools/nord2/tests/test_vblank_reference.py
 python3 tools/nord2/tests/test_boot_layers.py
 python3 tools/nord2/tests/test_touch_irq.py
 python3 tools/nord2/tests/test_charging_binding.py
+python3 tools/nord2/tests/test_devapc_startup.py
 ```
 
 The build script merges, in order, GKI, `mgk_64_k66_defconfig`,
@@ -72,8 +73,10 @@ The Nord 2 profile selects the MT6893 DEVAPC architecture and excludes the
 incompatible legacy providers. The multi-platform defaults exported
 `register_devapc_vio_callback` from several modules, directing CMDQ to MT6765
 while gpufreq required the multi-AO implementation. Loading both failed with a
-duplicate-export error. This selection fixes the dependency conflict; it does
-not establish that DEVAPC's hardware node is bound on the legacy device tree.
+duplicate-export error. The MT6893 driver also accepts the legacy DT binding
+and initializes without treating inherited boot status as a fatal runtime
+violation. GPU and display diagnostics pass with the driver bound; see
+[DEVAPC validation and limits](diagnostic/DEVAPC.md).
 
 By default output is `out-nord2` beside the kernel checkout. A custom `--out`
 must be at the same depth below the common ancestor as the kernel checkout:

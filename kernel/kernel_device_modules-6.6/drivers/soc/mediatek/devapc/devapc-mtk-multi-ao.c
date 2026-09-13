@@ -1113,8 +1113,11 @@ static void devapc_dump_info(bool booting)
 
 		vio_type = devapc_vio_reason(perm);
 
-		devapc_extra_handler(slave_type, vio_master, vio_idx,
-				vio_info->vio_addr, vio_type);
+		if (!booting || !mtk_devapc_ctx->soc->boot_vio_report_only)
+			devapc_extra_handler(slave_type, vio_master, vio_idx,
+					vio_info->vio_addr, vio_type);
+		else
+			pr_info(PFX "reported inherited violation during probe\n");
 		mask_module_irq(slave_type, vio_idx, false);
 
 		if (!booting)
@@ -1908,10 +1911,12 @@ int mtk_devapc_probe(struct platform_device *pdev,
 		ret = devm_request_irq(&pdev->dev,
 			mtk_devapc_ctx->devapc_irq[irq_type],
 			(irq_handler_t)devapc_violation_irq,
-			IRQF_TRIGGER_NONE, "devapc", NULL);
-		if (ret)
-			pr_info(PFX "request devapc irq[%d] failed, ret:%d\n",
+			IRQF_TRIGGER_NONE | IRQF_NO_AUTOEN, "devapc", NULL);
+		if (ret) {
+			pr_err(PFX "request devapc irq[%d] failed, ret:%d\n",
 				irq_type, ret);
+			return ret;
+		}
 	}
 
 	/* CCF (Common Clock Framework) */
@@ -1938,6 +1943,10 @@ int mtk_devapc_probe(struct platform_device *pdev,
 
 	devapc_dump_info(true);
 	start_devapc();
+
+	/* Do not run the ISR before clocks, HRE and startup status are ready. */
+	for (irq_type = 0; irq_type < irq_type_num; irq_type++)
+		enable_irq(mtk_devapc_ctx->devapc_irq[irq_type]);
 
 	return 0;
 }

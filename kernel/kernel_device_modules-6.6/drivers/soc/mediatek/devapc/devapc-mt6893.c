@@ -8,13 +8,25 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
+#include <linux/soc/mediatek/devapc_public.h>
 
 #include "devapc-mt6893.h"
 
 static const struct mtk_device_num mtk6893_devices_num[] = {
-	{SLAVE_TYPE_INFRA, VIO_SLAVE_NUM_INFRA},
-	{SLAVE_TYPE_PERI, VIO_SLAVE_NUM_PERI},
-	{SLAVE_TYPE_PERI2, VIO_SLAVE_NUM_PERI2},
+	/* All three banks share the INFRA subsystem and its single IRQ. */
+	{
+		.devapc_type = DEVAPC_TYPE_INFRA,
+		.vio_slave_num = VIO_SLAVE_NUM_INFRA,
+		.perm_get_type = DEVAPC_GET_INFRA,
+	}, {
+		.devapc_type = DEVAPC_TYPE_INFRA,
+		.vio_slave_num = VIO_SLAVE_NUM_PERI,
+		.perm_get_type = DEVAPC_GET_INFRA,
+	}, {
+		.devapc_type = DEVAPC_TYPE_INFRA,
+		.vio_slave_num = VIO_SLAVE_NUM_PERI2,
+		.perm_get_type = DEVAPC_GET_INFRA,
+	},
 };
 
 static const struct PERIAXI_ID_INFO peri_mi_id_to_master[] = {
@@ -655,6 +667,8 @@ static struct mtk_devapc_soc mt6893_data = {
 	.vio_dbgs = &mt6893_vio_dbgs,
 	.sramrom_sec_vios = &mt6893_sramrom_sec_vios,
 	.devapc_pds = mt6893_devapc_pds,
+	/* The 4.19 driver cleared inherited boot status before monitoring. */
+	.boot_vio_report_only = true,
 	.subsys_get = &index_to_subsys,
 	.master_get = &mt6893_bus_id_to_master,
 	.mm2nd_vio_handler = &mm2nd_vio_handler,
@@ -663,8 +677,11 @@ static struct mtk_devapc_soc mt6893_data = {
 
 static const struct of_device_id mt6893_devapc_dt_match[] = {
 	{ .compatible = "mediatek,mt6893-devapc" },
+	/* MT6893's 4.19 boot DT uses the shared MT6885 register layout. */
+	{ .compatible = "mediatek,mt6885-devapc" },
 	{},
 };
+MODULE_DEVICE_TABLE(of, mt6893_devapc_dt_match);
 
 static int mt6893_devapc_probe(struct platform_device *pdev)
 {

@@ -224,6 +224,8 @@ struct mtk_devapc_soc {
 	const struct mtk_sramrom_sec_vio_desc *sramrom_sec_vios;
 	const uint32_t *devapc_pds;
 	uint32_t irq_type_num;
+	/* Report and clear inherited status without invoking runtime callbacks. */
+	bool boot_vio_report_only;
 
 	/* platform specific operations */
 	const char* (*subsys_get)(int slave_type, uint32_t vio_index,

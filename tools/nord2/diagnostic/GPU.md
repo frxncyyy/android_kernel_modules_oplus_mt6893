@@ -61,14 +61,19 @@ module list does not yet include GPU support or its proprietary firmware.
 The Nord 2 configuration now resolves both CMDQ and gpufreq to
 `device-apc-common`. The inherited multi-platform configuration resolved CMDQ
 to `device-apc-mt6765`; loading that alongside the GPU's required provider
-failed with a duplicate `register_devapc_vio_callback` export. The legacy DT
-still names `mediatek,mt6885-devapc`, while the MT6893 driver accepts
-`mediatek,mt6893-devapc`: hardware DEVAPC binding remains to be reconciled.
+failed with a duplicate `register_devapc_vio_callback` export. The MT6893
+hardware driver now binds the legacy `mediatek,mt6885-devapc` node and passes
+the GPU and display checks above. See [DEVAPC notes](DEVAPC.md) for the
+startup fix, preserved runtime policy and remaining validation.
 
 Power integration also remains incomplete. The port expects an
-`efuse_pod19` cell absent from this DT; the 4.19 MT6893 voltage adjustments use
-`efuse_ptpod22_cell` with different bit fields, so renaming the lookup alone
-would be incorrect. GED reports missing optional newer-platform nodes and
+`efuse_pod19` cell absent from this DT. The 4.19 source contains a helper for
+`efuse_ptpod22_cell` with different bit fields, but marks that helper
+"do not use" and warns that PTPOD may change the voltage at low temperature.
+Renaming the lookup alone would be incorrect. The default
+41-entry frequency, voltage, SRAM voltage, divider and aging table matches
+the 4.19 reference; calibrated DVFS remains unvalidated.
+GED reports missing optional newer-platform nodes and
 core-mask callbacks. Mali has no DT OPP table and continues without devfreq;
 MediaTek's separate gpufreq driver does initialize. Existing bring-up code
 also skips battery-throttling callbacks on MT6893. These limitations must be
