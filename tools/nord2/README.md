@@ -10,7 +10,9 @@ validation. A successful build is not a ready-to-flash phone image.
 See [diagnostic notes](diagnostic/README.md) for the tested environment.
 Read-only mounts of all 15 installed logical filesystems and 120 extent
 samples also pass; see [filesystem checks](diagnostic/FILESYSTEMS.md).
-Encrypted data and Android startup remain untested.
+The installed encrypted data mounts and Android reaches boot completion;
+physical display and sustained operation still fail. See [Android results](diagnostic/ANDROID.md)
+and [CPU/battery integration](diagnostic/CPU-POWER.md).
 
 ## Source baseline
 
@@ -48,6 +50,9 @@ python3 tools/nord2/tests/test_touch_irq.py
 python3 tools/nord2/tests/test_charging_binding.py
 python3 tools/nord2/tests/test_devapc_startup.py
 python3 tools/nord2/tests/test_tee500_memory.py
+python3 tools/nord2/tests/test_prepare_dtb.py
+python3 tools/nord2/tests/test_i2c_fifo.py
+python3 tools/nord2/tests/test_nord2_power.py
 ```
 
 The build script merges, in order, GKI, `mgk_64_k66_defconfig`,
