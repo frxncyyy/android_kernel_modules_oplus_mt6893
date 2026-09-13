@@ -51,6 +51,14 @@ scanout. This interval is distinct from the earlier persistent corruption;
 seamless splash handover is not implemented. Brightness calibration, AOD/HBM
 and prolonged panel testing are not established by these short startup tests.
 
+The complete V11 guard capture contains 4,589 consecutive kernel records,
+with zero sequence gaps, recorded overruns or truncation. It contains zero
+IOMMU translation faults and CMDQ software timeouts; all eight mode switches
+(including the final shutdown transition) completed. Original recovery was
+reached automatically at 296 host seconds. BOOT, RECOVERY, the three vendor
+blocks, expdb and the complete `super` partition were verified against their
+original hashes after restoration.
+
 Regression tests compile actual driver code for synchronous binding and
 probe failures, both LK handoff configurations, and PRIME device selection
 with and without shared SMMU remapping. Existing vblank reference, boot

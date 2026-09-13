@@ -60,7 +60,7 @@ payload bytes. Kernel logs initially used a fully backed-up expdb partition;
 Android's crash collector also writes there, so subsequent attempts moved the
 log to a new private metadata file once that filesystem was mounted.
 
-V1–V3 and V5 returned automatically to the unchanged 4.19 recovery. V4 required
+V1–V3, V5 and V9–V11 returned automatically to the unchanged 4.19 recovery. V4 required
 a physical forced restart after losing ADB at autosuspend. Original BOOT, the three
 vendor blocks and expdb were restored and verified. After V3, the entire
 `super` partition also matched its original backup hash. Raw logs, firmware,
