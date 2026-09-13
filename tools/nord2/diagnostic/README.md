@@ -146,6 +146,22 @@ through Make. The standard board profile still leaves it disabled. Its runtime
 initialization, required v2 DT properties, removal cleanup and charging limits
 need work before it can be enabled on this board.
 
+The MP2650 and BQ27541 v2 probes previously initialized hardware before reading
+mandatory `oplus,ic_type` and `oplus,ic_index`. The gauge path could even reach
+parameter/AFI handling before discovering that those properties were absent.
+Both probes now reject incomplete bindings before allocation or hardware
+configuration. Extracted-prefix tests cover every combination of missing
+properties and reject the old ordering; full vendor modpost/link passes with
+MP2650 selected. These rejection paths have not been exercised by loading the
+whole charging stack on the phone.
+
+The existing board DT lacks these v2 properties. The configured v2 module also
+contains the MTK6991 charging shim matching generic `mediatek,charger`, plus
+OP10 matching the legacy SY6610 node. Its dependency closure includes MT6379
+and MT6373 drivers. Audit these bindings and translate the board's charging
+configuration before runtime integration; do not treat a linked module as a
+validated Nord 2 charging stack.
+
 ## Automatic display and touch loading
 
 `nord2-display.sh` waits for USB ADB and the misc block node before loading

@@ -9712,6 +9712,14 @@ static int bq27541_driver_probe(struct i2c_client *client,
 	struct oplus_chg_ic_cfg ic_cfg = { 0 };
 	int rc = 0;
 
+	/* Validate the v2 binding before any charger/gauge configuration. */
+	rc = of_property_read_u32(client->dev.of_node, "oplus,ic_type", &ic_type);
+	if (rc < 0)
+		return dev_err_probe(&client->dev, rc, "missing oplus,ic_type\n");
+	rc = of_property_read_u32(client->dev.of_node, "oplus,ic_index", &ic_index);
+	if (rc < 0)
+		return dev_err_probe(&client->dev, rc, "missing oplus,ic_index\n");
+
 	if (bq27541_need_level_shift(client->dev.of_node) &&
 	    !is_level_shift_available(client->dev.of_node)) {
 		dev_err(&client->dev, "level shift driver not ready, try after\n");
@@ -9827,18 +9835,7 @@ rerun:
 	oplus_bq27541_get_batt_sn(fg_ic);
 	atomic_set(&fg_ic->locked, 0);
 	bq28z610_afi_param_update(fg_ic);
-	rc = of_property_read_u32(fg_ic->dev->of_node, "oplus,ic_type",
-				  &ic_type);
-	if (rc < 0) {
-		chg_err("can't get ic type, rc=%d\n", rc);
-		goto error;
-	}
-	rc = of_property_read_u32(fg_ic->dev->of_node, "oplus,ic_index",
-				  &ic_index);
-	if (rc < 0) {
-		chg_err("can't get ic index, rc=%d\n", rc);
-		goto error;
-	}
+
 	ic_cfg.name = fg_ic->dev->of_node->name;
 	ic_cfg.index = ic_index;
 	switch (fg_ic->device_type) {
@@ -9925,8 +9922,8 @@ ic_reg_error:
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_CHG_DEBUG_KIT)
 	devm_oplus_device_bus_unregister(fg_ic->odb);
 #endif
-error:
 #if IS_ENABLED(CONFIG_OPLUS_FEATURE_CHG_DEBUG_KIT)
+error:
 regmap_init_err:
 	devm_kfree(&client->dev, fg_ic);
 #endif

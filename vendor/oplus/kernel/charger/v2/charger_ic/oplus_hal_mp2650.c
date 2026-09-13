@@ -3491,6 +3491,14 @@ static int mp2650_driver_probe(struct i2c_client *client,
 	struct oplus_chg_ic_cfg ic_cfg = { 0 };
 	int ic_index;
 
+	/* Validate the v2 binding before any charger/gauge configuration. */
+	ret = of_property_read_u32(client->dev.of_node, "oplus,ic_type", &ic_type);
+	if (ret < 0)
+		return dev_err_probe(&client->dev, ret, "missing oplus,ic_type\n");
+	ret = of_property_read_u32(client->dev.of_node, "oplus,ic_index", &ic_index);
+	if (ret < 0)
+		return dev_err_probe(&client->dev, ret, "missing oplus,ic_index\n");
+
 	chg_ic = devm_kzalloc(&client->dev, sizeof(struct chip_mp2650),
 			      GFP_KERNEL);
 	if (!chg_ic) {
@@ -3528,16 +3536,7 @@ static int mp2650_driver_probe(struct i2c_client *client,
 	init_mp2650_read_log();
 #endif
 
-	ret = of_property_read_u32(node, "oplus,ic_type", &ic_type);
-	if (ret < 0) {
-		chg_err("can't get ic type, rc=%d\n", ret);
-		goto reg_ic_err;
-	}
-	ret = of_property_read_u32(node, "oplus,ic_index", &ic_index);
-	if (ret < 0) {
-		chg_err("can't get ic index, rc=%d\n", ret);
-		goto reg_ic_err;
-	}
+
 	battlog_buck_ic_ops.dev_data = (void *)chg_ic;
 	battery_log_ops_register(&battlog_buck_ic_ops);
 	ic_cfg.name = node->name;

@@ -42,6 +42,7 @@ python3 tools/nord2/tests/test_ye05.py
 python3 tools/nord2/tests/test_vblank_reference.py
 python3 tools/nord2/tests/test_boot_layers.py
 python3 tools/nord2/tests/test_touch_irq.py
+python3 tools/nord2/tests/test_charging_binding.py
 ```
 
 The build script merges, in order, GKI, `mgk_64_k66_defconfig`,
