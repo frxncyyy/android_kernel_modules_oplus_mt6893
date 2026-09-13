@@ -61,6 +61,7 @@ obj-$(CONFIG_DRM_PANEL_OPLUS23053_TRULY_TD4160_DPHY_VDO) += ../oplus/oplus_panel
 obj-$(CONFIG_DRM_PANEL_OPLUS23687_SAMSUNG_AMS667FK02_S6E8FC3_FHDP_DSI_VDO) += ../oplus/oplus_panel/oplus23687_samsung_ams667fk02_s6e8fc3_fhdp_dsi_vdo.o
 obj-$(CONFIG_DRM_PANEL_OPLUS22610_SAMSUNG_AMS643AG01_1080P_DSI_CMD) += ../oplus/oplus_panel/oplus22610_samsung_ams643ag01_1080p_dsi_cmd.o
 obj-$(CONFIG_DRM_PANEL_OPLUS20615_SAMSUNG_AMS643YE01_PVT_1080P_DSI_CMD) += ../oplus/oplus_panel/oplus20615_samsung_ams643ye01_pvt_1080p_dsi_cmd.o
+obj-$(CONFIG_DRM_PANEL_OPLUS20615_SAMSUNG_AMS643YE05_1080P_DSI_CMD) += ../oplus/oplus_panel/oplus20615_samsung_ams643ye05_1080p_dsi_cmd.o
 obj-$(CONFIG_DRM_PANEL_OPLUS22629_TIANMA_ILI7838A_T7_PLUS_FHD_DSI_CMD) += ../oplus/oplus_panel/oplus22629_tianma_ili7838a_t7_plus_fhd_dsi_cmd.o
 obj-$(CONFIG_DRM_PANEL_OPLUS22612_TIANMA_ILI7838A_FHD_DSI_CMD) += ../oplus/oplus_panel/oplus22612_tianma_ili7838a_fhd_dsi_cmd.o
 obj-$(CONFIG_DRM_PANEL_OPLUS22612_TIANMA_ILI7838A_T7_PLUS_FHD_DSI_CMD) += ../oplus/oplus_panel/oplus22612_tianma_ili7838a_t7_plus_fhd_dsi_cmd.o

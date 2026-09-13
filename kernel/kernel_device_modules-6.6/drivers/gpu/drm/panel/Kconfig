@@ -1102,6 +1102,16 @@ config DRM_PANEL_OPLUS20615_SAMSUNG_AMS643YE01_PVT_1080P_DSI_CMD
           under dsi@1400e000), which is the variant the bootloader
           selects via the "lcm=" kernel command line argument.
 
+config DRM_PANEL_OPLUS20615_SAMSUNG_AMS643YE05_1080P_DSI_CMD
+	tristate "Samsung AMS643YE05 panel for OnePlus Nord 2"
+	depends on OF && DRM_MIPI_DSI && BACKLIGHT_CLASS_DEVICE
+	depends on DRM_MEDIATEK_V2 && CAMERA_PMIC_ENABLE
+	help
+	  Samsung AMS643YE05 command mode panel used by the OnePlus Nord 2.
+	  Supports 1080x2400 at 60 and 90 Hz with single-port DSC and the
+	  legacy YE05 and non-PVT YE01 oplus20615 DT bindings. This is
+	  distinct from the YE01 PVT 60/120 Hz panel.
+
 config DRM_PANEL_OPLUS22629_TIANMA_ILI7838A_T7_PLUS_FHD_DSI_CMD
         tristate "oplus22629 TM T7 plus FHD DPHY cmd mode panel"
         depends on OF
