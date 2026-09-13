@@ -33,6 +33,21 @@ Persistent console captures returned by recovery were stale 4.19 logs, despite
 ramoops registering under 6.6. Until that path is validated, capture live dmesg
 over ADB and check the kernel version in every saved log.
 
+## I2C high-speed limitation
+
+On this DN2103, the retained DT requests 3.4 MHz for I2C bus 5. With that
+setting the 6.6 driver returns `0x08` for MT6360 PMU ID register 0x00 instead
+of `0x53`, and the LDO provider refuses to probe. SMBus byte, combined I2C,
+separate address/read transfers and SMBus I2C-block reads all reproduced it.
+Using the existing driver parameter `force_speed=i2c5:400000` made all four
+methods return `0x53`; the LDO driver then registered revision 3 and reported
+VMC at 3.0 V. The chip-ID check was not bypassed.
+
+Copy `modules.options` alongside `modules.dep` when extending the diagnostic
+with I2C-dependent drivers. The early USB/UFS lists do not load I2C. This is a
+verified bring-up limit for this board, not a fix or validation of the 3.4 MHz
+path. Do not generalize it to other buses or claim high-speed I2C works.
+
 ## Assembly constraints
 
 Use a fresh copy of the working recovery ramdisk, keep `/system/bin/recovery`

@@ -1,0 +1,1 @@
+options i2c_mt65xx force_speed=i2c5:400000
