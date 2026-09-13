@@ -369,6 +369,8 @@ struct mtk_i2c {
 	bool use_push_pull;		/* IO config push-pull mode */
 	bool wake_scp_check_en;
 	bool fifo_use_polling;
+	bool fifo_only;			/* Controller has no APDMA hardware. */
+	struct i2c_adapter_quirks fifo_quirks;
 
 	u16 irq_stat;			/* interrupt status */
 	unsigned int clk_src_div;
@@ -992,7 +994,9 @@ static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
 	intr_stat_reg = mtk_i2c_readw(i2c, OFFSET_INTR_STAT);
 	mtk_i2c_writew(i2c, intr_stat_reg, OFFSET_INTR_STAT);
 
-	if (i2c->dev_comp->apdma_sync) {
+	if (i2c->fifo_only) {
+		mtk_i2c_writew(i2c, I2C_SOFT_RST, OFFSET_SOFTRESET);
+	} else if (i2c->dev_comp->apdma_sync) {
 		writel(I2C_DMA_WARM_RST, i2c->pdmabase + OFFSET_RST);
 		udelay(2);
 		writel(I2C_DMA_CLR_FLAG, i2c->pdmabase + OFFSET_RST);
@@ -1080,8 +1084,10 @@ static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
 		mtk_i2c_writew(i2c, I2C_CONTROL_WRAPPER, OFFSET_PATH_DIR);
 
 	control_reg = I2C_CONTROL_ACKERR_DET_EN |
-		      I2C_CONTROL_CLK_EXT_EN | I2C_CONTROL_DMA_EN;
-	if (i2c->dev_comp->dma_sync)
+		      I2C_CONTROL_CLK_EXT_EN;
+	if (!i2c->fifo_only)
+		control_reg |= I2C_CONTROL_DMA_EN;
+	if (!i2c->fifo_only && i2c->dev_comp->dma_sync)
 		control_reg |= I2C_CONTROL_DMAACK_EN | I2C_CONTROL_ASYNC_MODE;
 
 	if (i2c->ctrl_irq_sel == true)
@@ -1662,6 +1668,9 @@ static void mtk_i2c_dump_reg(struct mtk_i2c *i2c)
 		dev_info(i2c->dev, "I2C register: TRANSFER_LEN_AUX=0x%x\n",
 			mtk_i2c_readw(i2c, OFFSET_TRANSFER_LEN_AUX));
 
+	if (i2c->fifo_only)
+		return;
+
 	dev_info(i2c->dev, "DMA register:\n"
 		"INT_FLAG=0x%x,INT_EN=0x%x,EN=0x%x,\n"
 		"CON=0x%x,TX_MEM_ADDR=0x%x,RX_MEM_ADDR=0x%x,\n"
@@ -1989,7 +1998,7 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 			kfree(msgs->buf);
 		return -EPERM;
 	}
-	if (i2c->dev_comp->apdma_sync &&
+	if (!i2c->fifo_only && i2c->dev_comp->apdma_sync &&
 	    i2c->op == I2C_MASTER_RD && num > 1) {
 		writel(I2C_DMA_HANDSHAKE_RST | I2C_DMA_WARM_RST,
 		       i2c->pdmabase + OFFSET_RST);
@@ -2010,6 +2019,12 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 
 	if ((msgs->len > i2c->dev_comp->fifo_size) || ((i2c->op == I2C_MASTER_WRRD) &&
 		((msgs + 1)->len > i2c->dev_comp->fifo_size))) {
+		if (i2c->fifo_only) {
+			/* Also covers writes coalesced after the core quirk check. */
+			if (i2c->op == I2C_MASTER_CONTINUOUS_WR)
+				kfree(msgs->buf);
+			return -EOPNOTSUPP;
+		}
 		if (i2c->ch_offset_i2c == i2c->i2c_offset_scp) {
 			dev_dbg(i2c->dev, "Not_support_dma! msgs->len:%d,fifo_size:%d\n",
 					msgs->len, i2c->dev_comp->fifo_size);
@@ -2951,10 +2966,14 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	if (IS_ERR(i2c->base))
 		return PTR_ERR(i2c->base);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	i2c->pdmabase = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(i2c->pdmabase))
-		return PTR_ERR(i2c->pdmabase);
+	i2c->fifo_only = of_property_read_bool(pdev->dev.of_node,
+					    "mediatek,fifo_only");
+	if (!i2c->fifo_only) {
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+		i2c->pdmabase = devm_ioremap_resource(&pdev->dev, res);
+		if (IS_ERR(i2c->pdmabase))
+			return PTR_ERR(i2c->pdmabase);
+	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -2971,6 +2990,18 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	i2c->adap.owner = THIS_MODULE;
 	i2c->adap.algo = &mtk_i2c_algorithm;
 	i2c->adap.quirks = i2c->dev_comp->quirks;
+	if (i2c->fifo_only) {
+		if (!i2c->dev_comp->fifo_size)
+			return -EINVAL;
+		if (i2c->adap.quirks)
+			i2c->fifo_quirks = *i2c->adap.quirks;
+		i2c->fifo_quirks.flags |= I2C_AQ_NO_ZERO_LEN;
+		i2c->fifo_quirks.max_read_len = i2c->dev_comp->fifo_size;
+		i2c->fifo_quirks.max_write_len = i2c->dev_comp->fifo_size;
+		i2c->fifo_quirks.max_comb_1st_msg_len = i2c->dev_comp->fifo_size;
+		i2c->fifo_quirks.max_comb_2nd_msg_len = i2c->dev_comp->fifo_size;
+		i2c->adap.quirks = &i2c->fifo_quirks;
+	}
 	i2c->adap.timeout = 2 * HZ;
 	i2c->adap.retries = 1;
 #ifdef OPLUS_FEATURE_CHG_BASIC
@@ -3002,6 +3033,8 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	if (i2c->have_pmic && !i2c->dev_comp->pmic_i2c)
 		return -EINVAL;
 
+	if (i2c->fifo_only && i2c->ch_offset_dma)
+		return -EINVAL;
 	if (i2c->ch_offset_dma)
 		i2c->pdmabase += i2c->ch_offset_dma;
 
@@ -3011,10 +3044,13 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 		return PTR_ERR(i2c->clk_main);
 	}
 
-	i2c->clk_dma = devm_clk_get(&pdev->dev, "dma");
-	if (IS_ERR(i2c->clk_dma)) {
-		dev_err(&pdev->dev, "cannot get dma clock\n");
-		return PTR_ERR(i2c->clk_dma);
+	/* Clock helpers accept NULL for the absent FIFO-only DMA clock. */
+	if (!i2c->fifo_only) {
+		i2c->clk_dma = devm_clk_get(&pdev->dev, "dma");
+		if (IS_ERR(i2c->clk_dma)) {
+			dev_err(&pdev->dev, "cannot get dma clock\n");
+			return PTR_ERR(i2c->clk_dma);
+		}
 	}
 
 	i2c->clk_arb = devm_clk_get(&pdev->dev, "arb");
@@ -3053,16 +3089,7 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 		 i2c->timing_reg, i2c->ac_timing.htiming, i2c->ac_timing.hs,
 		 i2c->ltiming_reg, i2c->ac_timing.ltiming, i2c->ac_timing.ext);
 
-	if (i2c->dev_comp->max_dma_support > 32) {
-		ret = dma_set_mask(&pdev->dev,
-				DMA_BIT_MASK(i2c->dev_comp->max_dma_support));
-		if (ret) {
-			dev_err(&pdev->dev, "dma_set_mask return error.\n");
-			return ret;
-		}
-	}
-
-	if (i2c->dev_comp->max_dma_support > 32) {
+	if (!i2c->fifo_only && i2c->dev_comp->max_dma_support > 32) {
 		ret = dma_set_mask(&pdev->dev,
 				DMA_BIT_MASK(i2c->dev_comp->max_dma_support));
 		if (ret) {
