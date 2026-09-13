@@ -60,6 +60,21 @@ than building a second notifier with the same name and exports. The manifest
 includes hashes of all four resulting touch modules. Firmware is not packaged
 or updated by this build.
 
+The final phase builds the MT6893 Mali r49p1 Job Manager driver and its memory
+helper modules from the separate `gpu/mt6893` Kbuild root, using the same kernel
+configuration and the device-module symbol table. Their hashes are included in
+the manifest. Building the DMA-BUF test exporter does not load it on the phone.
+GPU bandwidth monitoring remains disabled on MT6893 in both Mali and GED until
+the SSPM QoS path is available; enabling only Mali's hooks left
+`qos_get_frame_nr` unresolved at modpost.
+
+The Nord 2 profile selects the MT6893 DEVAPC architecture and excludes the
+incompatible legacy providers. The multi-platform defaults exported
+`register_devapc_vio_callback` from several modules, directing CMDQ to MT6765
+while gpufreq required the multi-AO implementation. Loading both failed with a
+duplicate-export error. This selection fixes the dependency conflict; it does
+not establish that DEVAPC's hardware node is bound on the legacy device tree.
+
 By default output is `out-nord2` beside the kernel checkout. A custom `--out`
 must be at the same depth below the common ancestor as the kernel checkout:
 several vendor Makefiles interpret the module path relative to both source

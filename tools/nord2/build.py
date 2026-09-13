@@ -12,6 +12,7 @@ import subprocess
 REPO = Path(__file__).resolve().parents[2]
 MODULES = REPO / 'kernel/kernel_device_modules-6.6'
 TOUCH = REPO / 'vendor/oplus/kernel/touchpanel/oplus_touchscreen_v2'
+GPU = REPO / 'vendor/mediatek/kernel_modules/gpu/mt6893'
 
 
 def config_values(path):
@@ -109,6 +110,25 @@ def main():
         'oplus_bsp_tp_comon.ko', 'touch_custom/oplus_bsp_tp_custom.ko',
         'Focal/oplus_bsp_tp_focal_common.ko', 'Focal/ft3518/oplus_bsp_tp_ft3518.ko')]
 
+    # MT6893 uses the Mali r49p1 Job Manager driver in a separate Kbuild root.
+    # Resolve GED and gpufreq imports against the device modules built above.
+    gpu_relative = '../' * kernel_depth + str(GPU.relative_to(common))
+    for base in (kernel, out):
+        if (base / gpu_relative).resolve() != GPU:
+            parser.error('The GPU path must resolve identically from source and output')
+    run('gpu', make + [f'M={gpu_relative}', f'-j{args.jobs}', 'modules',
+        f'KCFLAGS={touch_flags}', f'KBUILD_EXTRA_SYMBOLS={MODULES}/Module.symvers',
+        'BUILD_RULE=OOT', 'MTK_PLATFORM_VERSION=mt6893',
+        'CONFIG_MALI_MEMORY_GROUP_MANAGER=y',
+        'CONFIG_MALI_PROTECTED_MEMORY_ALLOCATOR=y',
+        'CONFIG_DMA_SHARED_BUFFER_TEST_EXPORTER=y'])
+    mali = GPU / 'mali_avalon/mali-r49p1/drivers'
+    gpu_modules = [mali / path for path in (
+        'gpu/arm/midgard/mali_kbase_mt6893_r49.ko',
+        'base/arm/memory_group_manager/mali_mgm_mt6893_r49.ko',
+        'base/arm/protected_memory_allocator/mali_prot_alloc_mt6893_r49.ko',
+        'base/arm/dma_buf_test_exporter/mali_dmabuf_test_mt6893_r49.ko')]
+
     manifest = {
         'kernel_revision': subprocess.check_output(['git', '-C', str(kernel), 'rev-parse', 'HEAD'], text=True).strip(),
         'modules_revision': subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip(),
@@ -119,10 +139,12 @@ def main():
         'image_sha256': hashlib.sha256((out / 'arch/arm64/boot/Image').read_bytes()).hexdigest(),
         'touch_modules': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
                           for path in touch_modules},
+        'gpu_modules': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
+                        for path in gpu_modules},
         'hardware_tested': False,
     }
     (out / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    print('Kernel, device modules and FT3518 touch modules built. No boot image was packaged or flashed.')
+    print('Kernel, device modules, FT3518 and Mali modules built. No boot image was packaged or flashed.')
 
 
 if __name__ == '__main__':
