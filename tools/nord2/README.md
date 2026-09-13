@@ -8,6 +8,9 @@ reports physical swipes before and after display off/on cycles.
 Normal Android, charging, cameras and remaining hardware need integration and
 validation. A successful build is not a ready-to-flash phone image.
 See [diagnostic notes](diagnostic/README.md) for the tested environment.
+Read-only mounts of all 15 installed logical filesystems and 120 extent
+samples also pass; see [filesystem checks](diagnostic/FILESYSTEMS.md).
+Encrypted data and Android startup remain untested.
 
 ## Source baseline
 
