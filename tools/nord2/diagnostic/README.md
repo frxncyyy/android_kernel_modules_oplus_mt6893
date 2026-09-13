@@ -92,8 +92,7 @@ An earlier TE timeout followed an unintended diagnostic read of DCS register
 reproduce it. This is not sufficient evidence of a separate TE defect, nor
 does it establish general display stability or system suspend/resume.
 
-Repeated blank/unblank cycles exposed a touch resume IRQ-ownership warning;
-that remains under investigation.
+Repeated blank/unblank cycles exposed a touch IRQ bookkeeping defect, described below.
 
 ## FT3518 probe
 
@@ -108,8 +107,25 @@ supported-project list contains 20827 and selects the Samsung panel variant.
 The driver probes I2C address 0x38 on bus 0, reads chip ID 0x5452 and existing
 firmware version 0x48, and registers `touchpanel` at event0. Display blanking
 notifications reach its suspend/resume callbacks. No firmware blob was supplied
-or flashed. Physical touch coordinates, IRQ delivery and gesture wake remain
-unverified; a registered input device alone is not proof of working touch.
+or flashed.
+
+The legacy DT supplies an interrupt GPIO but leaves `i2c_client.irq` unset.
+The common driver requested GPIO-derived IRQ 36, then probe completion copied
+the client's zero back into `ts->irq`. First resume tried to free IRQ 0 and
+re-requested the still-owned IRQ 36, producing a `devm_free_irq` warning and
+`-EBUSY`. Registration now synchronizes the resolved IRQ into the bus client
+and rejects invalid mappings. This also supplies the correct IRQ to the
+FT3518 ESD callback, which uses the client directly.
+
+With that fix, physical swipes produced 1,495 input frames before blanking
+and over 1,000 fresh frames after repeated display off/on cycles. Observed
+coordinates were within the advertised X=0..4319 and Y=0..9599 ranges;
+multiple touch slots were reported. The first resume and later cycles no
+longer warned or failed IRQ registration. `test_touch_irq.py` checks the
+actual registration and probe-completion code for I2C/SPI, supplied and
+GPIO-derived IRQs, and mapping/request errors; the original source fails it.
+This verifies basic physical input and display-driven resume, not Android
+input integration, precision, gesture wake or full system suspend.
 
 ## Assembly constraints
 

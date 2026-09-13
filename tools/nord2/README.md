@@ -4,7 +4,7 @@ This is an experimental Linux 6.6.30 board port. A minimal diagnostic ramdisk
 has booted on a Nord 2 DN2103 with all eight CPUs online, root USB ADB, and
 UFS partition reads matching known hashes. The owner has confirmed a 60 Hz
 colour-bar display test; 90 Hz modesets and page flips also complete. FT3518
-probes and reads its existing firmware, but physical input is not yet verified.
+reports physical swipes before and after display off/on cycles.
 Normal Android, charging, cameras and remaining hardware need integration and
 validation. A successful build is not a ready-to-flash phone image.
 See [diagnostic notes](diagnostic/README.md) for the tested environment.
@@ -41,6 +41,7 @@ python3 tools/nord2/build.py --kernel ../kernel-6.6
 python3 tools/nord2/tests/test_ye05.py
 python3 tools/nord2/tests/test_vblank_reference.py
 python3 tools/nord2/tests/test_boot_layers.py
+python3 tools/nord2/tests/test_touch_irq.py
 ```
 
 The build script merges, in order, GKI, `mgk_64_k66_defconfig`,

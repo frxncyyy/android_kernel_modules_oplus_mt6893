@@ -3481,6 +3481,17 @@ int tp_register_irq_func(struct touchpanel_data *ts)
 			ts->irq = gpio_to_irq(ts->hw_res.irq_gpio);
 			TP_BOOT_INFO(ts->tp_index, "%s ts->irq is %d\n", __func__, ts->irq);
 		}
+		if (ts->irq <= 0)
+			return ts->irq ? ts->irq : -EINVAL;
+
+		/* Legacy DTs may describe only the interrupt GPIO. Keep the bus
+		 * client's IRQ in sync: probe completion copies it back to ts->irq,
+		 * and chip-specific ESD recovery also uses the client directly.
+		 */
+		if (ts->is_noflash_ic || ts->bus_type == TP_BUS_SPI)
+			ts->s_client->irq = ts->irq;
+		else
+			ts->client->irq = ts->irq;
 
 		snprintf(ts->irq_name, sizeof(ts->irq_name), "touch-%02d", ts->tp_index);
 		TP_INFO(ts->tp_index, "%s register flag is %d\n", __func__, ts->irq_flags);
