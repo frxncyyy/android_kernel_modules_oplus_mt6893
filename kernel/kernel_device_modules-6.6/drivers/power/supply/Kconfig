@@ -333,3 +333,12 @@ config MT6360_PMIC
 	  Select Y to enable support for MT6360 PMU.
 
 source "$(KCONFIG_EXT_PREFIX)drivers/power/supply/ufcs/Kconfig"
+
+config NORD2_POWER
+	tristate "OnePlus Nord 2 ZY0603 and MP2650 telemetry"
+	depends on I2C && OF && POWER_SUPPLY
+	help
+	  Report the BLP861 two-cell battery gauge and MP2650 charger status
+	  through the standard power-supply ABI. Requires oneplus,denniz in
+	  the root DT compatible list. Does not configure charging, USB-PD
+	  or VOOC, or modify gauge firmware or authentication state.

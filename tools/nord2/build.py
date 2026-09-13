@@ -141,6 +141,10 @@ def main():
                           for path in touch_modules},
         'gpu_modules': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
                         for path in gpu_modules},
+        'power_module': {
+            'path': str((MODULES / 'drivers/power/supply/nord2-power.ko').relative_to(REPO)),
+            'sha256': hashlib.sha256((MODULES / 'drivers/power/supply/nord2-power.ko').read_bytes()).hexdigest(),
+        },
         'hardware_tested': False,
     }
     (out / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

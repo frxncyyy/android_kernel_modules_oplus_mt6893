@@ -1,0 +1,5 @@
+spmi_mtk_pmif
+mtk_spmi_pmic
+mt6315_regulator
+nvmem_mtk_devinfo
+CPU_DVFS
