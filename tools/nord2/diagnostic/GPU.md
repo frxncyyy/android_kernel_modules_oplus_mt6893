@@ -115,3 +115,6 @@ also repeatedly aborted app starts at the missing Oplus `memory.app_uid`
 interface and reported an absent battery. The watchdog returned to recovery;
 original BOOT, the three temporary vendor blocks and expdb were restored and
 verified. No data format was performed.
+
+See [normal Android diagnostics](ANDROID.md) for the follow-up brightness
+test, framework restart cause, recovery checks and remaining startup work.
