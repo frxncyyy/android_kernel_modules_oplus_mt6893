@@ -75,7 +75,9 @@ ifeq ($(BUILD_RULE),OOT)
         CONFIG_MALI_MTK_DEVFREQ_THERMAL := y
         CONFIG_MALI_MTK_PROC_FS := y
         CONFIG_MTK_GPU_SWPM_SUPPORT :=y
-        CONFIG_MALI_MTK_GPU_BM_2 := y
+        # GED disables GPU BM on MT6893 until the SSPM QoS path is available.
+        # Keep Mali in sync: its JM hooks require GED's qos_get_frame_nr.
+        CONFIG_MALI_MTK_GPU_BM_2 := n
         CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD := y
     endif
 endif
