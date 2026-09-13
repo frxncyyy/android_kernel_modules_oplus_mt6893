@@ -1,0 +1,88 @@
+on early-init
+    copy /system/etc/ld.config.txt /linkerconfig/ld.config.txt
+    chmod 444 /linkerconfig/ld.config.txt
+    start ueventd
+
+on init
+    export ANDROID_ROOT /system
+    export ANDROID_DATA /data
+    symlink /proc/self/fd/0 /dev/stdin
+    symlink /proc/self/fd/1 /dev/stdout
+    symlink /proc/self/fd/2 /dev/stderr
+    symlink /system/bin /bin
+    symlink /system/etc /etc
+    rmdir /sbin
+    symlink /system/bin /sbin
+    mkdir /tmp 0770 root shell
+    mount tmpfs tmpfs /tmp mode=0770
+    chown root shell /tmp
+    mount pstore pstore /sys/fs/pstore
+    mount debugfs debugfs /sys/kernel/debug
+    setprop sys.usb.configfs 1
+    setprop sys.usb.ffs.aio_compat 1
+    setprop service.adb.root 1
+    write /proc/sys/kernel/panic_on_oops 1
+
+on late-init
+    trigger fs
+    trigger boot
+
+on fs
+    mount configfs none /config
+    mkdir /config/usb_gadget/g1 0770 shell shell
+    write /config/usb_gadget/g1/idVendor 0x18d1
+    write /config/usb_gadget/g1/idProduct 0xd001
+    mkdir /config/usb_gadget/g1/strings/0x409 0770
+    write /config/usb_gadget/g1/strings/0x409/serialnumber ${ro.serialno}
+    write /config/usb_gadget/g1/strings/0x409/manufacturer OnePlus
+    write /config/usb_gadget/g1/strings/0x409/product Nord2-kernel-diagnostic
+    mkdir /config/usb_gadget/g1/functions/ffs.adb
+    mkdir /config/usb_gadget/g1/configs/b.1 0770 shell shell
+    write /config/usb_gadget/g1/configs/b.1/MaxPower 500
+    mkdir /config/usb_gadget/g1/configs/b.1/strings/0x409 0770
+    write /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration adb
+    mkdir /dev/usb-ffs 0775 shell shell
+    mkdir /dev/usb-ffs/adb 0770 shell shell
+    mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000
+
+on boot
+    start nord2-timeout
+    start nord2-usb
+    start nord2-storage
+
+service ueventd /system/bin/ueventd
+    critical
+    seclabel u:r:ueventd:s0
+    user root
+
+service nord2-timeout /system/bin/sh /system/bin/nord2-timeout.sh
+    disabled
+    oneshot
+    user root
+    group root shell log readproc
+    seclabel u:r:su:s0
+
+service nord2-usb /system/bin/sh /system/bin/nord2-usb.sh
+    disabled
+    oneshot
+    user root
+    group root shell log readproc
+    seclabel u:r:su:s0
+
+service adbd /system/bin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery
+    disabled
+    socket adbd stream 660 system system
+    seclabel u:r:adbd:s0
+    user root
+
+on property:sys.usb.ffs.ready=1
+    symlink /config/usb_gadget/g1/functions/ffs.adb /config/usb_gadget/g1/configs/b.1/f1
+    write /config/usb_gadget/g1/UDC ${sys.usb.controller}
+    setprop sys.usb.state adb
+
+service nord2-storage /system/bin/sh /system/bin/nord2-storage.sh
+    disabled
+    oneshot
+    user root
+    group root shell log readproc
+    seclabel u:r:su:s0

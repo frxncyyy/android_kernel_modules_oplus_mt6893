@@ -1,9 +1,11 @@
 # OnePlus Nord 2 (DN2103) bring-up
 
-This is an experimental Linux 6.6.30 board port. The kernel and device modules
-compile, but this branch has not yet been boot-tested on a Nord 2. A successful
-build is not a ready-to-flash boot image. Charging, cameras and the remaining
-hardware still require integration and device validation.
+This is an experimental Linux 6.6.30 board port. A minimal diagnostic ramdisk
+has booted on a Nord 2 DN2103 with all eight CPUs online, root USB ADB, and
+UFS partition reads matching known hashes. Normal Android boot, display,
+charging, cameras and the remaining hardware still require integration and
+device validation. A successful build is not a ready-to-flash phone image.
+See [diagnostic notes](diagnostic/README.md) for the tested environment.
 
 ## Source baseline
 

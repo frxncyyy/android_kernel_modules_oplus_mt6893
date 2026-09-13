@@ -1,0 +1,9 @@
+mtk_wdt
+syscon_reboot_mode
+clk_mt6893
+pinctrl_mt6885
+mtk_pmic_wrap
+mt6397
+mt6359p_regulator
+phy_mtk_tphy
+mtu3
