@@ -9592,8 +9592,10 @@ void mtk_crtc_enable_iommu_runtime(struct mtk_drm_crtc *mtk_crtc,
 	struct mtk_ddp_comp *comp;
 	struct mtk_drm_private *priv = mtk_crtc->base.dev->dev_private;
 
+	#ifndef CONFIG_MTK_DISP_NO_LK
 	if (drm_crtc_index(&mtk_crtc->base) == 0)
 		mtk_crtc_fill_fb_para(mtk_crtc);
+#endif
 
 #ifndef DRM_CMDQ_DISABLE
 	if (mtk_drm_helper_get_opt(priv->helper_opt, MTK_DRM_OPT_USE_M4U)) {
@@ -13182,13 +13184,14 @@ void mtk_crtc_config_default_path(struct mtk_drm_crtc *mtk_crtc)
 	}
 }
 
-void mtk_crtc_all_layer_off(struct mtk_drm_crtc *mtk_crtc, struct cmdq_pkt *cmdq_handle)
+static void __mtk_crtc_all_layer_off(struct mtk_drm_crtc *mtk_crtc,
+		struct cmdq_pkt *cmdq_handle, bool keep_boot_layer)
 {
 	int i, j, keep_first_layer;
 	struct mtk_ddp_comp *comp;
 	struct mtk_drm_private *priv = mtk_crtc->base.dev->dev_private;
 
-	keep_first_layer = true;
+	keep_first_layer = keep_boot_layer;
 	for_each_comp_in_cur_crtc_path(comp, mtk_crtc, i, j) {
 		mtk_ddp_comp_io_cmd(comp, cmdq_handle,
 			OVL_ALL_LAYER_OFF, &keep_first_layer);
@@ -13202,13 +13205,18 @@ void mtk_crtc_all_layer_off(struct mtk_drm_crtc *mtk_crtc, struct cmdq_pkt *cmdq
 	}
 
 	if (mtk_crtc->is_dual_pipe) {
-		keep_first_layer = true;
+		keep_first_layer = keep_boot_layer;
 		for_each_comp_in_dual_pipe(comp, mtk_crtc, i, j) {
 			mtk_ddp_comp_io_cmd(comp, cmdq_handle,
 				OVL_ALL_LAYER_OFF, &keep_first_layer);
 			keep_first_layer = false;
 		}
 	}
+}
+
+void mtk_crtc_all_layer_off(struct mtk_drm_crtc *mtk_crtc, struct cmdq_pkt *cmdq_handle)
+{
+	__mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle, true);
 }
 
 void mtk_crtc_stop_ddp(struct mtk_drm_crtc *mtk_crtc,
@@ -14825,8 +14833,15 @@ void mtk_crtc_first_enable_ddp_config(struct mtk_drm_crtc *mtk_crtc)
 			     mtk_crtc->gce_obj.event[EVENT_VDO_EOF]);
 	mtk_crtc_wait_frame_done(mtk_crtc, cmdq_handle, DDP_FIRST_PATH, 0);
 
+#ifdef CONFIG_MTK_DISP_NO_LK
+	/* No LK framebuffer is mapped in this mode. Disable its layers on both
+	 * pipes before enabling IOMMU translation and starting Linux scanout.
+	 */
+	__mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle, false);
+#else
 	/*1. Show LK logo only */
 	mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle);
+#endif
 
 	/*2. Load Round Corner */
 	mtk_crtc_load_round_corner_pattern(&mtk_crtc->base, cmdq_handle);

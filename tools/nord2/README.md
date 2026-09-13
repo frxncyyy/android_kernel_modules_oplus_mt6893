@@ -40,6 +40,7 @@ Clone the kernel next to this repository as `kernel-6.6`, then run:
 python3 tools/nord2/build.py --kernel ../kernel-6.6
 python3 tools/nord2/tests/test_ye05.py
 python3 tools/nord2/tests/test_vblank_reference.py
+python3 tools/nord2/tests/test_boot_layers.py
 ```
 
 The build script merges, in order, GKI, `mgk_64_k66_defconfig`,

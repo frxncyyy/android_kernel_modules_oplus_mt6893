@@ -78,11 +78,22 @@ rejects the original code. Rebuilt hardware runs no longer emitted that false
 message and returned to the same disabled-CRTC reference count after repeated
 modesets and flips.
 
-Remaining display findings include DMA translation faults during the first
-cold modeset, consistent with stale bootloader scanout addresses, and a TE
-check timeout during a long static frame. Later modesets used the new mapped
-buffers without fresh translation faults. These findings still need fixes;
-visible bars alone do not establish full display stability or suspend/resume.
+The no-LK configuration skipped framebuffer import but still retained the
+bootloader's first overlay layer on each pipe. First scanout then faulted at
+the unmapped physical framebuffer address. First-enable now clears every
+bootloader layer in this configuration before IOMMU translation and scanout;
+the existing LK-adoption and idle-entry policies remain unchanged. A cold
+60 Hz modeset, 120-second static frame, and subsequent 90/60 Hz modesets and
+page flips completed without those faults. `test_boot_layers.py` exercises
+both pipes, LK/no-LK builds and the preserved idle policy.
+
+An earlier TE timeout followed an unintended diagnostic read of DCS register
+0x10. Two controlled 120-second runs using only status register 0x0A did not
+reproduce it. This is not sufficient evidence of a separate TE defect, nor
+does it establish general display stability or system suspend/resume.
+
+Repeated blank/unblank cycles exposed a touch resume IRQ-ownership warning;
+that remains under investigation.
 
 ## FT3518 probe
 
