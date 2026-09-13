@@ -1,0 +1,14 @@
+clk_mt6893_pg
+clk_mt6893_mm
+clk_mt6893_mdp
+clk_mt6893_impc
+clk_mt6893_impe
+clk_mt6893_impn
+clk_mt6893_imps
+i2c_mt65xx
+mt6360_ldo
+mtk_iommu
+cmdq_platform_mt6893
+mmqos_mt6893
+oplus20615_samsung_ams643ye05_1080p_dsi_cmd
+oplus_bsp_tp_ft3518

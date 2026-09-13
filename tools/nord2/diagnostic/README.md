@@ -1,7 +1,7 @@
 # Minimal Nord 2 diagnostic ramdisk
 
-These are the init assets used for the first confirmed DN2103 Linux 6.6.30
-boots on 2026-09-13. They are not an Android ROM, charging environment, or
+These init assets extend the confirmed DN2103 Linux 6.6.30 USB/UFS boots
+on 2026-09-13 with automatic display and FT3518 initialization. They are not an Android ROM, charging environment, or
 complete image packager. They run with the binaries, linker configuration,
 SELinux policy and recovery marker from the owner's working Lineage 22
 recovery (2024-12-16). Recovery binaries, device trees, firmware, raw images,
@@ -27,8 +27,9 @@ Kernel revision `bb18e2305d13cac2205279913f8c3d48a55b68e1`, device modules
   nodes during that test. Preserve its 16 MiB uevent socket buffer setting.
 - No block filesystems were mounted during these diagnostic boots.
 
-Display and charging drivers are not loaded by these assets. The first image
-needed the ueventd correction above; it was not an unattended passing image.
+The current assets also load display and touch, as described below. Charging
+drivers are not loaded. The first image needed the ueventd correction above;
+it was not an unattended passing image.
 Persistent console captures returned by recovery were stale 4.19 logs, despite
 ramoops registering under 6.6. Until that path is validated, capture live dmesg
 over ADB and check the kernel version in every saved log.
@@ -127,6 +128,21 @@ GPIO-derived IRQs, and mapping/request errors; the original source fails it.
 This verifies basic physical input and display-driven resume, not Android
 input integration, precision, gesture wake or full system suspend.
 
+## Automatic display and touch loading
+
+`nord2-display.sh` waits for USB ADB and the misc block node before loading
+`modules.display` with its dependency closure and `modules.options`. It then
+retries the unbound MT6893 DSI device, accounting for the upstream host's
+child-device removal on deferred probe. This is an explicit loading-order
+workaround; the DSI probe lifecycle still needs a driver-level fix.
+
+The combined image initialized DRM and FT3518 without any host module pushes,
+manual insmod or host-requested reprobes. `sys.nord2.display=ready` indicates
+that `/dev/dri/card0` exists, and `sys.nord2.touch=bound` indicates the I2C
+client has a driver. These properties do not replace scanout/input tests.
+Host-run modeset tests and physical swipes provided the separate evidence
+above. The init service itself does not draw a test pattern.
+
 ## Assembly constraints
 
 Use a fresh copy of the working recovery ramdisk, keep `/system/bin/recovery`
@@ -138,8 +154,10 @@ The inherited recovery executable is not started.
 Put the shell scripts in `/system/bin`, the module lists in `/nord2`, and the
 recursive module dependencies plus depmod's text indexes in
 `/lib/modules/<kernel.release>`. Keep `modules.load` empty: the two diagnostic
-services load modules after the return timer starts. The selected USB/storage
-closure contains 20 modules; check vermagic, modpost and GKI symbol access.
+services load modules after the return timer starts. The early USB/storage closure contains 20 modules; the tested combined
+USB/storage/display/touch closure contains 82. Copy `modules.options` into the
+module directory and include `modules.display` in `/nord2`. Check vermagic,
+modpost and GKI symbol access for the complete closure.
 Use the installed recovery's root-ADB policy (`ro.adb.secure=0`,
 `ro.debuggable=1`) only in this isolated USB diagnostic ramdisk.
 
@@ -149,7 +167,9 @@ with only the USB controller's `dr_mode` changed to `peripheral`; the existing
 DTBO partition supplies the board overlay. It used a gzip-compressed Image.
 
 Derive the kernel load address from the ARM64 Image header. The 4.19 kernel's
-`text_offset` is `0x80000`; this 6.6 Image's is zero. The tested 6.6 boot header
+`text_offset` is `0x80000`; this 6.6 Image's is zero. The combined diagnostic occupied 33,259,520 bytes of the 33,554,432-byte BOOT
+partition, so always enforce the partition-size check after packaging.
+The tested 6.6 boot header
 uses base `0x40000000` and kernel offset zero, ramdisk address `0x51100000`,
 and tags/DTB address `0x47c80000`. The load address minus Image `text_offset`
 must be 2 MiB aligned. Verify kernel and ramdisk bytes after unpacking the

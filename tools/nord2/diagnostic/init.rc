@@ -49,6 +49,7 @@ on boot
     start nord2-timeout
     start nord2-usb
     start nord2-storage
+    start nord2-display
 
 service ueventd /system/bin/ueventd
     critical
@@ -81,6 +82,13 @@ on property:sys.usb.ffs.ready=1
     setprop sys.usb.state adb
 
 service nord2-storage /system/bin/sh /system/bin/nord2-storage.sh
+    disabled
+    oneshot
+    user root
+    group root shell log readproc
+    seclabel u:r:su:s0
+
+service nord2-display /system/bin/sh /system/bin/nord2-display.sh
     disabled
     oneshot
     user root
