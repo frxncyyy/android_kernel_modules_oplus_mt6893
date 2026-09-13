@@ -222,3 +222,5 @@ reliably select recovery on this firmware. The timeout script therefore uses
 Android init, which writes the BCB through `/dev/block/by-name/misc`. It keeps
 ADB available if that block device is absent. Early failure before userspace
 can still require the physical recovery keys.
+
+GPU initialization and mapped-buffer tests are recorded in [GPU diagnostics](GPU.md).

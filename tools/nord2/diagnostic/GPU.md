@@ -1,0 +1,75 @@
+# Nord 2 GPU diagnostics
+
+Mali r49p1 now builds with the Nord 2 recipe. On DN2103, the driver identifies
+GPU architecture 9.0.8 r0p1. A minimal 6.6 ramdisk completed these tests:
+
+- Open `/dev/mali0`, negotiate JM ABI 11.0, 11.23 and 11.46, and read the
+  749-byte GPU property table.
+- Create and close a context for each ABI.
+- Run 32 allocate/map/query/CPU-write-and-readback/unmap cycles per context,
+  using buffers from 4 KiB to 1 MiB. All 96 cycles passed.
+- Modeset and page-flip the display at 60/90/60 Hz with Mali and GED loaded.
+
+No kernel warning, GPU fault or IOMMU translation fault was observed during
+these runs. These checks cover initialization and mapped-buffer lifecycle;
+the readback is performed by the CPU. They do not verify graphics rendering,
+compute jobs, the Android graphics HAL, sustained load, system suspend or
+thermal and battery limits.
+
+## Firmware
+
+The GPU requires `valhall-1691526.wa`. The file from this phone's installed
+vendor partition is 440 bytes, uses workaround format version 2, and has
+SHA-256 `1a52a7f3c7c8b15e13e226d0956091621a83baafd80a3f93debb8271110e5951`.
+It was read from a verified local backup and supplied in RAM at
+`/lib/firmware/valhall-1691526.wa` before opening Mali. No firmware partition
+was flashed. The file is not included in this repository.
+
+Without this file, module insertion still reports success and creates
+`/dev/mali0`, but the first open fails with `ENODEV` when the driver tries to
+load its required workaround. Device-node existence alone is not a passing
+test. Use the matching firmware from the device's vendor image; do not disable
+the hardware erratum check to make open succeed.
+
+## Build and run the probe
+
+From the module repository, after the normal build, compile the probe using
+the same kernel source and output directories (adjust these two paths if needed):
+
+```sh
+clang --target=aarch64-linux-gnu -Os -nostdlib -static \
+  -fno-stack-protector -fno-builtin -fuse-ld=lld -Wno-unknown-attributes \
+  -I../kernel-6.6/tools/include/nolibc -I../out-nord2/usr/include \
+  -Ivendor/mediatek/kernel_modules/gpu/gpu_mali/mali_avalon/mali-r49p1/drivers/gpu/arm/midgard/include/uapi \
+  tools/nord2/diagnostic/gpu_probe.c -o /tmp/nord2-gpu-probe
+```
+
+The probe requires a 4 KiB page kernel, a working Mali device, and permission
+to open it. In the diagnostic ramdisk it can be pushed to `/tmp` and run over
+root ADB. It creates only temporary GPU allocations and does not submit
+rendering jobs or touch block devices.
+
+## Loading dependencies and remaining work
+
+The display diagnostic supplies most shared dependencies. GPU testing adds
+`spmi_mtk_pmif`, `mtk_spmi_pmic`, `mt6315_regulator`, `nvmem_mtk_devinfo`,
+`clk_mt6893_mfgcfg`, `mtk_gpu_hal`, `mtk_gpufreq_wrapper_legacy`,
+`mtk_gpufreq_mt6893`, `ged` and `mali_kbase_mt6893_r49`, in dependency order.
+Use modules and dependency files from the same build. The ramdisk's automatic
+module list does not yet include GPU support or its proprietary firmware.
+
+The Nord 2 configuration now resolves both CMDQ and gpufreq to
+`device-apc-common`. The inherited multi-platform configuration resolved CMDQ
+to `device-apc-mt6765`; loading that alongside the GPU's required provider
+failed with a duplicate `register_devapc_vio_callback` export. The legacy DT
+still names `mediatek,mt6885-devapc`, while the MT6893 driver accepts
+`mediatek,mt6893-devapc`: hardware DEVAPC binding remains to be reconciled.
+
+Power integration also remains incomplete. The port expects an
+`efuse_pod19` cell absent from this DT; the 4.19 MT6893 voltage adjustments use
+`efuse_ptpod22_cell` with different bit fields, so renaming the lookup alone
+would be incorrect. GED reports missing optional newer-platform nodes and
+core-mask callbacks. Mali has no DT OPP table and continues without devfreq;
+MediaTek's separate gpufreq driver does initialize. Existing bring-up code
+also skips battery-throttling callbacks on MT6893. These limitations must be
+resolved before claiming validated GPU DVFS or running sustained load tests.
