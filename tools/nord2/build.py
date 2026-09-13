@@ -11,6 +11,7 @@ import subprocess
 
 REPO = Path(__file__).resolve().parents[2]
 MODULES = REPO / 'kernel/kernel_device_modules-6.6'
+TOUCH = REPO / 'vendor/oplus/kernel/touchpanel/oplus_touchscreen_v2'
 
 
 def config_values(path):
@@ -89,6 +90,25 @@ def main():
         return
     run('kernel', make + [f'-j{args.jobs}', 'Image', 'modules'])
     run('vendor', make + [f'M={relative}', f'-j{args.jobs}', 'modules'])
+    # Touch has a separate Kbuild root and Makefile-only configuration flags.
+    # Reuse the notifier already built by the device-modules root; building its
+    # copy here would produce a second module with the same name and exports.
+    touch_relative = '../' * kernel_depth + str(TOUCH.relative_to(common))
+    for base in (kernel, out):
+        if (base / touch_relative).resolve() != TOUCH:
+            parser.error('The touch path must resolve identically from source and output')
+    touch_flags = ' '.join(filter(None, [os.environ.get('KCFLAGS'),
+                          f'-I{MODULES}/include', f'-I{MODULES}/include/uapi']))
+    run('touch', make + [f'M={touch_relative}', f'-j{args.jobs}', 'modules',
+        f'KCFLAGS={touch_flags}', f'KBUILD_EXTRA_SYMBOLS={MODULES}/Module.symvers',
+        'CONFIG_TOUCHPANEL_OPLUS=m', 'CONFIG_TOUCHPANEL_CUSTOM=m',
+        'CONFIG_TOUCHPANEL_FOCAL=m', 'CONFIG_TOUCHPANEL_FOCAL_FT3518=m',
+        'CONFIG_TOUCHPANEL_MTK_PLATFORM=y', 'CONFIG_OPLUS_MTK_DRM_GKI_NOTIFY=y',
+        'CONFIG_TOUCHPANEL_NOTIFY=n'])
+    touch_modules = [TOUCH / path for path in (
+        'oplus_bsp_tp_comon.ko', 'touch_custom/oplus_bsp_tp_custom.ko',
+        'Focal/oplus_bsp_tp_focal_common.ko', 'Focal/ft3518/oplus_bsp_tp_ft3518.ko')]
+
     manifest = {
         'kernel_revision': subprocess.check_output(['git', '-C', str(kernel), 'rev-parse', 'HEAD'], text=True).strip(),
         'modules_revision': subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip(),
@@ -97,10 +117,12 @@ def main():
         'clang': subprocess.check_output(['clang', '--version'], text=True).splitlines()[0],
         'config_sha256': hashlib.sha256((out / '.config').read_bytes()).hexdigest(),
         'image_sha256': hashlib.sha256((out / 'arch/arm64/boot/Image').read_bytes()).hexdigest(),
+        'touch_modules': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
+                          for path in touch_modules},
         'hardware_tested': False,
     }
     (out / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    print('Kernel and device modules built. No boot image was packaged or flashed.')
+    print('Kernel, device modules and FT3518 touch modules built. No boot image was packaged or flashed.')
 
 
 if __name__ == '__main__':

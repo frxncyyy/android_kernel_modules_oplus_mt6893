@@ -2,9 +2,11 @@
 
 This is an experimental Linux 6.6.30 board port. A minimal diagnostic ramdisk
 has booted on a Nord 2 DN2103 with all eight CPUs online, root USB ADB, and
-UFS partition reads matching known hashes. Normal Android boot, display,
-charging, cameras and the remaining hardware still require integration and
-device validation. A successful build is not a ready-to-flash phone image.
+UFS partition reads matching known hashes. The owner has confirmed a 60 Hz
+colour-bar display test; 90 Hz modesets and page flips also complete. FT3518
+probes and reads its existing firmware, but physical input is not yet verified.
+Normal Android, charging, cameras and remaining hardware need integration and
+validation. A successful build is not a ready-to-flash phone image.
 See [diagnostic notes](diagnostic/README.md) for the tested environment.
 
 ## Source baseline
@@ -37,6 +39,7 @@ Clone the kernel next to this repository as `kernel-6.6`, then run:
 ```sh
 python3 tools/nord2/build.py --kernel ../kernel-6.6
 python3 tools/nord2/tests/test_ye05.py
+python3 tools/nord2/tests/test_vblank_reference.py
 ```
 
 The build script merges, in order, GKI, `mgk_64_k66_defconfig`,
@@ -45,6 +48,14 @@ headers before external-module compilation and verifies that every requested
 Nord 2 setting survived Kconfig resolution. `--configure-only` checks that
 stage without building the kernel and modules. Host include/library paths can
 be supplied through `HOSTCFLAGS` and `HOSTLDFLAGS`.
+
+After the device modules, it builds the Oplus FT3518 stack from its separate
+`oplus_touchscreen_v2` Kbuild root. The Makefile-only configuration selects the
+MediaTek platform, display notifier, touch common/custom code, Focal common
+code and FT3518. It reuses the device-module notifier and symbol table rather
+than building a second notifier with the same name and exports. The manifest
+includes hashes of all four resulting touch modules. Firmware is not packaged
+or updated by this build.
 
 By default output is `out-nord2` beside the kernel checkout. A custom `--out`
 must be at the same depth below the common ancestor as the kernel checkout:

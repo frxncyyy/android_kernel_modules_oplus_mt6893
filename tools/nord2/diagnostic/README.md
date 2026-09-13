@@ -84,6 +84,22 @@ check timeout during a long static frame. Later modesets used the new mapped
 buffers without fresh translation faults. These findings still need fixes;
 visible bars alone do not establish full display stability or suspend/resume.
 
+## FT3518 probe
+
+The separate touch build produces `oplus_bsp_tp_comon`, `oplus_bsp_tp_custom`,
+`oplus_bsp_tp_focal_common` and `oplus_bsp_tp_ft3518`. Include their recursive
+dependencies from the device-module build and use the existing shared
+`oplus_bsp_tp_notify`. Their modpost and GKI import checks passed.
+
+The diagnostic `modules.options` supplies the FT3518 compatible string to the
+custom selector. On this DN2103, the live I2C node is `focaltech,fts`; its
+supported-project list contains 20827 and selects the Samsung panel variant.
+The driver probes I2C address 0x38 on bus 0, reads chip ID 0x5452 and existing
+firmware version 0x48, and registers `touchpanel` at event0. Display blanking
+notifications reach its suspend/resume callbacks. No firmware blob was supplied
+or flashed. Physical touch coordinates, IRQ delivery and gesture wake remain
+unverified; a registered input device alone is not proof of working touch.
+
 ## Assembly constraints
 
 Use a fresh copy of the working recovery ramdisk, keep `/system/bin/recovery`

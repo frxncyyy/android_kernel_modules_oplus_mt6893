@@ -1,1 +1,3 @@
 options i2c_mt65xx force_speed=i2c5:400000
+# Verified DN2103 touch compatible; its DT supplies the project and panel variant.
+options oplus_bsp_tp_custom dsi_display0=focaltech,fts
