@@ -12,6 +12,9 @@ port and Linux 6.6.30. They do not establish a usable Android port.
 | V3 | Also load `leds-mtk-disp.ko` | The composer detected `lcd-backlight`, its range and brightness support. Android again reported boot completion, but display command-queue timeouts and framework restarts remained. Physical output was not confirmed. |
 | V4 | Add CPU policies and standard ZY0603/MP2650 reporting | Boot completion, one observed framework PID and valid battery readings. Owner photo shows full-screen pixel corruption; loss of ADB at system suspend required a physical restart. |
 | V5 | Integrated CPU/power build, diagnostic wake lock and debugfs/log accounting | Boot completion by 60 seconds, one framework PID through 256 seconds, valid battery readings, automatic recovery at 296 seconds. Display remains faulty; suspend was deliberately blocked. |
+| V9 | Initialise TE pinctrl before synchronous binding; use the cold CRTC enable path consistently | Owner confirmed a readable, working Android screen; live frames and 60/90 Hz switching. Six startup faults remained in the inherited splash framebuffer. |
+| V10 | Use the overlay DMA device for PRIME imports and segment limits | Android remained functional; the same six splash-region faults remained. |
+| V11 | Clear inherited overlay layers in the cold default-path configuration | Owner confirmed normal output after three screen off/on cycles. Zero IOMMU faults and CMDQ software timeouts in the post-cycle capture; seven refresh switches completed. |
 
 See [GPU notes](GPU.md) for the r49 fix and actual-header regression. The V2
 kernel capture contained no job-stride rejection, Mali fault or IOMMU
@@ -65,11 +68,11 @@ boot images and partition backups remain private.
 
 ## Remaining startup blockers
 
-- **Physical display:** the initial Android 60-to-90 Hz transition timed out
-  waiting for a display command-queue event. Loading the brightness driver
-  restores the expected interface but does not eliminate those timeouts.
-  Its current default hardware range is 2047; the legacy silky-brightness DT
-  uses `trans-bits=12` and requires a separate scaling audit against 4.19.
+- **Display validation:** V11 fixes the observed corruption, TE stalls and
+  inherited-framebuffer faults. See [display findings and checks](DISPLAY.md).
+  Seamless splash handover, brightness calibration and AOD/HBM remain
+  unvalidated. Screen off/on under the diagnostic wake lock is not system
+  suspend validation.
 - **CPU policies:** V4 supplies and loads the real CPU_DVFS implementation;
   policies 0, 4 and 7 exist and the earlier `OplusCpuInfoStore.parseCpuFreqType`
   crash no longer occurs in the captured startup interval. Sustained CPU/idle
@@ -90,8 +93,9 @@ boot images and partition backups remain private.
   log. Its capture has 45 sequence gaps totaling 486,287 missing records;
   absence of other errors in that capture is not a clean test result. The
   display debugfs snapshots were unavailable. Repair the wait handling before relying on a run which hits that loop.
-  V5 now provides debugfs state; its 5,362 kernel records have no sequence
-  gaps, overruns or truncation.
+  V5 provides debugfs state; its 5,362 kernel records have no sequence
+  gaps, overruns or truncation. The V9–V11 display fixes avoid the observed
+  mode-switch stall; signal-error handling in that loop is unchanged.
 
 Wireless, modem/calls, audio, cameras, sensors, fingerprint, GNSS, NFC,
 haptics and sustained suspend/load/charging behavior remain separate work.
@@ -109,3 +113,6 @@ daily-use releases. These attempts used kernel release
 | V3 | `ffee94549760565cd5e0973e558335fed8cf648fec3ba9d6b7d601e2ec776b6e` |
 | V4 | `395fe1fc024df024d0a7868dbf803f4b1355712505cfab2711aacd610f314c74` |
 | V5 | `e4bee36ff98b1f49c45cb62a5eda205447a1553335acce3ca45a7a36f48c7579` |
+| V9 | `6d2df838ca83db8794bfc9352f731f36c5af4a54c412d83d0d15834c5e7f0959` |
+| V10 | `147aa86f4f65628c6b53d8410727c98b97df22d6973c16dbc3174f256f598bc0` |
+| V11 | `0a5d6074f3a261efcbe715247377333dfbe873714528508605e17ccd35de2dc0` |

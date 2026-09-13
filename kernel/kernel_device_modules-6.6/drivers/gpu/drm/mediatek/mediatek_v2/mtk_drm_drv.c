@@ -42,6 +42,7 @@
 #include "mtk_drm_drv.h"
 #include "mtk_drm_fb.h"
 #include "mtk_drm_gem.h"
+#include "mtk-smmu-v3.h"
 #include "mtk_drm_session.h"
 #include "mtk_fence.h"
 #include "mtk_debug.h"
@@ -1308,6 +1309,14 @@ static bool mtk_drm_is_enable_from_lk(struct drm_crtc *crtc)
 	struct mtk_drm_crtc *mtk_crtc = crtc ? to_mtk_crtc(crtc) : NULL;
 	struct mtk_ddp_comp *comp = mtk_crtc ? mtk_ddp_comp_request_output(mtk_crtc) : NULL;
 	unsigned int alias = 0;
+
+	/* Match DSI probe: without LK handoff the first atomic enable must
+	 * configure and power the complete path, including DSC and the panel.
+	 * first_enable assumes those registers and clocks are already live.
+	 */
+#ifdef CONFIG_MTK_DISP_NO_LK
+	return false;
+#endif
 
 	if (comp && mtk_ddp_comp_get_type(comp->id) == MTK_DSI) {
 		alias = mtk_ddp_comp_get_alias(comp->id);
@@ -9667,7 +9676,7 @@ static int mtk_drm_kms_init(struct drm_device *drm)
 	 * Configure the DMA segment size to make sure we get contiguous IOVA
 	 * when importing PRIME buffers.
 	 */
-	dma_dev = drm->dev;
+	dma_dev = mtk_smmu_get_shared_device(private->dma_dev);
 	if (!dma_dev->dma_parms) {
 		private->dma_parms_allocated = true;
 		dma_dev->dma_parms =
@@ -9735,7 +9744,7 @@ static void mtk_drm_kms_deinit(struct drm_device *drm)
 	drm_kms_helper_poll_fini(drm);
 
 	if (private->dma_parms_allocated)
-		drm->dev->dma_parms = NULL;
+		mtk_smmu_get_shared_device(private->dma_dev)->dma_parms = NULL;
 
 	//drm_vblank_cleanup(drm);
 	component_unbind_all(drm->dev, drm);
@@ -12154,6 +12163,14 @@ SKIP_OVLSYS_CONFIG:
 
 	platform_set_drvdata(pdev, private);
 
+	/* Binding can run synchronously when all components already exist.
+	 * ESD IRQ registration switches TE to GPIO and then restores its mux
+	 * through private->pctrl, so that handle must be ready before binding.
+	 */
+	ret = disp_dts_gpio_init(dev, private);
+	if (ret)
+		goto err_pm;
+
 	ret = component_master_add_with_match(dev, &mtk_drm_ops, match);
 	DDPINFO("%s- ret:%d\n", __func__, ret);
 	if (ret)
@@ -12189,8 +12206,6 @@ SKIP_OVLSYS_CONFIG:
 #endif
 
 	DDPINFO("%s-\n", __func__);
-
-	disp_dts_gpio_init(dev, private);
 
 	memcpy(&mydev, pdev, sizeof(mydev));
 

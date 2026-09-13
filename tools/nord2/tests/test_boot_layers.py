@@ -8,12 +8,15 @@ import tempfile
 root = Path(__file__).resolve().parents[3]
 source = root / "kernel/kernel_device_modules-6.6/drivers/gpu/drm/mediatek/mediatek_v2/mtk_drm_crtc.c"
 text = source.read_text()
-start = text.index("static void __mtk_crtc_all_layer_off(")
+start = text.index("static void __mtk_crtc_all_layer_off(", text.index("void mtk_crtc_config_default_path("))
 end = text.index("\nvoid mtk_crtc_stop_ddp", start)
 functions = text[start:end]
 start = text.index("#ifdef CONFIG_MTK_DISP_NO_LK", text.index("void mtk_crtc_first_enable_ddp_config("))
 end = text.index("\n\t/*2. Load Round Corner */", start)
 cold_start = text[start:end]
+start = text.index("#ifdef CONFIG_MTK_DISP_NO_LK", text.index("void mtk_crtc_config_default_path("))
+end = text.index("#endif", start) + len("#endif")
+cold_default = text[start:end]
 harness = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -48,6 +51,13 @@ static void cold(void)
     struct cmdq_pkt *cmdq_handle=&packet;
 COLD_START
 }
+static void cold_default(void)
+{
+    struct mtk_drm_crtc *mtk_crtc=&crtc;
+    struct cmdq_pkt *cmdq_handle=&packet;
+    (void)mtk_crtc; (void)cmdq_handle;
+COLD_DEFAULT
+}
 static void reset(void) { for (int i=0;i<6;i++) keep[i]=-1; }
 int main(void)
 {
@@ -64,6 +74,14 @@ int main(void)
                 assert(keep[i]==(i==0 || i==3 || (soc<4 && i<3)));
 #endif
             }
+            reset(); cold_default();
+            for (int i=0;i<6;i++) {
+#ifdef CONFIG_MTK_DISP_NO_LK
+                assert(keep[i]==((!dual && i>=3) ? -1 : 0));
+#else
+                assert(keep[i]==-1);
+#endif
+            }
             /* Idle entry retains its old first-layer policy in both builds. */
             reset(); mtk_crtc_all_layer_off(&crtc,&packet);
             for (int i=0;i<6;i++) {
@@ -73,7 +91,7 @@ int main(void)
         }
     }
 }
-'''.replace("FUNCTIONS", functions).replace("COLD_START", cold_start)
+'''.replace("FUNCTIONS", functions).replace("COLD_START", cold_start).replace("COLD_DEFAULT", cold_default)
 with tempfile.TemporaryDirectory(prefix="nord2-boot-layers-") as directory:
     path = Path(directory)
     (path / "test.c").write_text(harness)

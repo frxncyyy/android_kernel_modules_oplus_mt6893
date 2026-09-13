@@ -580,8 +580,11 @@ struct drm_gem_object *mtk_gem_prime_import(struct drm_device *dev,
 			return NULL;
 	}
 	DDPINFO("%s, dma_buf:0x%8p, size:0x%08lx\n", __func__, dma_buf, dma_buf->size);
+	/* Imported scanout buffers need the same IOMMU domain as dumb buffers.
+	 * The DRM master itself has no IOMMU attachment on legacy MT6893 DTs.
+	 */
 	return drm_gem_prime_import_dev(dev, dma_buf,
-		mtk_smmu_get_shared_device(dev->dev));
+		mtk_smmu_get_shared_device(priv->dma_dev));
 }
 
 struct drm_gem_object *

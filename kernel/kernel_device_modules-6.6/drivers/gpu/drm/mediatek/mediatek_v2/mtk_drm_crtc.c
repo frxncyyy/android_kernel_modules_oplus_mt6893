@@ -12889,6 +12889,9 @@ err:
 		DDP_MUTEX_UNLOCK_CONDITION(&mtk_crtc->lock, __func__, __LINE__, mtk_crtc->enabled);
 }
 
+static void __mtk_crtc_all_layer_off(struct mtk_drm_crtc *mtk_crtc,
+		struct cmdq_pkt *cmdq_handle, bool keep_boot_layer);
+
 void mtk_crtc_config_default_path(struct mtk_drm_crtc *mtk_crtc)
 {
 	int i, j;
@@ -13036,6 +13039,16 @@ void mtk_crtc_config_default_path(struct mtk_drm_crtc *mtk_crtc)
 		DDPPR_ERR("%s:%d NULL cmdq handle\n", __func__, __LINE__);
 		return;
 	}
+
+#ifdef CONFIG_MTK_DISP_NO_LK
+	/*
+	 * Cold enable does not call first_enable_ddp_config(). Drop inherited
+	 * OVL addresses before starting DMA and enabling address translation;
+	 * the bootloader framebuffer is not mapped in the kernel's IOMMU.
+	 * Active DRM planes are restored after configuring the default path.
+	 */
+	__mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle, false);
+#endif
 
 	if (mtk_crtc->is_dual_pipe &&
 		mtk_drm_helper_get_opt(priv->helper_opt, MTK_DRM_OPT_TILE_OVERHEAD)) {
