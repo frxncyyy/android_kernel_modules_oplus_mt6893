@@ -16629,14 +16629,18 @@ static void mtk_drm_crtc_atomic_begin(struct drm_crtc *crtc,
 	mtk_drm_idlemgr_kick(__func__, crtc, 0);
 
 	if (mtk_crtc_state->base.event) {
+		int ret;
+
 		mtk_crtc_state->base.event->pipe = index;
-		if (drm_crtc_vblank_get(crtc) != 0)
+		ret = drm_crtc_vblank_get(crtc);
+		if (ret) {
 			DDPAEE("%s:%d, invalid vblank:%d, crtc:%p\n",
-				__func__, __LINE__,
-				drm_crtc_vblank_get(crtc), crtc);
+				__func__, __LINE__, ret, crtc);
 #ifdef OPLUS_TRACKPOINT_REPORT
-		display_exception_trackpoint_report("DisplayDriverID@@503$$ invalid vblank:%d", drm_crtc_vblank_get(crtc));
+			display_exception_trackpoint_report(
+				"DisplayDriverID@@503$$ invalid vblank:%d", ret);
 #endif
+		}
 		mtk_crtc->event = mtk_crtc_state->base.event;
 		mtk_crtc_state->base.event = NULL;
 	}

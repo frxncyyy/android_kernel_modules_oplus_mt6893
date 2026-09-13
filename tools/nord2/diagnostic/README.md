@@ -60,9 +60,29 @@ With the manual free removed, the same absent-chip probe has one request and
 one release. The pin-controller count returns to zero, and the panel then
 holds two references for bias and reset. With the I2C setting above, the
 YE05/non-PVT YE01 panel binds, `/dev/dri/card0` appears, and DSI reports connected
-with two 1080x2400 modes. This establishes resource acquisition and DRM
-registration; it does not yet establish visible scanout, brightness, refresh
-switching or suspend/resume.
+with two 1080x2400 modes.
+
+A userspace DRM test subsequently allocated two XRGB8888 dumb buffers, performed
+legacy modesets and page flips, and disabled the CRTC after each test. The
+owner confirmed red/green/blue bars at 60 Hz with backlight level 512. Separate
+60 Hz, 90 Hz and 60 Hz runs completed their modesets and flip events; DCS
+register 0x0A returned 0x9F. Visible output at 90 Hz and seamless refresh
+switching were not independently verified.
+
+The atomic-begin error reporting called `drm_crtc_vblank_get()` again while
+formatting an unconditional trackpoint message. This both leaked a reference
+on successful flips and reported "invalid vblank:0". The corrected path calls
+it once and reports only failures. The extracted-code regression test checks
+success, failure and absent events, with trackpoint support on and off, and
+rejects the original code. Rebuilt hardware runs no longer emitted that false
+message and returned to the same disabled-CRTC reference count after repeated
+modesets and flips.
+
+Remaining display findings include DMA translation faults during the first
+cold modeset, consistent with stale bootloader scanout addresses, and a TE
+check timeout during a long static frame. Later modesets used the new mapped
+buffers without fresh translation faults. These findings still need fixes;
+visible bars alone do not establish full display stability or suspend/resume.
 
 ## Assembly constraints
 
