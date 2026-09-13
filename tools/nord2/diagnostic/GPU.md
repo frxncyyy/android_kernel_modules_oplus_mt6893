@@ -78,3 +78,40 @@ core-mask callbacks. Mali has no DT OPP table and continues without devfreq;
 MediaTek's separate gpufreq driver does initialize. Existing bring-up code
 also skips battery-throttling callbacks on MT6893. These limitations must be
 resolved before claiming validated GPU DVFS or running sustained load tests.
+
+## MT6893 job ABI
+
+The first normal Android diagnostic reached the installed encrypted data and
+created an EGL context with the installed r32p1 userspace library. SurfaceFlinger
+then aborted during `eglCreateSyncKHR`, while the kernel rejected a 72-byte
+`KBASE_IOCTL_JOB_SUBMIT` stride. Disassembly of the installed library confirms
+that stride.
+
+Disabling `CONFIG_MALI_MTK_GPU_BM_JM` had also removed `frame_nr` from the r49
+userspace job structures, shrinking v2/v3 from 64/72 bytes to 56/64 bytes. The
+r32 tree already preserved this extension for MT6893; r49 needed the same
+board-specific ABI treatment. MT6893 now retains the field whether its platform
+option is built in or modular. Bandwidth-monitoring code stays disabled, and
+other platforms retain their previous layouts. `__u32` keeps the field valid
+in userspace headers as well as kernel code.
+
+`test_mali_job_abi.py` compiles the actual header with both platform forms and
+with monitoring enabled/disabled. It pins the legacy record strides, frame
+positions and job-chain/core-requirement offsets, and checks the generic
+configurations. The previous header fails the MT6893 layout assertions.
+
+After rebuilding r49 with this fix, a second timed Android boot kept
+SurfaceFlinger running and reported `sys.boot_completed=1`. A screenshot
+captured the ColorOS lockscreen using the existing encrypted data. The kernel
+no longer reported unsupported job strides or Mali faults during the run.
+This is initial evidence that the installed EGL library can submit jobs; it
+does not establish sustained GPU stability.
+
+The owner reported a black physical screen. The display command queue timed
+out at the first Android 60-to-90 Hz switch, and the hardware composer could
+not find the expected `lcd-backlight` brightness interface. A compositor
+screenshot is therefore not evidence of successful panel scanout. Android
+also repeatedly aborted app starts at the missing Oplus `memory.app_uid`
+interface and reported an absent battery. The watchdog returned to recovery;
+original BOOT, the three temporary vendor blocks and expdb were restored and
+verified. No data format was performed.

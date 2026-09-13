@@ -543,8 +543,10 @@ struct base_jd_atom_v2 {
 	__u8 jobslot;
 	base_jd_core_req core_req;
 	__u8 padding[8];
-#if defined(CONFIG_MALI_MTK_GPU_BM_JM)
-	u32 frame_nr;  /* frame number to the atom */
+	/* MT6893 userspace retains this ABI field with bandwidth monitoring off. */
+#if defined(CONFIG_MALI_MTK_GPU_BM_JM) || defined(CONFIG_MTK_GPU_MT6893_SUPPORT) || \
+	defined(CONFIG_MTK_GPU_MT6893_SUPPORT_MODULE)
+	__u32 frame_nr;
 #endif
 };
 
@@ -592,8 +594,10 @@ typedef struct base_jd_atom {
 	base_jd_core_req core_req;
 	__u8 renderpass_id;
 	__u8 padding[7];
-#if defined(CONFIG_MALI_MTK_GPU_BM_JM)
-	u32 frame_nr;  /* frame number to the atom */
+	/* Keep the vendor's 72-byte job stride independent of kernel options. */
+#if defined(CONFIG_MALI_MTK_GPU_BM_JM) || defined(CONFIG_MTK_GPU_MT6893_SUPPORT) || \
+	defined(CONFIG_MTK_GPU_MT6893_SUPPORT_MODULE)
+	__u32 frame_nr;
 #endif
 } base_jd_atom;
 
