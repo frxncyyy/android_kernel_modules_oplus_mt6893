@@ -1,8 +1,10 @@
 # Nord 2 Android display
 
 The DN2103 owner confirmed a readable, working Android home screen with the
-TE pinctrl ordering and cold-start fixes. This replaces the earlier result
-of full-screen pixel noise and a stalled boot-animation frame.
+TE pinctrl ordering and cold-start fixes, and later confirmed that the black
+interval between the bootloader splash and the boot animation was gone after
+the seamless hand-off landed. This replaces the earlier result of full-screen
+pixel noise and a stalled boot-animation frame.
 
 ## Display fixes
 
@@ -26,6 +28,20 @@ of full-screen pixel noise and a stalled boot-animation frame.
   attachment; using it for imports produces physical scatterlist addresses
   where the overlay requires an IOVA. Configure the maximum DMA segment
   size and clean up allocated DMA parameters on the same device.
+- Hand the bootloader framebuffer to the CRTC on the first enable when
+  `/chosen/atag,videolfb` says LK lit this display (`22740f2f`). The CRTC
+  keeps LK's layer, rewrites its address to an IOVA and starts its trigger
+  loop, so scanout never stops between the splash and the first Android
+  frame. Without this the panel went dark for the gap the owner reported.
+- Do **not** inherit LK's DSI or panel state in probe (`03c4ad38`). Adopting
+  `output_en`, `clk_refcnt` and `panel->prepared/enabled` left the AMS643YE05
+  DDIC unable to report TE after the display idle manager's first DSI
+  power/ULPS cycle: the trigger loop parked on `EVENT_TE` (event 147), the
+  next config packet hit the 1 s CMDQ timeout and only the ESD workaround
+  recovered, by unpreparing and reinitialising the whole panel. Probe now
+  inherits one thing only, the connector's "panel present" bit, and the
+  kernel runs its own DSI + panel bring-up on the first encoder enable while
+  the inherited splash is still on screen.
 
 ## Evidence and checks
 
@@ -47,9 +63,25 @@ regression; the Android test does not isolate use of that import path.
 
 The owner reported a brief black interval between the splash and animation
 on V9. Cold initialization does not preserve seamless bootloader framebuffer
-scanout. This interval is distinct from the earlier persistent corruption;
-seamless splash handover is not implemented. Brightness calibration, AOD/HBM
-and prolonged panel testing are not established by these short startup tests.
+scanout, so V12 added the CRTC-side hand-off and the owner confirmed the
+interval was gone; V13 corrected the boot DTB that the first hand-off build
+had regressed. The hand-off initially also inherited LK's DSI/panel state,
+which produced a deterministic post-boot failure (V13-V16): the trigger loop
+parked on TE immediately after the idle manager's first ULPS cycle at ~32 s,
+`cmdq` reported timeouts at 34.2/35.3/36.3 s, ESD reported `TE timeout` at
+34.8 s and the panel was reinitialised at 36.4-36.7 s, which killed
+surfaceflinger mid-boot. V14/V15/V16 diagnostics showed that `EXT_TE_EN` was
+correctly programmed in `DSI_TXRX_CTRL` (0x0001023c) across the cycle, so the
+register bit was not the cause; the inherited panel state was.
+
+V17 dropped the DSI/panel inheritance and kept the CRTC hand-off. In the
+capture, the kernel ran `mtk_output_dsi_enable` with `output_en 0` at 20.49 s
+(full bring-up, panel init, 60-to-90 Hz switch at 20.64 s) and then completed
+16 idle/power cycles between 32.3 s and 74.5 s with zero CMDQ timeouts, zero
+ESD TE timeouts, no ESD recovery, no `DDPAEE` and no panic. Boot completion
+was unchanged at 50-62 s and the fuel gauge stayed healthy
+(`present=true`, `level=97`, `voltage=8638`). V18 is the same change with all
+diagnostic instrumentation removed and is the revision described here.
 
 The complete V11 guard capture contains 4,589 consecutive kernel records,
 with zero sequence gaps, recorded overruns or truncation. It contains zero
@@ -57,14 +89,17 @@ IOMMU translation faults and CMDQ software timeouts; all eight mode switches
 (including the final shutdown transition) completed. Original recovery was
 reached automatically at 296 host seconds. BOOT, RECOVERY, the three vendor
 blocks, expdb and the complete `super` partition were verified against their
-original hashes after restoration.
+original hashes after restoration. Every V12-V18 round ended the same way.
 
 Regression tests compile actual driver code for synchronous binding and
 probe failures, both LK handoff configurations, and PRIME device selection
-with and without shared SMMU remapping. Existing vblank reference, boot
-layer and YE05 panel callback/power tests also pass.
+with and without shared SMMU remapping. `test_lk_handoff.py` additionally
+asserts at source level that the DSI probe inherits no output, clock or panel
+state. Existing vblank reference, boot layer and YE05 panel callback/power
+tests also pass.
 
 These Android display tests use an independent recovery guard and a temporary wake
 lock. Display blank/unblank tests under that guard do not validate system
 suspend. Test images, device data and raw logs remain private. The installed
 first-stage init and encrypted data are retained without formatting.
+

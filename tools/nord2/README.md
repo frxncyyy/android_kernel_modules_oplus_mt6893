@@ -10,9 +10,10 @@ validation. A successful build is not a ready-to-flash phone image.
 See [diagnostic notes](diagnostic/README.md) for the tested environment.
 Read-only mounts of all 15 installed logical filesystems and 120 extent
 samples also pass; see [filesystem checks](diagnostic/FILESYSTEMS.md).
-The installed encrypted data mounts and Android reaches boot completion;
-physical display and sustained operation still fail. See [Android results](diagnostic/ANDROID.md)
-and [CPU/battery integration](diagnostic/CPU-POWER.md).
+The installed encrypted data mounts and Android reaches boot completion; the
+display keeps the bootloader splash and survives the display idle manager, but
+physical display and sustained operation still fail. See
+[Android results](diagnostic/ANDROID.md) and [CPU/battery integration](diagnostic/CPU-POWER.md).
 
 ## Source baseline
 

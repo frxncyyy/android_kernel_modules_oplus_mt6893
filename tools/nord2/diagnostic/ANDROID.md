@@ -15,6 +15,13 @@ port and Linux 6.6.30. They do not establish a usable Android port.
 | V9 | Initialise TE pinctrl before synchronous binding; use the cold CRTC enable path consistently | Owner confirmed a readable, working Android screen; live frames and 60/90 Hz switching. Six startup faults remained in the inherited splash framebuffer. |
 | V10 | Use the overlay DMA device for PRIME imports and segment limits | Android remained functional; the same six splash-region faults remained. |
 | V11 | Clear inherited overlay layers in the cold default-path configuration | Owner confirmed normal output after three screen off/on cycles. Zero IOMMU faults and CMDQ software timeouts in the post-cycle capture; seven refresh switches completed. |
+| V12 | Adopt LK's framebuffer and DSI state at runtime (`22740f2f`) | Owner confirmed the black interval between splash and boot animation is gone. The adopted boot DTB first dropped the gauge and charger; V13 corrected that. |
+| V13 | Rebuild the board boot DTB instead of copying a recovery tree | Gauge and charger return (`present=true`, level 88-92). Display regression: 2 CMDQ timeouts and an ESD TE timeout on the first idle cycle. |
+| V14 | Program `EXT_TE_EN` on the adopted output | Timeouts fell from 4 to 2; ESD TE timeout and recovery remain, so `EXT_TE_EN` is necessary but not sufficient. |
+| V15 | Add caller tracing to the trigger loop | Isolated the idle manager: monitor thread `mtk_dsi_enter_idle`/`mtk_crtc_stop`, kick thread `mtk_dsi_leave_idle`/`mtk_crtc_start_trig_loop` at 32.11 s, then the loop parks on EVENT_TE. |
+| V16 | Trace the DSI enable/idle register state | `EXT_TE_EN` is correctly set (0x0001023c) after the idle cycle and TE still never arrives; the ESD workaround recovers at 36.4-36.7 s by unpreparing/repreparing the panel. The inherited panel/DSI state, not the register bit, is at fault. |
+| V17 | Keep the CRTC handoff, stop inheriting LK's DSI/panel state | 16 idle/power cycles between 32.3 s and 74.5 s with zero CMDQ timeouts, zero ESD TE timeouts, no ESD recovery, no DDPAEE or panic; boot completion unchanged; gauge healthy. |
+| V18 | Clean build of the same change (diagnostics removed) | Confirms the shipped tree; see the display notes for the capture summary. |
 
 See [GPU notes](GPU.md) for the r49 fix and actual-header regression. The V2
 kernel capture contained no job-stride rejection, Mali fault or IOMMU
@@ -60,17 +67,21 @@ payload bytes. Kernel logs initially used a fully backed-up expdb partition;
 Android's crash collector also writes there, so subsequent attempts moved the
 log to a new private metadata file once that filesystem was mounted.
 
-V1–V3, V5 and V9–V11 returned automatically to the unchanged 4.19 recovery. V4 required
+V1–V3, V5 and V9–V18 returned automatically to the unchanged 4.19 recovery. V4 required
 a physical forced restart after losing ADB at autosuspend. Original BOOT, the three
 vendor blocks and expdb were restored and verified. After V3, the entire
-`super` partition also matched its original backup hash. Raw logs, firmware,
+`super` partition also matched its original backup hash. Every V12–V18 round was
+restored the same way. Raw logs, firmware,
 boot images and partition backups remain private.
 
 ## Remaining startup blockers
 
 - **Display validation:** V11 fixes the observed corruption, TE stalls and
-  inherited-framebuffer faults. See [display findings and checks](DISPLAY.md).
-  Seamless splash handover, brightness calibration and AOD/HBM remain
+  inherited-framebuffer faults; V12 removed the black interval between the
+  splash and the boot animation, and V17 keeps that handoff without inheriting
+  LK's DSI/panel state, so the idle-manager TE stall is gone as well. See
+  [display findings and checks](DISPLAY.md).
+  Brightness calibration and AOD/HBM remain
   unvalidated. Screen off/on under the diagnostic wake lock is not system
   suspend validation.
 - **CPU policies:** V4 supplies and loads the real CPU_DVFS implementation;
@@ -116,3 +127,10 @@ daily-use releases. These attempts used kernel release
 | V9 | `6d2df838ca83db8794bfc9352f731f36c5af4a54c412d83d0d15834c5e7f0959` |
 | V10 | `147aa86f4f65628c6b53d8410727c98b97df22d6973c16dbc3174f256f598bc0` |
 | V11 | `0a5d6074f3a261efcbe715247377333dfbe873714528508605e17ccd35de2dc0` |
+| V12 | `b055707f8f07ccf578c61d2d6bc98de50bf82abfa07777317a3f2959732c864a` |
+| V13 | `5b43aa2026e240cbdbd488486890ce695166aeaf04773ca661377dd2035647e6` |
+| V14 | `61a60f7c9d36e6be8facdc5b2aa5b69d7d0d84c371ea278b8826d2e0f4b957bd` |
+| V15 | `0e18b583cd9559c1043aa10177e23b4aa450ca3a90ec89f247427482bbeb2048` |
+| V16 | `2eb0ab06e51b402e0f72db3c6443b36dfd39a42ddf851ba3cba573a76eeab5e1` |
+| V17 | `698f41c4e014aa1fb6b576ff1dcb0e91fcfc8cf942011684a01e4a4b51d4cc2f` |
+| V18 | `651e92f9c81f74c871bbdcb22f931cbe19c6ac5d122106fd7f366463ca400310` |
