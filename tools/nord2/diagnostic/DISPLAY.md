@@ -81,7 +81,21 @@ capture, the kernel ran `mtk_output_dsi_enable` with `output_en 0` at 20.49 s
 ESD TE timeouts, no ESD recovery, no `DDPAEE` and no panic. Boot completion
 was unchanged at 50-62 s and the fuel gauge stayed healthy
 (`present=true`, `level=97`, `voltage=8638`). V18 is the same change with all
-diagnostic instrumentation removed and is the revision described here.
+diagnostic instrumentation removed.
+
+**The hand-over is not yet seamless on the physical panel.** Watching V19 (the
+same code as V18) the owner reported a black interval of "almost 10 seconds"
+between the splash and the boot animation. The capture locates it: the kernel's
+own `drm_panel_prepare` runs at 20.486-20.634 s and resets the DDIC, which
+clears its brightness, and the first backlight write comes from Android at
+26.118 s (`Set lcd-backlight T:26.118,L:798`). The panel is therefore dark for
+about 5.6 s after the kernel re-initialises it, because the kernel never learns
+and never restores the brightness LK had programmed. Restoring it as part of
+the kernel's own bring-up - reading DCS `0x52` before the reset, or falling
+back to the LED class value or the panel's `esd_brightness` default - should
+collapse the interval to the ~150 ms the init itself takes. The alternative,
+keeping LK's panel running and preventing the idle manager from power-cycling
+it, removes the reset entirely but gives up display idle power saving.
 
 The complete V11 guard capture contains 4,589 consecutive kernel records,
 with zero sequence gaps, recorded overruns or truncation. It contains zero
