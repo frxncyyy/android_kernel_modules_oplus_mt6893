@@ -1310,19 +1310,27 @@ static bool mtk_drm_is_enable_from_lk(struct drm_crtc *crtc)
 	struct mtk_ddp_comp *comp = mtk_crtc ? mtk_ddp_comp_request_output(mtk_crtc) : NULL;
 	unsigned int alias = 0;
 
-	/* Match DSI probe: without LK handoff the first atomic enable must
-	 * configure and power the complete path, including DSC and the panel.
-	 * first_enable assumes those registers and clocks are already live.
+	/*
+	 * Only inherit the bootloader's display when LK actually handed us a
+	 * framebuffer.  Without it first_enable would assume the DSI, DSC and
+	 * panel registers are already live while nothing ever programmed them,
+	 * leaving the CRTC enabled but the panel dark.
 	 */
-#ifdef CONFIG_MTK_DISP_NO_LK
-	return false;
-#endif
+	if (!mtk_drm_lk_fb_present())
+		return false;
 
 	if (comp && mtk_ddp_comp_get_type(comp->id) == MTK_DSI) {
 		alias = mtk_ddp_comp_get_alias(comp->id);
 
-		if (mtk_disp_num_from_atag() & BIT(alias) ||
-				(mtk_disp_num_from_atag() == 0 && drm_crtc_index(crtc) == 0))
+		/*
+		 * Did LK light this particular DSI output?  The old
+		 * "mtk_disp_num_from_atag() == 0 && crtc 0" fallback also
+		 * matched a boot with no videolfb at all, which is exactly the
+		 * cold-start case that must not take the handoff path.  This is
+		 * the same per-display bit the DSI probe uses, so the two can
+		 * no longer disagree.
+		 */
+		if (mtk_disp_bits_from_atag() & BIT(alias))
 			return true;
 	}
 	return false;
@@ -8366,7 +8374,6 @@ int mtk_drm_disp_test_show(struct drm_crtc *crtc, bool enable)
 int _parse_tag_videolfb(unsigned int *vramsize, phys_addr_t *fb_base,
 			unsigned int *fps)
 {
-#ifndef CONFIG_MTK_DISP_NO_LK
 	struct device_node *chosen_node;
 
 	*fps = 6000;
@@ -8402,9 +8409,6 @@ found:
 	DDPINFO("[DT][videolfb] fps	   = %d\n", *fps);
 
 	return 0;
-#else
-	return -1;
-#endif
 }
 
 unsigned int mtk_disp_num_from_atag(void)
@@ -8429,6 +8433,46 @@ unsigned int mtk_disp_num_from_atag(void)
 	}
 
 	return 0;
+}
+
+/*
+ * Per-display bitmask of the DSI outputs LK already lit, taken from the low
+ * half of tag_videolfb.islcmfound.  Zero means LK powered no display at all.
+ */
+unsigned int mtk_disp_bits_from_atag(void)
+{
+	struct device_node *chosen_node;
+
+	chosen_node = of_find_node_by_path("/chosen");
+	if (chosen_node) {
+		struct tag_videolfb *videolfb_tag = NULL;
+		unsigned long size = 0;
+
+		videolfb_tag = (struct tag_videolfb *)of_get_property(
+			chosen_node,
+			"atag,videolfb",
+			(int *)&size);
+		if (videolfb_tag)
+			return (videolfb_tag->islcmfound & 0xFFFF);
+	}
+
+	return 0;
+}
+
+/*
+ * True only when LK handed us a usable framebuffer: the chosen tag exists and
+ * carries a non-zero base.  This is what distinguishes "LK lit the panel and
+ * left a logo in RAM" from "nothing to inherit, cold-start the display".
+ */
+bool mtk_drm_lk_fb_present(void)
+{
+	unsigned int vramsize = 0, fps = 0;
+	phys_addr_t fb_base = 0;
+
+	if (_parse_tag_videolfb(&vramsize, &fb_base, &fps) < 0)
+		return false;
+
+	return fb_base != 0;
 }
 
 int mtk_drm_get_panel_info(struct drm_device *dev,

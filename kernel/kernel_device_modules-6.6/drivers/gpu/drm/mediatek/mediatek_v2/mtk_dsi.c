@@ -15761,6 +15761,21 @@ static const struct of_device_id mtk_dsi_of_match[] = {
 	{},
 };
 
+/*
+ * True when this DSI output was already brought up by LK and must therefore
+ * be inherited instead of re-initialised.  The per-display islcmfound bit is
+ * authoritative; the old "no display count means DSI0" shortcut also matched a
+ * boot with no videolfb at all and made the driver inherit a DSI that had
+ * never been programmed.
+ */
+static bool mtk_dsi_lk_adopted(struct mtk_dsi *dsi, unsigned int alias)
+{
+	if (dsi->is_slave)
+		return true;
+
+	return panel_connection_from_atag() & BIT(alias);
+}
+
 static int mtk_dsi_probe(struct platform_device *pdev)
 {
 	struct mtk_dsi *dsi;
@@ -15958,20 +15973,17 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(dev);
 
-#ifndef CONFIG_MTK_DISP_NO_LK
-	/* set ccf reference cnt = 1 */
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
-		pm_runtime_get_sync(dev);
-#endif
-
 	alias = mtk_ddp_comp_get_alias(dsi->ddp_comp.id);
-	/* use atag information check which display enable in LK */
-	/* Assume DSI0 enable already in LK */
-	if (mtk_disp_num_from_atag() & BIT(alias) ||
-		(mtk_disp_num_from_atag() == 0 &&
-		dsi->ddp_comp.id == DDP_COMPONENT_DSI0) || dsi->is_slave) {
-#ifndef CONFIG_MTK_DISP_NO_LK
+	/*
+	 * Adopt the display LK already set up only when LK lit this DSI output,
+	 * i.e. the per-display bit in /chosen/atag,videolfb is set.  Otherwise
+	 * the panel init DCS below would never be sent and the panel would stay
+	 * dark while the CRTC reports itself enabled.
+	 */
+	if (mtk_dsi_lk_adopted(dsi, alias)) {
+		/* set ccf reference cnt = 1 */
 		if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
+			pm_runtime_get_sync(dev);
 			phy_power_on(dsi->phy);
 			ret = clk_prepare_enable(dsi->engine_clk);
 			if (ret < 0)
@@ -15991,7 +16003,6 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 		dsi->clk_refcnt = 1;
 		if (dsi->ext && dsi->ext->is_connected == -1)
 			dsi->ext->is_connected = panel_connection_from_atag() & BIT(alias);
-#endif
 	}
 
 	platform_set_drvdata(pdev, dsi);

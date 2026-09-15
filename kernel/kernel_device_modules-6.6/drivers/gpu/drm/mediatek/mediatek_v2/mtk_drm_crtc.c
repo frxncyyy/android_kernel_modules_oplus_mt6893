@@ -7219,10 +7219,16 @@ int free_fb_buf(void)
 static void mtk_crtc_frame_buffer_release(struct drm_crtc *crtc,
 		int index, bool hrt_valid)
 {
-#ifndef CONFIG_MTK_DISP_NO_LK
 	struct drm_device *dev = NULL;
-	struct mtk_drm_private *priv = crtc->dev->dev_private;
+	struct mtk_drm_private *priv = NULL;
 	struct mtk_drm_crtc *mtk_crtc = NULL;
+
+	if (IS_ERR_OR_NULL(crtc) || !crtc->dev)
+		return;
+
+	priv = crtc->dev->dev_private;
+	if (IS_ERR_OR_NULL(priv))
+		return;
 
 	mtk_crtc = to_mtk_crtc(crtc);
 	if (priv->data->mmsys_id == MMSYS_MT6768 ||
@@ -7235,20 +7241,28 @@ static void mtk_crtc_frame_buffer_release(struct drm_crtc *crtc,
 		return;
 	}
 
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
-		if (already_free == true || IS_ERR_OR_NULL(crtc))
-			return;
+	if (disp_helper_get_stage() != DISP_HELPER_STAGE_NORMAL)
+		return;
 
-		if (index == 0 && hrt_valid == true && mtk_crtc->is_plane0_updated == true) {
-			/*free fb buf after the 1st valid input buffer is unused*/
-			DDPMSG("%s, free frame buffer\n", __func__);
-			dev = crtc->dev;
-			mtk_drm_fb_gem_release(dev);
-			free_fb_buf();
-			already_free = true;
-		}
+	if (already_free == true)
+		return;
+
+	/*
+	 * No inherited framebuffer (cold-start boot) means there is nothing to
+	 * hand back to the page allocator.  mtk_drm_fb_gem_release() would
+	 * dereference fb_info.fb_gem unconditionally.
+	 */
+	if (!priv->fb_info.fb_gem)
+		return;
+
+	if (index == 0 && hrt_valid == true && mtk_crtc->is_plane0_updated == true) {
+		/*free fb buf after the 1st valid input buffer is unused*/
+		DDPMSG("%s, free frame buffer\n", __func__);
+		dev = crtc->dev;
+		mtk_drm_fb_gem_release(dev);
+		free_fb_buf();
+		already_free = true;
 	}
-#endif
 }
 
 void mtk_crtc_ovl_connect_change(struct drm_crtc *crtc, unsigned int ovl_res,
@@ -9592,10 +9606,13 @@ void mtk_crtc_enable_iommu_runtime(struct mtk_drm_crtc *mtk_crtc,
 	struct mtk_ddp_comp *comp;
 	struct mtk_drm_private *priv = mtk_crtc->base.dev->dev_private;
 
-	#ifndef CONFIG_MTK_DISP_NO_LK
+	/*
+	 * Map the framebuffer LK left behind so OVL can keep scanning it out
+	 * over the boot-logo hand-off.  mtk_crtc_fill_fb_para() returns without
+	 * touching fb_info when /chosen has no usable videolfb tag.
+	 */
 	if (drm_crtc_index(&mtk_crtc->base) == 0)
 		mtk_crtc_fill_fb_para(mtk_crtc);
-#endif
 
 #ifndef DRM_CMDQ_DISABLE
 	if (mtk_drm_helper_get_opt(priv->helper_opt, MTK_DRM_OPT_USE_M4U)) {
@@ -13040,15 +13057,15 @@ void mtk_crtc_config_default_path(struct mtk_drm_crtc *mtk_crtc)
 		return;
 	}
 
-#ifdef CONFIG_MTK_DISP_NO_LK
 	/*
 	 * Cold enable does not call first_enable_ddp_config(). Drop inherited
 	 * OVL addresses before starting DMA and enabling address translation;
-	 * the bootloader framebuffer is not mapped in the kernel's IOMMU.
-	 * Active DRM planes are restored after configuring the default path.
+	 * unless the bootloader framebuffer was adopted it is not mapped in the
+	 * kernel's IOMMU, so scanning it out would fault.  Active DRM planes
+	 * are restored after configuring the default path.
 	 */
-	__mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle, false);
-#endif
+	if (!priv->fb_info.fb_gem)
+		__mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle, false);
 
 	if (mtk_crtc->is_dual_pipe &&
 		mtk_drm_helper_get_opt(priv->helper_opt, MTK_DRM_OPT_TILE_OVERHEAD)) {
@@ -14846,15 +14863,15 @@ void mtk_crtc_first_enable_ddp_config(struct mtk_drm_crtc *mtk_crtc)
 			     mtk_crtc->gce_obj.event[EVENT_VDO_EOF]);
 	mtk_crtc_wait_frame_done(mtk_crtc, cmdq_handle, DDP_FIRST_PATH, 0);
 
-#ifdef CONFIG_MTK_DISP_NO_LK
-	/* No LK framebuffer is mapped in this mode. Disable its layers on both
-	 * pipes before enabling IOMMU translation and starting Linux scanout.
-	 */
-	__mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle, false);
-#else
-	/*1. Show LK logo only */
-	mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle);
-#endif
+	if (priv->fb_info.fb_gem) {
+		/*1. Keep the LK logo layer, its address is replaced below. */
+		mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle);
+	} else {
+		/* No LK framebuffer to refresh: drop every inherited layer before
+		 * enabling IOMMU translation and starting Linux scanout.
+		 */
+		__mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle, false);
+	}
 
 	/*2. Load Round Corner */
 	mtk_crtc_load_round_corner_pattern(&mtk_crtc->base, cmdq_handle);

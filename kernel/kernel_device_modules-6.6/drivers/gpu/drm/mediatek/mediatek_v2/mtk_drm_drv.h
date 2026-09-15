@@ -26,25 +26,26 @@
 #else
 #define MAX_CONNECTOR 3
 #endif
-/* op6893 6.6 bring-up: do not adopt the bootloader's display.
+/* LK display hand-off.
  *
- * mtk_dsi_probe() assumes LK already lit DSI0 -- with no "atag,videolfb" in
- * /chosen, mtk_disp_num_from_atag() returns 0 and the "(== 0 && DSI0)" branch
- * fires -- and marks the DSI *and* the panel as already up:
+ * The bootloader (LK) powers up the command-mode panel, writes the boot logo
+ * into a reserved framebuffer and publishes it through /chosen/atag,videolfb
+ * (fb_base/vram/fps/islcmfound/lcmname).  The driver adopts that framebuffer
+ * and the still-running DSI so the logo stays on screen until the first
+ * Android frame is committed -- this removes the black gap between the LK
+ * splash and the boot animation.
  *
- *	dsi->output_en = true;
- *	dsi->panel->prepared = true;  dsi->panel->enabled = true;
+ * The old bring-up hack "do not adopt the bootloader's display" is gone: with
+ * no atag,videolfb (or islcmfound bit 0 clear) the decision is now made at
+ * runtime instead of compile time, so a cold-start boot still initialises the
+ * panel itself.  See mtk_drm_lk_fb_present()/mtk_disp_bits_from_atag().
  *
- * mtk_output_dsi_enable() then takes its "dsi is initialized" early exit on
- * every modeset, so drm_panel_prepare()/lcm_prepare() never run: no panel init
- * DCS is ever sent and the DSI is never programmed.  The result is a CRTC that
- * reports enabled and page-flips happily while the panel keeps displaying the
- * frame LK left in its GRAM -- confirmed with a dumb-buffer modeset test.
- *
- * Defining this makes the driver initialise DSI and panel itself and stop
- * trying to inherit/free LK's framebuffer.
+ * NB: mtk_dsi_probe() used to adopt DSI0 whenever mtk_disp_num_from_atag()
+ * returned 0, which is also true when /chosen carries no videolfb at all.
+ * That made a cold-start boot inherit an unprogrammed DSI and never send
+ * panel init DCS.  The per-display islcmfound bit is now required, so the two
+ * cases can no longer be confused.
  */
-#define CONFIG_MTK_DISP_NO_LK
 //#define DRM_BYPASS_PQ
 //#define DRM_OVL_SELF_PATTERN
 //#define MTK_DSI1_SUPPORT_DSC1
@@ -606,6 +607,8 @@ int lcm_fps_ctx_update(unsigned long long cur_ns,
 int mtk_mipi_clk_change(struct drm_crtc *crtc, unsigned int data_rate);
 bool mtk_drm_lcm_is_connect(struct mtk_drm_crtc *mtk_crtc);
 unsigned int mtk_disp_num_from_atag(void);
+unsigned int mtk_disp_bits_from_atag(void);
+bool mtk_drm_lk_fb_present(void);
 int _parse_tag_videolfb(unsigned int *vramsize, phys_addr_t *fb_base,
 	unsigned int *fps);
 struct mml_drm_ctx *mtk_drm_get_mml_drm_ctx(struct drm_device *dev,
