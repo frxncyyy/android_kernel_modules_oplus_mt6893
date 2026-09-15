@@ -5844,6 +5844,33 @@ static void check_panel_connection(struct drm_crtc *crtc, struct mtk_dsi *dsi)
 	}
 }
 
+/*
+ * Route the panel's external TE signal into the DSI.  A command-mode panel
+ * only drives the GCE 'wait for DSI TE' event when EXT_TE_EN is set, so the
+ * trigger loop would otherwise park on that event and every dependent config
+ * packet would hit the 1 s CMDQ timeout.  The vendor programs this after the
+ * panel init commands, hence the helper rather than an inline write.
+ */
+static void mtk_dsi_cmd_mode_te_enable(struct mtk_dsi *dsi)
+{
+	if (!mtk_dsi_is_cmd_mode(&dsi->ddp_comp) || !dsi->driver_data)
+		return;
+
+	if (is_bdg_supported()) {
+		mtk_dsi_mask(dsi, DSI_TXRX_CTRL(dsi->driver_data),
+			EXT_TE_EN, EXT_TE_EN);
+	} else {
+		mtk_dsi_mask(dsi, DSI_TXRX_CTRL(dsi->driver_data),
+			(EXT_TE_EN | HSTX_CKLP_EN),
+			(EXT_TE_EN | HSTX_CKLP_EN));
+		if (mtk_dsi_is_LTPO_VM_Enable(dsi))
+			mtk_dsi_mask(dsi, DSI_TXRX_CTRL(dsi->driver_data),
+				EXT_TE_EN, EXT_TE_EN);
+	}
+
+	DDPINFO("%s: EXT_TE_EN programmed\n", __func__);
+}
+
 static void mtk_output_dsi_enable(struct mtk_dsi *dsi,
 	int force_lcm_update)
 {
@@ -6032,16 +6059,7 @@ static void mtk_output_dsi_enable(struct mtk_dsi *dsi,
 	 * after
 	 * lcm initialize.
 	 */
-	if (is_bdg_supported()) {
-		if (mtk_dsi_is_cmd_mode(&dsi->ddp_comp) && dsi->driver_data)
-			mtk_dsi_mask(dsi, DSI_TXRX_CTRL(dsi->driver_data), EXT_TE_EN, EXT_TE_EN);
-	} else {
-		if (mtk_dsi_is_cmd_mode(&dsi->ddp_comp) && dsi->driver_data)
-			mtk_dsi_mask(dsi, DSI_TXRX_CTRL(dsi->driver_data), (EXT_TE_EN | HSTX_CKLP_EN),
-						(EXT_TE_EN | HSTX_CKLP_EN));
-		if (mtk_dsi_is_LTPO_VM_Enable(dsi) && dsi->driver_data)
-			mtk_dsi_mask(dsi, DSI_TXRX_CTRL(dsi->driver_data), EXT_TE_EN, EXT_TE_EN);
-	}
+	mtk_dsi_cmd_mode_te_enable(dsi);
 
 #ifdef OPLUS_FEATURE_DISPLAY_APOLLO
 	mtk_crtc->oplus_apollo_br->oplus_power_on = true;
@@ -15975,35 +15993,24 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 
 	alias = mtk_ddp_comp_get_alias(dsi->ddp_comp.id);
 	/*
-	 * Adopt the display LK already set up only when LK lit this DSI output,
-	 * i.e. the per-display bit in /chosen/atag,videolfb is set.  Otherwise
-	 * the panel init DCS below would never be sent and the panel would stay
-	 * dark while the CRTC reports itself enabled.
+	 * The CRTC side keeps LK's framebuffer so the boot logo stays on
+	 * screen, but the DSI and the panel are deliberately NOT inherited.
+	 *
+	 * Inheriting LK's DSI/panel state leaves the AMS643YE05 DDIC unable to
+	 * report TE after the first idlemgr ULPS cycle: the trigger loop then
+	 * waits for EVENT_TE forever, the next config packet hits the 1 s CMDQ
+	 * timeout and the ESD workaround has to re-initialise the whole panel
+	 * (killing surfaceflinger mid-boot).  Letting the kernel run its own
+	 * DSI + panel bring-up on the first encoder enable costs one panel
+	 * init while the inherited splash is still on screen and keeps the
+	 * display stable for every later idle/power cycle.
+	 *
+	 * The one piece of LK state that is inherited is the connector's
+	 * "panel present" bit: that is what tells the trigger loop whether the
+	 * panel exists at all and therefore whether it must wait for TE.
 	 */
-	if (mtk_dsi_lk_adopted(dsi, alias)) {
-		/* set ccf reference cnt = 1 */
-		if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
-			pm_runtime_get_sync(dev);
-			phy_power_on(dsi->phy);
-			ret = clk_prepare_enable(dsi->engine_clk);
-			if (ret < 0)
-				DDPPR_ERR("%s Failed to enable engine clock: %d\n",
-					__func__, ret);
-
-			ret = clk_prepare_enable(dsi->digital_clk);
-			if (ret < 0)
-				DDPPR_ERR("%s Failed to enable digital clock: %d\n",
-					__func__, ret);
-		}
-		dsi->output_en = true;
-		if (dsi->panel) {
-			dsi->panel->prepared = true;
-			dsi->panel->enabled = true;
-		}
-		dsi->clk_refcnt = 1;
-		if (dsi->ext && dsi->ext->is_connected == -1)
-			dsi->ext->is_connected = panel_connection_from_atag() & BIT(alias);
-	}
+	if (dsi->ext && dsi->ext->is_connected == -1)
+		dsi->ext->is_connected = mtk_dsi_lk_adopted(dsi, alias);
 
 	platform_set_drvdata(pdev, dsi);
 

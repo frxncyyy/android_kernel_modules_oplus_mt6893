@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """Exercise the LK handoff decision and the DSI probe gate.
 
-Both entry points must agree on the same rule: inherit the bootloader display
-only when /chosen/atag,videolfb exists *and* its per-display islcmfound bit is
-set.  The old "display count is zero, so assume DSI0" shortcut also matched a
-boot that carried no videolfb at all, which made a cold boot inherit a DSI that
-had never been programmed.
+Only the CRTC inherits LK's display: it keeps the bootloader framebuffer so the
+boot logo stays on screen until the first Android frame is committed.  The DSI,
+its PHY and the panel are deliberately brought up by the kernel on the first
+encoder enable.  Inheriting LK's DSI/panel state leaves the AMS643YE05 DDIC
+unable to report TE after the display idle manager's first DSI power/ULPS
+cycle: the trigger loop parks on EVENT_TE, the next config packet hits the 1 s
+CMDQ timeout and the ESD workaround has to re-initialise the panel, killing
+surfaceflinger during boot.
+
+Both entry points still share one rule: /chosen/atag,videolfb exists *and* its
+per-display islcmfound bit is set means LK lit this output.  The old "display
+count is zero, so assume DSI0" shortcut also matched a boot that carried no
+videolfb at all, which made a cold boot inherit a DSI that had never been
+programmed.
 """
 from pathlib import Path
 import os
@@ -24,6 +33,14 @@ dsi = (v2 / "mtk_dsi.c").read_text()
 start = dsi.index("static bool mtk_dsi_lk_adopted(")
 end = dsi.index("\nstatic int mtk_dsi_probe(", start)
 adopted = dsi[start:end]
+
+# The probe may only inherit the connector's present bit.  Adopting the DSI
+# output, the panel state or the clock reference is what broke TE.
+probe = dsi[dsi.index("static int mtk_dsi_probe("):]
+for inherited in ["dsi->output_en = true;", "dsi->clk_refcnt = 1;",
+                  "dsi->panel->prepared = true;", "dsi->panel->enabled = true;"]:
+    assert inherited not in probe, inherited
+assert "dsi->ext->is_connected = mtk_dsi_lk_adopted(dsi, alias);" in probe
 
 harness = r'''
 #include <assert.h>
@@ -78,4 +95,5 @@ with tempfile.TemporaryDirectory(prefix="nord2-lk-handoff-") as directory:
     subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Werror",
                     str(path / "test.c"), "-o", str(path / "test")], check=True)
     subprocess.run([str(path / "test")], check=True)
-print("PASS: handoff requires a videolfb with this display's bit; DSI probe agrees")
+print("PASS: handoff requires a videolfb with this display's bit; the DSI probe "
+      "inherits only the connector's present bit")
