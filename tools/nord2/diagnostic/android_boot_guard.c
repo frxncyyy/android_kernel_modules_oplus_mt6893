@@ -146,12 +146,18 @@ static int awake_held(void)
     ssize_t n = read(fd, names, sizeof(names) - 1); close(fd);
     return n > 0 && contains(names, "nord2-android-diagnostic");
 }
+static int display_debug_command(const char *command)
+{
+    int fd = open("/sys/kernel/debug/mtkfb", O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    int ret = write_all(fd, command, strlen(command)); close(fd); return ret;
+}
 static void watchdog(int proc1)
 {
     const unsigned long start = seconds();
     unsigned long last = 0, last_snapshot = 0;
     int requested = 0, armed = 0, reprobed = 0, metadata_log = 0, final_root = 0;
-    int awake = 0, debug_mounted = 0;
+    int awake = 0, debug_mounted = 0, display_logger = 0;
     prctl(PR_SET_NAME, (unsigned long)"nord2-bootguard", 0, 0, 0);
     note("nord2-bootguard: started; Android timeout 240s, hard return 300s");
     for (;;) {
@@ -168,6 +174,11 @@ static void watchdog(int proc1)
             (!mount("debugfs", "/sys/kernel/debug", "debugfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) || errno == EBUSY)) {
             debug_mounted = 1; note("nord2-bootguard: debugfs available for display snapshots");
         }
+        if (debug_mounted && !display_logger && now - start >= 18 &&
+            !display_debug_command("logger:on")) {
+            display_logger = 1;
+            note("nord2-bootguard: display register logger enabled");
+        }
         if (misc < 0) misc = block("sdc2", "misc", "/dev/nord2-misc", MISC_BYTES);
         if (misc >= 0 && !arm(misc) && !armed) { armed = 1; note("nord2-bootguard: recovery command verified"); }
         if (sink < 0) {
@@ -179,7 +190,7 @@ static void watchdog(int proc1)
         struct stat metadata, root;
         if (!metadata_log && !stat("/metadata/vold", &metadata) &&
             !stat("/", &root) && metadata.st_dev != root.st_dev) {
-            int fd = open("/metadata/nord2-android-v5-kernel.bin",
+            int fd = open("/metadata/nord2-android-v11-kernel.bin",
                           O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
             if (fd >= 0) {
                 if (sink >= 0) close(sink);
@@ -213,7 +224,10 @@ static void watchdog(int proc1)
             snapshot_file("/sys/class/leds/lcd-backlight/max_brightness");
             snapshot_file("/sys/class/leds/lcd-backlight/max_hw_brightness");
             snapshot_file("/sys/kernel/debug/dri/0/state");
+            display_debug_command("diagnose");
             snapshot_file("/sys/kernel/debug/mtkfb");
+            snapshot_file("/proc/interrupts");
+            snapshot_file("/sys/kernel/debug/pinctrl/10005000.pinctrl/pinmux-pins");
             last_snapshot = now;
         }
         if (now != last) { flush_log(); last = now; }

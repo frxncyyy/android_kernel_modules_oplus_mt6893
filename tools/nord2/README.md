@@ -51,6 +51,7 @@ python3 tools/nord2/tests/test_charging_binding.py
 python3 tools/nord2/tests/test_devapc_startup.py
 python3 tools/nord2/tests/test_tee500_memory.py
 python3 tools/nord2/tests/test_prepare_dtb.py
+python3 tools/nord2/tests/test_build_boot_dtb.py
 python3 tools/nord2/tests/test_i2c_fifo.py
 python3 tools/nord2/tests/test_nord2_power.py
 ```
@@ -106,6 +107,30 @@ unrelated display panels, factory charging tests, newer SoC cache/VM scheduling,
 and the MT6991 audio card. The camera sensor list is intentionally empty until
 the actual Nord 2 sensors are ported. The inherited charging v2 framework does
 not implement this board's complete legacy MP2650/ZY0603 power path.
+
+## Boot DTB
+
+The table behind the kernel is a 64-byte MediaTek header carrying exactly one
+device tree. The stock table holds a plain `mediatek,MT6893` tree, and flashing
+that tree unchanged loses two board facts the port depends on: the root
+`compatible` that opts the machine into the OnePlus power monitor, and the four
+CPU regulator supplies `mt_cpufreq` resolves. Without them `nord2-power`'s
+`oplus,bq27541-battery` gauge and `oplus,mp2650-charger` port both return
+`-ENODEV`, so Android reports no battery and the gauge daemon exits on every
+retry.
+
+`tools/nord2/build_boot_dtb.py` builds the table from the device's own DTB:
+
+```sh
+python3 tools/nord2/build_boot_dtb.py recovery.dtb boot-table-source.bin \
+    base.dtb boot-table.dtb --power --usb-role peripheral
+```
+
+It runs `prepare_dtb.py --power`, forces the diagnostic USB role, and only then
+rewraps the result, asserting the board compatible, the four supplies and the
+USB role survived. Packaging that uses the plain recovery tree instead is what
+dropped the fuel gauge; run the tool rather than copying a device tree into the
+bundle by hand.
 
 ## Panel integration
 
