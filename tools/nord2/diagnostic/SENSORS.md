@@ -634,3 +634,30 @@ the fallback to use them, then re-read whether `mt_get_fmeter_freq()` returns a
 frequency.  If it does, the calibration handoff completes, the SCP should stop
 crash-looping, `scp_ready` should stay 1, and the sensor hub bring-up can proceed.
 That is a single measurable step rather than another elimination.
+
+
+## Round 17 correction: the values match, so the fault is in the fmeter clock itself
+
+Checked before acting on it, which saves a wasted round: the 6.6 DTS carries
+
+    fmeter-args-u2-cali   = < 36 1 >;   /* OSC2_SYNC_CK (i.e. D2) */
+    fmeter-args-u2-result = < 36 1 >;   /* OSC2_CK */
+    ccf-fmeter-support;
+
+and fm_id 36 / fm_type 1 is **exactly** what the bring-up fallback assumes, which
+is what the log's `fmeter-id-ulposc2=36, assume ABIST` line reports.  So supplying
+the property cannot change anything: the guess was already right and
+`mt_get_fmeter_freq(36, 1)` still returns 0.
+
+Therefore the failure is one layer further down - the fmeter clock measurement
+itself, not its arguments.  Note the third property in that node,
+`ccf-fmeter-support`, which the stock DTB also lacks; it selects the CCF fmeter
+path rather than a raw register read.  The likely gap is the fmeter clock driver
+and its node: whether the fmeter clock provider is built and loaded on the port at
+all, and whether its DT node (present in the 6.6 mt6893.dtsi) survives into the
+port's DTB.
+
+Next: find the fmeter clock driver in the 6.6 tree, check that it is in the port's
+module set and load order, and compare its DT node between mt6893.dtsi and the
+prepared DTB.  `mt_get_fmeter_freq()` returning 0 with "pls check CCF configs" is
+a clock-provider complaint, and an absent provider would produce exactly it.
