@@ -283,3 +283,41 @@ Instrumenting `mtk_nanohub_send_timestamp_wake_locked()` is therefore still the
 right next move, but the question it should answer is now narrower: whether
 `scp_ipi_send()` reaches the mailbox at all, and if it does, why the peer never
 completes the transfer.
+
+
+## Round 11: the send dies in pre_cb, before the mailbox
+
+The log has been carrying the answer all along, in a line that is easy to skim
+past because it does not say "sensor":
+
+    Error: IPI [scp_ipidev_ipi#17] pre_cb fail        (repeating)
+
+In the tinysys IPI framework each `scp_ipidev_ipi#N` has a `pre_cb` that runs
+*before* the transfer is handed to the mailbox.  For the SCP device that callback
+is set in `scp_ipi_table.h`:
+
+    .pre_cb = (ipi_tx_cb_t)scp_awake_lock,
+
+so the failing callback is `scp_awake_lock()` - the call that holds the SCP awake
+so a transfer can be delivered.  When it fails, `scp_ipi_send()` never reaches
+the mailbox and the sender times out.  That is precisely the asymmetry round 8
+recorded: the hub-to-AP direction needs nothing from `scp_awake_lock` and works,
+while every AP-to-hub transfer fails.
+
+This also revises round 10's conclusion.  The ten tolerated
+`devm_ioremap_resource()` NULL failures on the SCP device were called benign
+there, on the grounds that SPMI and MCUPM show the same string and work.  That
+reasoning was about *other* devices.  `scp_awake_lock()` walks SCP register
+windows, so a window left NULL on the SCP device is exactly the kind of fault
+that would make it return an error while leaving everything else looking healthy.
+
+Two things also cleared this round, both by direct comparison with stock: the
+mbox probe loop is identical (same `mtk_mbox_probe`, `enable_irq_wake`,
+`mbox_setup_pin_table(i)` and the same `mbox%d probe fail` diagnostics, none of
+which appear in the log), and `scp_ipidev (with 52 IPI) has registered` confirms
+the IPI device came up.
+
+Next: identify which SCP register windows are NULL, by instrumenting the
+`devm_ioremap_resource()` sites or reading the resource indices they request, and
+confirm `scp_awake_lock()` is returning an error because of one.  That is now a
+much smaller and more concrete job than "the mailbox layer differs".
