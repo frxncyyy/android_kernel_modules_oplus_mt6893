@@ -245,3 +245,41 @@ likelihood:
 on every attempt, so instrumenting the send path there - which IPI id, which
 mailbox, and what the mbox registers say afterwards - separates "wrong channel"
 from "nothing listening".
+
+
+## Round 10: the whole IPI software path matches 4.19
+
+Everything between nanohub and the mailbox tables was compared against the stock
+tree this round, and it all matches.  Worth writing down so it is not re-checked:
+
+* `mtk_nanohub_ipi.c` `ipi_txrx_bufs()` is byte-identical to 4.19 - same
+  `scp_ipi_send(IPI_SENSOR, ..., 0, SCP_A_ID)`, same `SCP_IPI_ERROR` /
+  `SCP_IPI_BUSY` retry loop, same 1000-retry bound.
+* Both trees use the same `IPI_SENSOR` / `IPI_SENSOR_INIT_START` enum ids and
+  register `mtk_nanohub_ipi_handler` on `IPI_SENSOR`.
+* `scp_ipi_table_init()` in 6.6 reads `mbox-count` (the `scp_dt_*` helper
+  supplies the `mbox_count` fallback, and the DTB has `mbox_count = 5`), and its
+  `send_item_num = 3` / `recv_item_num = 4` match the 4.19 literals exactly.
+  The DTB has no extra `#recv-cells-mode`, so the driver takes the same 4-element
+  recv layout 4.19 used.
+* Consequently the driver logs neither `[SCP] mbox count not found` nor
+  `[SCP] scp send table not found` or `scp recv table not found`, and indeed
+  round 41's log has none of them.
+
+So the timeout is no longer a software mismatch in the nanohub driver, the IPI
+id, the send flags or the table interpretation.  What remains is below that:
+
+1. the 6.6 hard-IPI/mailbox layer itself (`mtk-mbox`, `mtk_tinysys_ipi`) against
+   the 4.19 implementation the firmware was built for;
+2. the ten tolerated `devm_ioremap_resource()` NULL failures on the SCP device at
+   boot.  There are thirteen `devm_ioremap_resource()` sites in `scp_helper.c`;
+   the ones that matter abort the probe and print `scpreg.<name> error`, and none
+   of those lines appear.  That leaves sites that either ignore failure or run
+   outside the probe, and a register window left unmapped on a path that only the
+   send direction uses would produce exactly this asymmetry - ACKs arriving
+   inbound while outbound traffic times out.
+
+Instrumenting `mtk_nanohub_send_timestamp_wake_locked()` is therefore still the
+right next move, but the question it should answer is now narrower: whether
+`scp_ipi_send()` reaches the mailbox at all, and if it does, why the peer never
+completes the transfer.
