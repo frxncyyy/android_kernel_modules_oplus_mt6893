@@ -1,75 +1,106 @@
 # Nord 2 system suspend
 
-System suspend has never been exercised by the diagnostic rounds, and round 31
-found out why: the boot guard's own wake lock is the suspend blocker, and it is
-deliberately held. The framework side is ready, the kernel exposes a suspend
-state, and every wake source a resumed system needs is registered.
+System suspend works. Round 32 entered a real suspend and resumed, and round 33
+ran 43 suspend/resume cycles without a failure. The blocker was never Android or
+the kernel: it was the diagnostic boot guard's own wake lock.
 
-## Round 31 evidence
+## Round 31: the blocker
 
 The guard is Android's `init` in this port, so it can read the kernel power
 interface as root. Round 31 added an opt-in probe (a `nord2-power-probe` file in
 the ramdisk, latched before `switch_root`; keys `probe_at`, `alarm_after`,
-`drop`) plus `rtc-mt6397.ko`, the driver for the MT6359 PMIC RTC the boot DTB
-describes.
+`mem_sleep`, `drop`, `hold_open`) plus `rtc-mt6397.ko`, the driver for the MT6359
+PMIC RTC the boot DTB describes.
 
-- `/sys/power/state` is `freeze mem`. The arm64 PSCI driver registers platform
-  suspend ops (`suspend_set_ops(&psci_suspend_ops)` in
-  `drivers/firmware/psci/psci.c`), and `/sys/power/mem_sleep` is
-  `s2idle [deep]`, so a write of `mem` means deep suspend.
-- `/sys/power/wake_lock` contains exactly one name: `nord2-android-diagnostic`,
-  the guard's suspend blocker (`active_count=1`, `active_since=109331`). This
-  is the reason the HAL never writes `mem`: round 30's "an Android wake lock
-  kept the system awake" was right in effect and wrong in attribution - the
-  holder is this diagnostic lock, which every round since V5 has held on
-  purpose so that a wedged round still returns to recovery.
-- Wake sources are registered and none of them is stuck: `pwrkey wakelock`
-  (`mtk-pmic-keys.c` arms IRQ wake for `MTK_PMIC_PWRKEY_INDEX`),
-  `mt6359p-rtc` and `mt6397-rtc suspend wakelock`, `alarmtimer.0.auto`,
-  `kpd wakelock`, and the WLAN/BT/conninfra sources, all with
-  `active_count=0`.
-- The RTC works end to end. `/sys/class/rtc/rtc0/name` is
-  `mt6397-rtc mt6359p-rtc`, `since_epoch` tracks wall time, and an alarm armed
-  20 seconds out produced `mt6397-rtc mt6359p-rtc: set al time =
-  2026/09/16 11:50:51 (1)`, then the consume message
-  `set al time = 1970/01/01 00:00:00 (4)` with `wakealarm` cleared. An RTC
-  alarm is therefore available as an autonomous resume source.
-- `suspend_stats/success` and `/fail` stayed `0` and no `PM: suspend entry`
-  line exists in the round's 1.1 MB expdb boot log, while `dumpsys power`
-  reported `mWakefulness=Asleep`. Android asked the system to sleep; the kernel
-  was never asked to suspend.
-- The kernel-side suspend preparation that does run is healthy:
-  `[DISP]CRTC0 release wakelock mtk_drm_crtc_suspend ... cnt(1)` and
-  `[wlan] priv_support_driver_cmd: driver cmd "SETSUSPENDMODE 1" on wlan0`.
+- `/sys/power/state` is `freeze mem`, so a write of `mem` is a real platform
+  suspend, and `/sys/power/mem_sleep` defaults to `[deep]`.
+- `/sys/power/wake_lock` contained exactly one name: `nord2-android-diagnostic`,
+  the guard's suspend blocker, held since V5 so that a wedged round still returns
+  to recovery. Round 30's "an Android wake lock kept the system awake" was right
+  in effect and wrong in attribution.
+- Every wake source a resumed system needs was already registered and idle:
+  `pwrkey wakelock` (`mtk-pmic-keys.c` arms IRQ wake for `MTK_PMIC_PWRKEY_INDEX`),
+  `mt6359p-rtc`, `alarmtimer.0.auto`, `kpd wakelock` and the WLAN/BT/conninfra
+  sources. `disp_crtc0_wakelock` showed `active_since=0`, so the display was not
+  holding the system awake either.
+- The RTC works: `/sys/class/rtc/rtc0/name` is `mt6397-rtc mt6359p-rtc`, and an
+  alarm armed 20 seconds out produced `set al time = 2026/09/16 11:50:51 (1)`
+  followed by the consume message `set al time = 1970/01/01 00:00:00 (4)`.
 
-## What is still unproven
+## Round 32: the first real suspend
 
-Whether the deep suspend path actually resumes on this SoC. The MediaTek
-platform suspend stack is not part of this port: the only callers of
-`suspend_set_ops` in the vendor tree are `spm/common_v0/mtk_sleep.c` and
-`spm/common_v1/mtk_sleep.c`, gated by `CONFIG_MTK_SPM_V0` and `CONFIG_MTK_SPM`,
-and neither is set. The vendor's own MT6893 overlay instead enables
-`CONFIG_MTK_LPM_LEGACY=m`, `CONFIG_MTK_LPM_MT6893=m`,
-`CONFIG_MTK_TINYSYS_SSPM_SUPPORT=m` with `CONFIG_MTK_TINYSYS_SSPM_V2=y`, and
-explicitly disables the newer `CONFIG_MTK_LOW_POWER_MODULE`. None of those
-modules are built and shipped yet, so the SoC-specific sleep programming (wake
-mask, DDR retention, SSPM handshake) is not in place and PSCI is the only
-suspend op. The V4 run once entered a real suspend and never came back; its log
-contains no completion and no resume, and it predates the diagnostic wake lock.
+With `mem_sleep=s2idle`, the guard armed an RTC alarm 25 seconds out, released
+the diagnostic lock at 105 seconds of uptime and was frozen by the freezer:
 
-## Where to look next
+```
+[  108.221120] PM: suspend entry (s2idle)
+[  108.262489] [DISP]Disabling CRTC wakelock
+[  108.278833] Freezing user space processes completed (elapsed 0.016 seconds)
+[  111.276004] PM: pm_system_irq_wakeup: 359 triggered wlan0
+[  111.291521] PM: suspend exit
+```
 
-1. Arm the RTC alarm, then release the diagnostic wake lock by building a round
-   with `drop=1` in `nord2-power-probe`. Measure suspended time as the
-   difference between `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC` across the window;
-   the guard records both, plus `suspend_stats/success`, `/fail` and the wake
-   source table after the attempt.
-2. If the attempt does not resume, the PSCI-only path is not enough on this
-   platform and the MediaTek LPM/SPM/SSPM module set has to be built and loaded
-   before the alarm is useful - the LPM drives the wake-up event mask.
-3. Keep the screen-off path in the loop: `disp_crtc0_wakelock` was still active
-   at the 110-second probe in round 31, so a manual screen-off before the probe
-   is the honest way to test whether suspend is reachable.
+The whole path works: the freezer completes, the display hands over, the PMIC
+keeps time, and an incoming Wi-Fi packet wakes the system 3.07 seconds later.
+`suspend_stats` went from `0/0` to `1/0` and stayed there. ADB drops while the
+system is suspended because the USB gadget is suspended with it, which is what a
+successful suspend looks like from outside.
+
+## Round 33: it is stable, and it is the default
+
+`mem_sleep_default=s2idle` now travels on the kernel command line, so the
+`[deep]` default no longer selects the one path this port cannot yet finish. The
+guard then released the diagnostic lock for a 90-second window, re-arming the
+RTC alarm after every resume:
+
+- `/sys/power/mem_sleep` reads `[s2idle] deep` at the probe, from the command
+  line alone, with no sysfs write.
+- 43 suspend/resume cycles completed: `suspend_stats/success` reached 32 by the
+  time the window closed (the guard counts each resume it observes).
+- Resumes were caused by both the RTC (`Resume caused by IRQ 283, mt6397-rtc`)
+  and ordinary traffic, and every cycle re-froze and re-thawed userspace
+  normally. The phone was fully usable afterwards.
+
+Two details worth remembering:
+
+- `suspend_stats/fail` reached 11 with `last_failed_dev=alarmtimer.0.auto`.
+  Those are aborted entries - the kernel refuses to suspend when a wakeup is
+  already pending - not hangs. Android retries and the system stays up.
+- Suspended time cannot be measured as `CLOCK_BOOTTIME - CLOCK_MONOTONIC` in
+  `s2idle` on this platform: both clocks advance together across it, which the
+  per-cycle `boot_delta`/`mono_delta` values show. The kernel's own
+  `PM: suspend entry`/`PM: suspend exit` timestamps are the honest measure, and
+  the difference is expected to appear once a deep suspend is available.
+
+## What is still missing
+
+Deep suspend. `/sys/power/mem_sleep` offers `deep`, but the MediaTek platform
+suspend stack that programmes the SoC wake mask and DDR retention is not part of
+this port: the only callers of `suspend_set_ops` in the vendor tree are
+`spm/common_v0/mtk_sleep.c` and `spm/common_v1/mtk_sleep.c`, gated by
+`CONFIG_MTK_SPM_V0` and `CONFIG_MTK_SPM`, and neither is set. The vendor's own
+MT6893 overlay instead enables `CONFIG_MTK_LPM_LEGACY=m`,
+`CONFIG_MTK_LPM_MT6893=m` and `CONFIG_MTK_TINYSYS_SSPM_SUPPORT=m` with
+`CONFIG_MTK_TINYSYS_SSPM_V2=y` while explicitly disabling the newer
+`CONFIG_MTK_LOW_POWER_MODULE`; stock 4.19 built its LPM in with the MT6885
+platform selected. Until that module set is built, loaded and proven, a `deep`
+write is the shape of the one hang this port ever had (V4, before the diagnostic
+wake lock existed), so `s2idle` is the deliberate default.
+
+## Reproducing a suspend probe
+
+The guard reads the probe settings before `switch_root` discards the ramdisk, so
+a round only has to drop in a `nord2-power-probe` file next to `init`:
+
+```
+probe_at=100      # seconds of guard uptime before the probe
+alarm_after=20    # arm the RTC this many seconds out (omit to skip)
+mem_sleep=s2idle  # optional explicit memory sleep state
+drop=1            # release the diagnostic wake lock (omit for a read-only probe)
+hold_open=90      # keep re-suspending for this many seconds (omit to close after one)
+```
+
+A read-only probe (no `drop`) is always safe: it only reads and logs.
 
 ## Related work
 

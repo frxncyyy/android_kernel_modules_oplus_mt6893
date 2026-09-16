@@ -139,13 +139,13 @@ kernel's symbol CRCs. See
 [Connectivity diagnostics](diagnostic/CONNECTIVITY.md) for module roles, load
 order, the firmware path and the remaining GPS/FM and MDDP work.
 
-System suspend is the next item. Round 31 found that the diagnostic boot guard's
-own wake lock is the suspend blocker: the kernel exposes `freeze mem` with
-`[deep]` as the default memory sleep state, every needed wake source is
-registered, and the PMIC RTC (`rtc-mt6397.ko`) arms and fires alarms, so the next
-round can arm an alarm, drop the guard's lock and measure a real suspend.
-[Suspend notes](diagnostic/SUSPEND.md) record the evidence, what is still
-unproven about the PSCI-only deep path, and where to look next.
+System suspend runs on the port. Rounds 32 and 33 released the diagnostic boot
+guard's own wake lock - the only suspend blocker - and the system entered and
+left `s2idle` 43 times without a failure, woken by both the PMIC RTC and ordinary
+network traffic. `mem_sleep_default=s2idle` now rides on the kernel command line,
+so the image does not fall into the `deep` path that needs MediaTek's SPM/LPM
+stack. [Suspend notes](diagnostic/SUSPEND.md) record the evidence, the probe
+interface, and why `deep` is still deliberately out of reach.
 
 The RTC joined the shipped module set in round 31: the boot DTB describes the
 MT6359 PMIC RTC as `mediatek,mt6359-rtc`, which `rtc-mt6397.ko` matches, and one

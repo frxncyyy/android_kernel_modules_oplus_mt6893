@@ -199,9 +199,36 @@ static unsigned long probe_value(const char *key)
     char *hit = contains(probe_cfg, needle);
     return hit ? (unsigned long)atol(hit + strlen(needle)) : 0;
 }
-static void power_snapshot(void)
+/* Copy the whitespace-delimited token after "key=" into out. */
+static int probe_text(const char *key, char *out, unsigned long size)
 {
-    snapshot_file("/sys/power/state");
+    char needle[32];
+    unsigned long n = 0;
+    strcpy(needle, key); append(needle, "=");
+    char *hit = contains(probe_cfg, needle);
+    if (!hit || !size) return -1;
+    for (hit += strlen(needle); *hit && n < size - 1; hit++) {
+        if (*hit == ' ' || *hit == '\n' || *hit == '\r' || *hit == '\t') break;
+        out[n++] = *hit;
+    }
+    out[n] = 0;
+    return n ? 0 : -1;
+}
+/* Arm the PMIC RTC so that a suspend with nothing else to wake it still ends,
+ * and so that every pass through the suspend/resume loop has a fresh safety net. */
+static void arm_probe_alarm(unsigned long seconds)
+{
+    char text[32];
+    unsigned long base = value_of("/sys/class/rtc/rtc0/since_epoch");
+    if (!base) { note("nord2-power-probe: no RTC device present"); return; }
+    decimal(text, base + seconds);
+    if (!value_write("/sys/class/rtc/rtc0/wakealarm", text)) {
+        note("nord2-power-probe: RTC wake alarm armed");
+        snapshot_file("/sys/class/rtc/rtc0/wakealarm");
+    } else note("nord2-power-probe: RTC wake alarm write failed");
+}
+static void power_snapshot(void)
+{    snapshot_file("/sys/power/state");
     snapshot_file("/sys/power/mem_sleep");
     snapshot_file("/sys/power/wake_lock");
     snapshot_file("/sys/power/suspend_stats/success");
@@ -221,6 +248,9 @@ static void watchdog(int proc1)
     unsigned long probe_at = probe_value("probe_at"), probe_alarm = probe_value("alarm_after");
     unsigned long probe_drop = probe_value("drop"), probe_boot = 0, probe_mono = 0;
     unsigned long probe_released = 0, probe_success = 0, probe_fail = 0;
+    unsigned long probe_open = probe_value("hold_open"), probe_cycles = 0;
+    char probe_mem[16] = {0};
+    probe_text("mem_sleep", probe_mem, sizeof(probe_mem));
     int requested = 0, armed = 0, reprobed = 0, metadata_log = 0, final_root = 0;
     int awake = 0, debug_mounted = 0, display_logger = 0, probe_done = 0, probe_hold = 0;
     prctl(PR_SET_NAME, (unsigned long)"nord2-bootguard", 0, 0, 0);
@@ -283,23 +313,19 @@ static void watchdog(int proc1)
             reprobed = 1;
         }
         if (probe_at && !probe_done && now - start >= probe_at) {
-            char text[96];
             probe_done = 1;
             probe_boot = seconds(); probe_mono = monotonic();
             probe_success = value_of("/sys/power/suspend_stats/success");
             probe_fail = value_of("/sys/power/suspend_stats/fail");
             note("nord2-power-probe: begin");
             power_snapshot();
-            if (probe_alarm) {
-                unsigned long base = value_of("/sys/class/rtc/rtc0/since_epoch");
-                if (base) {
-                    decimal(text, base + probe_alarm);
-                    if (!value_write("/sys/class/rtc/rtc0/wakealarm", text)) {
-                        note("nord2-power-probe: RTC wake alarm armed");
-                        snapshot_file("/sys/class/rtc/rtc0/wakealarm");
-                    } else note("nord2-power-probe: RTC wake alarm write failed");
-                } else note("nord2-power-probe: no RTC device present");
+            if (probe_mem[0]) {
+                if (!value_write("/sys/power/mem_sleep", probe_mem)) {
+                    note("nord2-power-probe: memory sleep state selected");
+                    snapshot_file("/sys/power/mem_sleep");
+                } else note("nord2-power-probe: memory sleep state write failed");
             }
+            if (probe_alarm) arm_probe_alarm(probe_alarm);
             if (probe_drop) {
                 if (!value_write("/sys/power/wake_unlock", "nord2-android-diagnostic")) {
                     probe_hold = 1;
@@ -309,25 +335,43 @@ static void watchdog(int proc1)
             probe_released = now;
             flush_log();
         }
+        /* While the lock is released the system can freeze this process, so each
+         * pass here means at least one suspend and resume completed.  The window
+         * stays open for probe_open seconds when asked, re-arming the alarm every
+         * cycle, and always closes with the lock reacquired. */
         if (probe_hold) {
             unsigned long success = value_of("/sys/power/suspend_stats/success");
             unsigned long fail = value_of("/sys/power/suspend_stats/fail");
             unsigned long boot = seconds(), mono = monotonic();
-            if (success != probe_success || fail != probe_fail ||
-                now - probe_released >= (probe_alarm ? probe_alarm + 20 : 25)) {
-                char text[128];
-                strcpy(text, "nord2-power-probe: success="); decimal(text + strlen(text), success);
+            char text[160];
+            if (success != probe_success || fail != probe_fail) {
+                probe_success = success; probe_fail = fail; probe_cycles++;
+                strcpy(text, "nord2-power-probe: cycle "); decimal(text + strlen(text), probe_cycles);
+                append(text, " success="); decimal(text + strlen(text), success);
                 append(text, " fail="); decimal(text + strlen(text), fail);
                 append(text, " boot_delta="); decimal(text + strlen(text), boot - probe_boot);
                 append(text, " mono_delta="); decimal(text + strlen(text), mono - probe_mono);
-                append(text, " (difference is suspended time)");
+                append(text, " open="); decimal(text + strlen(text), now - probe_released);
                 note(text);
+                if (probe_open && now - probe_released < probe_open && probe_alarm)
+                    arm_probe_alarm(probe_alarm);
+                if (!probe_open || now - probe_released >= probe_open) {
+                    strcpy(text, "nord2-power-probe: window closed after "); decimal(text + strlen(text), probe_cycles);
+                    append(text, " cycles"); note(text);
+                    power_snapshot();
+                    if (!awake_write("/sys/power/wake_lock") && awake_held())
+                        note("nord2-power-probe: diagnostic wake lock reacquired");
+                    probe_hold = 0;
+                }
+            } else if (now - probe_released >= (probe_open ? probe_open + 60 : (probe_alarm ? probe_alarm + 20 : 25))) {
+                strcpy(text, "nord2-power-probe: no suspend observed in "); decimal(text + strlen(text), now - probe_released);
+                append(text, " seconds"); note(text);
                 power_snapshot();
                 if (!awake_write("/sys/power/wake_lock") && awake_held())
                     note("nord2-power-probe: diagnostic wake lock reacquired");
                 probe_hold = 0;
-                flush_log();
             }
+            flush_log();
         }
         if (now - start >= 40 && now - last_snapshot >= 40) {
             snapshot_file("/sys/class/power_supply/battery/uevent");
