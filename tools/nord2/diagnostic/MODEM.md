@@ -55,3 +55,43 @@ load after it.  `ccci_dpmaif` additionally exports 89 globals of its own.
 As with the display and sensor work: nothing counts until the phone shows it.
 For the modem that means the modem reaching a ready state and a call or at least
 a registered SIM - not a sysfs attribute and not a log line on its own.
+
+
+## Round 21: the dependency guard rejected the first shipping attempt, and named the gaps
+
+Shipping the CCCI set straight away was rejected by the preflight's module
+dependency check before anything was flashed - which is the guard doing exactly
+its job, and in one round rather than ten:
+
+    {'ccci_cldma.ko':  ['ccmni_ops', 'ccmni_set_cur_speed'],
+     'ccci_dpmaif.ko': ['ccmni_ops', 'ccmni_set_cur_speed', 'ccmni_set_init_rps',
+                        'ccmni_set_tcp_is_need_gro', 'dvfsrc_get_required_opp_peak_bw',
+                        'set_ccmni_rps'],
+     'ccci_md_all.ko': ['ccmni_ops', 'mtk_smpu_md_handling_register',
+                        'smpu_clear_md_violation']}
+
+So the CCCI set needs three more providers, all of which are built:
+
+    ccmni_ops, ccmni_set_*, set_ccmni_rps   -> drivers/misc/mediatek/ccmni/ccmni.ko
+    dvfsrc_get_required_opp_peak_bw         -> drivers/soc/mediatek/mtk-dvfsrc.ko
+    mtk_smpu_md_handling_register           -> drivers/memory/mediatek/emi_legacy/emi-dummy.ko
+
+Note the emi-dummy path: it is under `drivers/memory/mediatek/emi_legacy/`, not
+`drivers/misc/mediatek/emi/submodule/` where it was first looked for.  Loading
+providers before consumers means the group becomes:
+
+    mtk_dvfsrc, emi_dummy, ccmni, ccci_util_lib, ccci_auxadc, ccci_md_all,
+    ccci_ccif, ccci_cldma, ccci_dpmaif, ccci_fsm_scp, mddp
+
+### State at the end of round 21
+
+Nothing was flashed for the modem.  The round-48 bundle was rejected by the
+preflight, and the phone was rebooted back to ColorOS and verified
+(`sys.boot_completed=1`) with all partitions intact.
+
+The round-49 packaging attempt then failed in the harness rather than on the
+device: the `emi-dummy.ko` path in that script was wrong, and
+`build_boot_dtb.py` also returned non-zero while packaging the v49 bundle, so the
+preflight never ran.  `work/private/android-v49/` should be treated as unusable -
+rebuild the bundle from `android-v47` (which is known good) and apply the module
+additions above.
