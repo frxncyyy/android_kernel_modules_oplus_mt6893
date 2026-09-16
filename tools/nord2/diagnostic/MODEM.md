@@ -277,3 +277,55 @@ image load / FSM path, and that is where the next round should look.  What is no
 established from round 23 still stands and is the reliable part: the modules load,
 `/dev/ccci*` exists, the ccmni netdevices come up, and the modem reserved memory is
 claimed.
+
+
+## Round 26: the modem is running, and stock userspace is talking to it
+
+Re-reading the round-23 log from the end rather than the start changes the picture
+again, this time upward.  The CCCI stack is not merely loaded - it is working, and
+the stock userspace is using it:
+
+    [ccci1/mcd]md_cd_get_modem_hw_info, val: mddbgss, 0x2844, l2sram_size: 0
+    [ccci1/dpmf][dpmaif_init_register] register: ao_ul=... pd_md_misc=... pd_sram: ...
+    [ccci1/fsm]kern_broadcast_md_sate: 1 start
+    [ccci1/fsm]kern_broadcast_md_sate: 1/0x0 end
+    [ccci1/fsm]command 2 is completed 1 by fsm_main_thread [ccci_md_all]
+    [ccci1/chr]port ccci_aud close by HwBinder:640_1 rx_len=0 empty=1
+    [ccci1/chr]port ccci_raw_dhl close by emdlogger ...
+    [ccci1/chr]port ccci_ccb_ctrl close by emdlogger ...
+    [ccci1/cif]total cnt=5317;rxq0 isr_cnt=6;rxq1 isr_cnt=58;rxq4 isr_cnt=4066;rxq5 isr_cnt=1184
+    [ccci1/bat][ccci_dpmaif_bat_stop] stop.
+
+So: the modem hardware info is read, the DPMAIF data path registers, the FSM
+reaches state 1 and completes commands, `emdlogger` and a HwBinder client - the
+stock vendor daemons - open and close modem ports by name, and the DPMAIF has
+serviced **5317 buffers** with thousands of interrupts across its queues.  That is
+a live modem interface, not a stack that failed to start.
+
+Note also the timestamps: these are at 240-243 s, the very end of the round, so the
+modem was still active when the guard rebooted to recovery after its ~4 minute
+budget.  Nothing here says the modem gave up.
+
+`port ccci_0_200 read data fail when md_state = 0` appears early and is the
+expected result of a userspace read before the modem is up.
+
+### Revised status, and the honest limit
+
+The earlier framing - "kernel half proven, firmware and userspace still to do" -
+was too pessimistic.  The userspace half is stock and demonstrably talking to the
+6.6 CCCI stack.  What remains unproven is whether the modem completes RF bring-up
+and registration, and **that cannot be settled on this phone as it stands**: there
+is no SIM (`gsm.sim.state` is `ABSENT,ABSENT` on stock as well), and no
+registration without one.
+
+What is established is now a fairly strong statement: on the 6.6 port the modem
+drivers load, the device nodes and data path come up, the modem reaches FSM state
+1, and the stock vendor daemons successfully open and use the modem ports.
+
+### Third revision in three rounds
+
+Round 24 called the benign CCCI warnings the blocker; round 25 corrected that;
+round 26 corrects the pessimism that remained.  The recurring cause is reading a
+log's loudest lines instead of its whole sequence and the code behind it.  For
+anyone continuing: read the **end** of the CCCI sequence first, and treat
+`Key[...] not exist` lines as absent optional boot args rather than failures.
