@@ -486,3 +486,53 @@ calibration source it depends on is the likely gap, since it is clearly not
 failing for a reason the SCP's liveness would explain (the SCP is up and sending
 ready IPIs throughout).  Making a calibration failure non-fatal is the fallback
 if the source cannot be brought up, but understanding it comes first.
+
+
+## Round 16: the calibration failure is confirmed, and made non-fatal
+
+The log names the calibration fault directly:
+
+    [scp_dvfs]: [mt_scp_dts_fmeter_get] Can't read fmeter-args-u2-cali
+    [scp_dvfs]: [_get_ulposc_clk_by_fmeter_wrapper]: mt_get_fmeter_freq(36, 1) return 0, pls check CCF configs
+    WARNING: ... at scp_dvfs.c:1566 _get_ulposc_clk_by_fmeter_wrapper
+
+`mt_get_fmeter_freq(36, 1)` returns 0, so `ulposc_cali_process()` fails and sets
+`cali_failed`, and `sync_ulposc_cali_data_to_scp()` then returns false
+*immediately and forever* from that sticky flag (scp_dvfs.c:1495).  The caller's
+loop of twenty `msleep(2000)` iterations could therefore never succeed - it just
+burned ~40 s and then fired `scp_send_reset_wq(RESET_TYPE_WDT)`, which cleared
+`scp_ready` and killed every AP-to-SCP transfer.  This also explains the SCS
+unwinder warning that had been sitting on the backlog: it is this fmeter path
+(scp_dvfs.c:1566), not `patch-scs.c` itself.
+
+Fix applied: the twenty-iteration bound now logs
+`ULPOSC cali unavailable, continuing without it` and breaks instead of resetting
+the SCP.  A genuine SCP death still takes the `RESET_STATUS_START_WDT` branch.
+
+Measured effect (round 43 -> 44, same round script):
+
+    cali fail, do recovery              6 -> 0
+    scp_crash_dump                     10 -> 5
+    IPI_SENSOR transfer timeout         4 -> 1
+    continuing without it               0 -> 5
+
+So the cali-driven reset is gone, and it was worth landing.  **It is not
+sufficient.** `scp_awake_lock: SCP A not enabled` is still ~2700 occurrences and
+`Device:mtk_nanohub not ready` is unchanged at 20, and the sequence shows why:
+
+    t=3.2s   ready_ipi fired scp_ready=0 ; notify_ws running flag=1
+    t=43.5s  ULPOSC cali unavailable, continuing without it
+    t=45.7s  ready_ipi fired scp_ready=0 ; notify_ws running flag=1
+    t=86.0s  ULPOSC cali unavailable, continuing without it
+
+`scp_ready` is 0 at every ready IPI, and the cycle is ~42 s - the 40 s cali loop
+plus a reset right after it.  Something still resets the SCP at the end of that
+window.  Note the boot-timeout monitor no longer fires at all now, so it is not
+that; the likely remaining source is the WDT/recovery branch at the top of
+`scp_A_notify_ws()`.
+
+Next, two things: skip the cali loop on the first failure instead of spending 40 s
+on a sticky flag that cannot change (the parenthesised comment in the caller says
+as much: "the scp seems stop again, try to wait WDT" is the wrong reading when
+`cali_failed` is permanent), and find what resets the SCP immediately after that
+loop so `scp_ready` stops being cleared.

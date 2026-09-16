@@ -752,12 +752,32 @@ static void scp_A_notify_ws(struct work_struct *ws)
 			 */
 			pr_notice("[SCP] cali #%d fail\n", ++cali_times);
 			msleep(2000);
-			if (atomic_read(&scp_reset_status) == RESET_STATUS_START_WDT ||
-				cali_times >= 20) {
+			if (atomic_read(&scp_reset_status) == RESET_STATUS_START_WDT) {
 				pr_notice("[SCP] cali fail, do recovery\n");
 				atomic_set(&scp_reset_status, RESET_STATUS_START);
 				scp_send_reset_wq(RESET_TYPE_WDT);
 				return;
+			}
+			if (cali_times >= 20) {
+				/*
+				 * nord2: ULPOSC2 calibration cannot succeed on this
+				 * port.  The fmeter that feeds it cannot read
+				 * ("mt_get_fmeter_freq(36, 1) return 0, pls check
+				 * CCF configs"), so sync_ulposc_cali_data_to_scp()
+				 * returns false from its cali_failed flag forever and
+				 * this loop can never terminate on success.
+				 *
+				 * Resetting the SCP here is what broke the sensor
+				 * stack: the SCP is demonstrably alive (it is sending
+				 * ready IPIs throughout), the reset cleared scp_ready,
+				 * and every scp_awake_lock() after it failed, which
+				 * killed all AP-to-SCP IPI traffic.  Calibration only
+				 * refines DVFS accuracy, so carry on without it rather
+				 * than tearing down a working core.  A genuine SCP
+				 * death still takes the WDT branch above.
+				 */
+				pr_notice("[SCP] nord2: ULPOSC cali unavailable, continuing without it\n");
+				break;
 			}
 		}
 		/* release pll clock after scp ulposc calibration */
