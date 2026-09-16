@@ -129,3 +129,49 @@ Worth noting how differently this has gone from the sensor work: the dependency
 guard converts each missing provider into one named symbol per round instead of a
 boot loop to debug.  Rounds 21 and 22 cost two attempts and produced an exact
 list; the equivalent sensor detour cost roughly ten rounds.
+
+
+## Round 23: the modem kernel stack loads and creates its devices
+
+With `rps_perf` added, the preflight accepted the closure (`disallowed_imports:
+{}`, `duplicate_exports: {}`, image 27568128 bytes) and the bundle was flashed.
+First result: the kernel-side modem stack is up.
+
+`/dev` now contains the full CCCI node set:
+
+    ccci_0_200  ccci_0_202  ccci_0_204  ccci_aud  ccci_bip
+    ccci_c2k_agps  ccci_c2k_ppp  ccci_ccb_ctrl  ccci_ccb_dhl  ccci_ccb_md_monitor
+
+the ccmni netdevices initialise (`ccmni_dev_init MODEM_CAP_HWTXCSUM`), and the
+modem reserved memory is claimed (`mblock-25-ccci`, 54656 KiB, and
+`mblock-22-ccci_tag_mem`).  Sensors were re-checked in the same round and still
+enumerate (lsm6dso accelerometer/gyroscope, mmc5603 magnetometer, tcs3701), so the
+modem modules did not disturb the SCP/sensor path.
+
+Also seen, worth following up: `consys_emi_get_md_shared_emi_mt6893` logs
+"ECCCI Driver is not supported", a connectivity/modem shared-EMI dependency.
+
+### What this does and does not prove
+
+`gsm.version.baseband` reads `M_V3_P10` and `gsm.sim.state` reads `ABSENT,ABSENT`.
+By the evidence standard set above, **neither is proof of a working modem** - the
+baseband string is a vendor property that is present whether or not the modem is
+running, and the SIM being absent is exactly what an unstarted modem looks like.
+What is proven is the kernel half: the drivers load, the nodes exist, the data
+path network devices come up, and the memory is reserved.  The modem firmware and
+the vendor userspace that starts it are still the open half of this item.
+
+### Process notes (my mistakes this round, recorded so they are not repeated)
+
+Two harness slips, neither a port problem:
+
+* `run_v51.py` was made with `cp run_v50.py run_v51.py` instead of the usual
+  `sed`, so it kept a stale version string and wrote this round's captures into
+  `work/private/test-android-v48/`.  The evidence is real, just misfiled; always
+  `sed` the round scripts.
+* `restore_round.py 51` then failed on the missing `expdb-after.img`.  That is its
+  post-restore hash check only - the actual restore (its `flash_boot_diagnostic.py
+  restore` step) had already run and succeeded, and the phone was verified back on
+  ColorOS (`sys.boot_completed=1`).  A later manual restore attempt asserted
+  `id -u == 0 && ro.product.device == denniz`, which is that script's safety guard
+  refusing to operate on Android rather than a fault.
