@@ -141,6 +141,14 @@ struct mtk_dsi {
 	int clk_refcnt;
 	bool output_en;
 	bool doze_enabled;
+	/*
+	 * LK lit this output and probe adopted its DSI/panel state.  The
+	 * display idle manager must not power-cycle the DSI while this is set:
+	 * the AMS643YE05 DDIC stops reporting TE after the first ULPS cycle
+	 * that follows LK's own bring-up.  Cleared once the kernel has run its
+	 * own panel bring-up, after which the idle cycles are harmless.
+	 */
+	bool lk_adopted;
 	u32 irq_data;
 	wait_queue_head_t irq_wait_queue;
 	struct mtk_dsi_driver_data *driver_data;
@@ -216,6 +224,7 @@ void mtk_dsi_porch_config(struct mtk_dsi *dsi, struct cmdq_pkt *handle);
 int mtk_drm_dummy_cmd_on_ioctl(struct drm_device *dev, void *data,
 		struct drm_file *file_priv);
 unsigned long long mtk_get_cur_backlight(struct drm_crtc *crtc);
+bool mtk_dsi_lk_state_in_use(struct mtk_drm_private *priv);
 
 #ifdef OPLUS_FEATURE_DISPLAY
 dcs_write_gce_pack oplus_dsi_display_get_dcs_pack_gce(void);

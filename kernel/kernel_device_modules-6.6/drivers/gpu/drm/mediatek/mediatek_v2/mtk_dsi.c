@@ -5936,7 +5936,15 @@ static void mtk_output_dsi_enable(struct mtk_dsi *dsi,
 	}
 
 	if (dsi->panel) {
+		bool panel_reinit;
+
 		DDP_PROFILE("[PROFILE] %s panel init start\n", __func__);
+		/*
+		 * drm_panel_prepare() returns immediately when the panel is
+		 * already prepared, so remember whether this call really runs
+		 * the panel's power-on and init sequence.
+		 */
+		panel_reinit = !dsi->panel->prepared;
 		if (((!dsi->doze_enabled && !dsi->pending_switch) || force_lcm_update)
 			&& drm_panel_prepare(dsi->panel)) {
 			DDPPR_ERR("failed to prepare the panel\n");
@@ -5945,6 +5953,33 @@ static void mtk_output_dsi_enable(struct mtk_dsi *dsi,
 		CRTC_MMP_MARK(0, dsi_resume, 1, 1);
 		DDP_PROFILE("[PROFILE] %s panel init end\n", __func__);
 		mode_chg_index = mtk_crtc->mode_change_index;
+
+		/*
+		 * The panel power-on above resets the DDIC, which clears the
+		 * brightness LK programmed for the splash.  Android does not
+		 * write DCS 0x51 again until the boot animation starts, several
+		 * seconds later, so the panel would stay dark for the whole
+		 * hand-over.  Re-apply the level the panel driver remembers (or
+		 * its own default) as soon as the panel has been initialised.
+		 */
+		if (panel_reinit && dsi->ext && dsi->ext->funcs &&
+		    dsi->ext->funcs->esd_backlight_recovery) {
+			DDPMSG("%s: restore panel brightness after re-init\n",
+				__func__);
+			dsi->ext->funcs->esd_backlight_recovery(dsi,
+				mipi_dsi_dcs_write_gce2, NULL);
+		}
+
+		/*
+		 * The panel init above replaced LK's DDIC state with our own,
+		 * so the inherited state is gone: the display idle manager may
+		 * power-cycle the DSI again from here on.
+		 */
+		if (dsi->lk_adopted) {
+			dsi->lk_adopted = false;
+			DDPMSG("%s: kernel owns the panel, idle cycles allowed\n",
+				__func__);
+		}
 
 #ifdef OPLUS_FEATURE_DISPLAY
 #ifdef OPLUS_FEATURE_DISPLAY_MAINLINE
@@ -15794,6 +15829,36 @@ static bool mtk_dsi_lk_adopted(struct mtk_dsi *dsi, unsigned int alias)
 	return panel_connection_from_atag() & BIT(alias);
 }
 
+/*
+ * True while any DSI output is still running on the state LK left it in.
+ *
+ * The display idle manager must not power-cycle the DSI in that state.  The
+ * AMS643YE05 DDIC reports TE normally after LK's own bring-up, but it stops
+ * as soon as the DSI has been through one ULPS cycle: the trigger loop then
+ * parks on EVENT_TE, the next config packet hits the 1 s CMDQ timeout and only
+ * a full panel re-initialisation brings TE back.  Once the kernel has run its
+ * own panel bring-up the DDIC takes those cycles happily, which is why the
+ * flag is cleared there.
+ */
+bool mtk_dsi_lk_state_in_use(struct mtk_drm_private *priv)
+{
+	struct mtk_dsi *dsi;
+	int i;
+
+	if (!priv)
+		return false;
+
+	for (i = DDP_COMPONENT_DSI0; i <= DDP_COMPONENT_DSI1; i++) {
+		if (!priv->ddp_comp[i])
+			continue;
+		dsi = dev_get_drvdata(priv->ddp_comp[i]->dev);
+		if (dsi && dsi->lk_adopted)
+			return true;
+	}
+
+	return false;
+}
+
 static int mtk_dsi_probe(struct platform_device *pdev)
 {
 	struct mtk_dsi *dsi;
@@ -15993,22 +16058,56 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 
 	alias = mtk_ddp_comp_get_alias(dsi->ddp_comp.id);
 	/*
-	 * The CRTC side keeps LK's framebuffer so the boot logo stays on
-	 * screen, but the DSI and the panel are deliberately NOT inherited.
+	 * LK lit this output, so inherit everything it set up: the DSI output
+	 * and clock reference, and the panel's prepared/enabled state.
 	 *
-	 * Inheriting LK's DSI/panel state leaves the AMS643YE05 DDIC unable to
-	 * report TE after the first idlemgr ULPS cycle: the trigger loop then
-	 * waits for EVENT_TE forever, the next config packet hits the 1 s CMDQ
-	 * timeout and the ESD workaround has to re-initialise the whole panel
-	 * (killing surfaceflinger mid-boot).  Letting the kernel run its own
-	 * DSI + panel bring-up on the first encoder enable costs one panel
-	 * init while the inherited splash is still on screen and keeps the
-	 * display stable for every later idle/power cycle.
+	 * The DDIC is a command-mode panel and holds the splash frame in its
+	 * own RAM; it keeps scanning that frame out on its own.  Running the
+	 * kernel's drm_panel_prepare() here would reset the DDIC, wipe that
+	 * frame and clear the brightness LK programmed, and Android draws
+	 * nothing and writes no backlight again until the boot animation
+	 * starts several seconds later - exactly the black gap between the
+	 * splash and the boot animation.  Measurements on V12/V20 confirm it:
+	 * the CRTC commits no frame at all between the hand-off and the boot
+	 * animation, so the inherited frame in the DDIC RAM is the only thing
+	 * that can keep the screen lit across that window.
 	 *
-	 * The one piece of LK state that is inherited is the connector's
-	 * "panel present" bit: that is what tells the trigger loop whether the
-	 * panel exists at all and therefore whether it must wait for TE.
+	 * The price of inheriting LK's state is that this DDIC stops reporting
+	 * TE after the display idle manager's first DSI ULPS cycle: the trigger
+	 * loop parks on EVENT_TE, the next config packet hits the 1 s CMDQ
+	 * timeout and only a full panel re-init brings TE back (V13-V16).
+	 * mtk_dsi_lk_state_in_use() therefore keeps the idle manager away from
+	 * the DSI until the kernel has run its own panel bring-up, which is
+	 * what makes those cycles harmless again (V17+).
+	 *
+	 * A boot where LK did not light this output keeps the cold path: the
+	 * panel is brought up here by the kernel as usual.
 	 */
+	if (mtk_dsi_lk_adopted(dsi, alias)) {
+		/* set ccf reference cnt = 1 */
+		if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
+			pm_runtime_get_sync(dev);
+			phy_power_on(dsi->phy);
+			ret = clk_prepare_enable(dsi->engine_clk);
+			if (ret < 0)
+				DDPPR_ERR("%s Failed to enable engine clock: %d\n",
+					__func__, ret);
+
+			ret = clk_prepare_enable(dsi->digital_clk);
+			if (ret < 0)
+				DDPPR_ERR("%s Failed to enable digital clock: %d\n",
+					__func__, ret);
+		}
+		dsi->output_en = true;
+		dsi->lk_adopted = true;
+		if (dsi->panel) {
+			dsi->panel->prepared = true;
+			dsi->panel->enabled = true;
+		}
+		dsi->clk_refcnt = 1;
+		DDPMSG("%s: inherited LK's DSI and panel state\n", __func__);
+	}
+
 	if (dsi->ext && dsi->ext->is_connected == -1)
 		dsi->ext->is_connected = mtk_dsi_lk_adopted(dsi, alias);
 

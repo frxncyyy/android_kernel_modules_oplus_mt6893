@@ -1746,6 +1746,23 @@ static int mtk_drm_idlemgr_monitor_thread(void *data)
 			continue;
 		}
 
+		/*
+		 * Do not power-cycle a DSI that is still running on the state LK
+		 * left it in: this DDIC stops reporting TE after the first ULPS
+		 * cycle that follows the bootloader's own bring-up, which parks
+		 * the trigger loop on EVENT_TE and times out every later config
+		 * packet.  The flag clears as soon as the kernel has run its own
+		 * panel bring-up, so idle power saving resumes after the first
+		 * screen off/on.  Kick the idle timer instead so this does not
+		 * retry on every monitor pass.
+		 */
+		if (mtk_dsi_lk_state_in_use(priv)) {
+			idlemgr_ctx->idlemgr_last_kick_time = sched_clock();
+			DDP_MUTEX_UNLOCK_CONDITION(&mtk_crtc->lock, __func__,
+					__LINE__, false);
+			continue;
+		}
+
 		t_idle = local_clock() - idlemgr_ctx->idlemgr_last_kick_time;
 		if (t_idle < idlemgr_ctx->idle_check_interval * 1000 * 1000) {
 			/* kicked in idle_check_interval msec, it's not idle */
