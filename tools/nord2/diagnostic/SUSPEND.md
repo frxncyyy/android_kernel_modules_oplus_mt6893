@@ -150,7 +150,20 @@ The stock 4.19 kernel runs the same panel, the same HAL and the same DTB (which
 also lacks an `AOD-SCP-ON` node, so `aod_scp_flag` is 0 there too) and its AOD
 does work, so the difference is in the 6.6 display build itself.
 
-Until that is understood, keep AOD off on the port. The guard can do it from a
+Round 37 contains it: `mtk_dsi_doze_state()` now reports doze as inactive, so
+the panel is never put into the LCM doze mode at all.  The CRTC property and
+the framework's AOD state machine are untouched - Android still enters `DOZE`,
+`DOZE_SUSPEND` and `OFF` exactly as before - but a doze request now falls
+through the DSI as an ordinary blank and the next wake is the ordinary enable
+path that has always worked.  Verified with the preference *enabled*, the case
+that used to go black: over two blank/wake cycles the log contains no
+`panel_doze_enable`, no `doze status=1` and no doze enable, only the normal
+`lcmoff` and `doze status=0+` of a regular screen-off, and the backlight returns
+to its normal 488 afterwards.  What this costs is the AOD clock itself, which
+never rendered anyway; with AOD enabled the screen now sleeps and wakes like a
+normal screen-off.  Restoring the clock needs the real doze exit path, which is
+still open; the former workaround of keeping the preference off is no longer
+necessary. The guard can do it from a
 root context, which ColorOS denies to both adb and the vendor shell, and it
 preserves whatever the phone owner had chosen:
 
