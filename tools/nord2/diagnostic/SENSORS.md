@@ -613,3 +613,24 @@ the property in the port's prepared DTB if it is genuinely missing.
 
 Do not tune the retry loop further before that is answered. Both variants are
 broken; the loop is a symptom either way.
+
+
+## Round 17 addendum: the missing DT property exists in the 6.6 tree
+
+    mt6893.dtsi:2331   fmeter-args-u2-cali =
+    mt6893.dtsi:2334   fmeter-args-u2-result =
+
+The 6.6 DTS carries both properties; the port boots the stock 4.19 DTB, which has
+neither, and that is precisely the `[mt_scp_dts_fmeter_get] Can't read
+fmeter-args-u2-cali` line.  scp_dvfs.c:2845 already contains an op6893 bring-up
+fallback for the missing property, and the log shows what it does: it *assumes*
+`fmeter-id-ulposc2=36, type 1`, and then `mt_get_fmeter_freq(36, 1)` returns 0
+anyway.  So the guess is either the wrong fmeter id/type for this SoC or the
+fmeter clock itself is not enabled by CCF.
+
+Next: take the real values out of mt6893.dtsi:2331 and supply them in the port's
+prepared DTB (the same fdtget/fdtput route prepare_dtb.py already uses), or fix
+the fallback to use them, then re-read whether `mt_get_fmeter_freq()` returns a
+frequency.  If it does, the calibration handoff completes, the SCP should stop
+crash-looping, `scp_ready` should stay 1, and the sensor hub bring-up can proceed.
+That is a single measurable step rather than another elimination.
