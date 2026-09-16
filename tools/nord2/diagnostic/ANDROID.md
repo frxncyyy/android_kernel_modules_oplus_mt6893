@@ -29,6 +29,46 @@ port and Linux 6.6.30. They do not establish a usable Android port.
 | V24 | Byte-identical rebuild of V23 plus two scripted screen off/on cycles | The flag clears on the first real off/on (`kernel owns the panel`) and no timeout follows. |
 | V25 | V24's code plus a temporary `DDPINFO`->`DDPMSG` promotion of the vendor `[LP] enter idle` line, so idle entries become visible; also drops the V20 brightness re-apply (`a7dc2040`) | Probe inherits LK's state at 1.43 s, the first idle entry is held off at 28.35 s, the kernel takes the panel over at 42.94 s, and idle entries resume from 51.3 s (seven in the capture) with zero CMDQ and zero TE timeouts. The removed brightness write had written a stale level 0 on the 42.94 s re-init. |
 | V26 | Final committed build, same scripted power cycles | Confirms the shipped image still adopts, holds the gate and clears it cleanly. |
+| V27 | Also load the key drivers: `mtk-kpd`, `mtk-pmic-keys` and the vendor tri-state stack (`oplus_bsp_tri_key` plus both MXM1120 hall ICs) | The owner pressed every control. Power and volume up report on `mtk-pmic-keys` (`event3`), volume down on `mtk-kpd` (`event2`) and the slider on `oplus,hall_tri_state_key` (`event6`) as `KEY_F3`. logcat shows the screen turning off and on and the ringer mode cycling through all three slider positions. |
+
+## Physical buttons and the alert slider
+
+The buttons need no userspace change: the stock ColorOS consumers keep working as
+long as the kernel reports the same keycodes on the same kind of input device.
+
+| Control | Kernel path | Input device | Keycode |
+| --- | --- | --- | --- |
+| Power | MT6359P `pwrkey` interrupt | `mtk-pmic-keys` | `KEY_POWER` (116) |
+| Volume up | MT6359P `homekey` interrupt, reported with `mediatek,kpd-sw-rstkey` (`0x73`) | `mtk-pmic-keys` | `KEY_VOLUMEUP` (115) |
+| Volume down | GPIO 155 EINT (`mediatek, VOLUME_DOWN-eint`) | `mtk-kpd` | `KEY_VOLUMEDOWN` (114) |
+| Alert slider | i2c9 MXM1120 pair at 0x0d/0x0c on GPIO 12/13 | `oplus,hall_tri_state_key` | `KEY_F3` (61), value 1/2/3 |
+
+Two details in the 20615 DTB are misleading and must not be "fixed":
+
+- `keypad,volume-up = <&pio 20 0>` names GPIO 20, which is the touch panel reset
+  line, and no `mediatek, VOLUME_UP-eint` node exists. Volume up really arrives
+  on the PMIC homekey interrupt, so `mtk-kpd` only claims that GPIO when the
+  EINT node is present.
+- `mediatek,kpd-hw-init-map` still maps keypad matrix slot 0 to
+  `KEY_VOLUMEDOWN`, but the matrix is not wired for any key on this board and
+  the vendor kernel switches the whole block off (`KP_EN=0`). Scanning it would
+  report volume down twice, so `mtk-kpd.c` keeps `enable_kpd(base, 0)`; volume
+  down comes from the EINT above.
+
+`oplus_tri_key.c` registers no driver of its own. It is a symbol provider that
+the two hall IC drivers feed through `oplus_register_hall()`, and the position
+algorithm only runs once both have probed, so all three modules must be loaded.
+The position reaches userspace as `KEY_F3` followed by value 0, exactly as the
+stock 4.19 driver reports it (values 1/2/3 for the three positions); the driver
+also logs `report up/mid/down key successful!` for each transition.
+
+The module set is therefore `kernel_fb` (for `oplus_kevent_fb`), `buildvariant`,
+`oplusboot`, `oplus_bsp_boot_projectinfo` (for `mtk-kpd`), `mtk_kpd`,
+`mtk_pmic_keys`, `olc`, `oplus_bsp_tri_key`, `oplus_bsp_mxm_up` and
+`oplus_bsp_mxm_down`, and each dependency has to precede its consumer in
+`modules.load`. Verify a running image with `getevent -lt` while pressing each
+control, then compare `/proc/bus/input/devices` against the table above.
+
 
 See [GPU notes](GPU.md) for the r49 fix and actual-header regression. The V2
 kernel capture contained no job-stride rejection, Mali fault or IOMMU

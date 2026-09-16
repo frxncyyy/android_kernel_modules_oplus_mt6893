@@ -12,6 +12,7 @@ import subprocess
 REPO = Path(__file__).resolve().parents[2]
 MODULES = REPO / 'kernel/kernel_device_modules-6.6'
 TOUCH = REPO / 'vendor/oplus/kernel/touchpanel/oplus_touchscreen_v2'
+TRIKEY = REPO / 'vendor/oplus/kernel/device_info/tri_state_key'
 GPU = REPO / 'vendor/mediatek/kernel_modules/gpu/mt6893'
 
 
@@ -110,6 +111,28 @@ def main():
         'oplus_bsp_tp_comon.ko', 'touch_custom/oplus_bsp_tp_custom.ko',
         'Focal/oplus_bsp_tp_focal_common.ko', 'Focal/ft3518/oplus_bsp_tp_ft3518.ko')]
 
+    # The alert slider has its own Kbuild root as well.  oplus_tri_key.c is only
+    # a symbol provider for the two MXM1120 hall IC drivers, so all three must be
+    # built and loaded together; they report the slider position on one input
+    # device named "oplus,hall_tri_state_key" as KEY_F3 values 1/2/3.
+    # CONFIG_OPLUS_MTK_DRM_GKI_NOTIFY has to be defined for the C preprocessor:
+    # the driver keeps a screen-blank notifier for each display stack and without
+    # it the fbdev fallback is compiled but never referenced, which -Werror
+    # rejects as an unused function.  Passing it as a make variable only sets it
+    # for the Makefiles, hence the -D in KCFLAGS.
+    trikey_relative = '../' * kernel_depth + str(TRIKEY.relative_to(common))
+    for base in (kernel, out):
+        if (base / trikey_relative).resolve() != TRIKEY:
+            parser.error('The tri-state key path must resolve identically from source and output')
+    trikey_flags = touch_flags + ' -DCONFIG_OPLUS_MTK_DRM_GKI_NOTIFY=1'
+    run('tri_state_key', make + [f'M={trikey_relative}', f'-j{args.jobs}', 'modules',
+        f'KCFLAGS={trikey_flags}', f'KBUILD_EXTRA_SYMBOLS={MODULES}/Module.symvers',
+        'CONFIG_OPLUS_TRIKEY_MAIN=m', 'CONFIG_OPLUS_TRIKEY_HALL=m',
+        'CONFIG_MXM_UP=m', 'CONFIG_MXM_DOWN=m'])
+    trikey_modules = [TRIKEY / path for path in (
+        'oplus_bsp_tri_key.ko', 'hall_ic/oplus_bsp_mxm_up.ko',
+        'hall_ic/oplus_bsp_mxm_down.ko')]
+
     # MT6893 uses the Mali r49p1 Job Manager driver in a separate Kbuild root.
     # Resolve GED and gpufreq imports against the device modules built above.
     gpu_relative = '../' * kernel_depth + str(GPU.relative_to(common))
@@ -139,6 +162,8 @@ def main():
         'image_sha256': hashlib.sha256((out / 'arch/arm64/boot/Image').read_bytes()).hexdigest(),
         'touch_modules': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
                           for path in touch_modules},
+        'tri_state_key_modules': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                  for path in trikey_modules},
         'gpu_modules': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
                         for path in gpu_modules},
         'power_module': {
@@ -148,7 +173,7 @@ def main():
         'hardware_tested': False,
     }
     (out / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    print('Kernel, device modules, FT3518 and Mali modules built. No boot image was packaged or flashed.')
+    print('Kernel, device modules, FT3518, Mali and tri-state key modules built. No boot image was packaged or flashed.')
 
 
 if __name__ == '__main__':

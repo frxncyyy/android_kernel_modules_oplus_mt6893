@@ -901,7 +901,19 @@ static int kpd_pdrv_probe(struct platform_device *pdev)
 		pr_notice("irq %d enable irq wake fail\n", keypad->irqnr);
 
 	platform_set_drvdata(pdev, keypad);
-	enable_kpd(keypad->base, 1);
+	/*
+	 * Leave the SoC keypad matrix switched off, as the vendor kernel does
+	 * (its kpd_wakeup_src_setting(0) writes KP_EN=0).  No physical key is
+	 * reported from the matrix on this board: the power key and volume up
+	 * come from the PMIC's pwrkey/homekey interrupts (mtk-pmic-keys) and
+	 * volume down from the VOLUME_DOWN-eint GPIO.  Scanning it as well
+	 * would double-report volume down, because the 20615 DTB still maps
+	 * matrix slot 0 to KEY_VOLUMEDOWN in mediatek,kpd-hw-init-map, and the
+	 * vendor masks that map entry for the same reason.  Unwired rows read
+	 * as released, so leaving the block off costs nothing and keeps the
+	 * stale entry harmless.
+	 */
+	enable_kpd(keypad->base, 0);
 
 	//#ifdef OPLUS_BUG_STABILITY
 	hrtimer_init(&aee_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -1068,7 +1080,8 @@ static int kpd_pdrv_resume_noirq(struct device *dev)
 	if (keypad->irqnr)
 		enable_irq(keypad->irqnr);
 	if (keypad->base)
-		enable_kpd(keypad->base, 1);
+		/* The keypad matrix stays off across power states; see probe(). */
+		enable_kpd(keypad->base, 0);
 
 	return 0;
 }
