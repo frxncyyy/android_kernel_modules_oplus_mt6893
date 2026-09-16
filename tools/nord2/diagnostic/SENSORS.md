@@ -133,3 +133,46 @@ the port while stock enumerates four chips, which means the hub firmware is not
 reporting its sensor list, or userspace is not reaching it.  The next check is
 whether the hub answers at all on the port - its firmware/version string, and
 the sensor list it hands back - rather than more work on the SCP driver.
+
+
+## Round 41: the userspace ABI was the blocker, and it is fixed
+
+The `hf_manager` command numbers are computed from the packet size, so the packet
+layouts are ABI.  This ROM's sensor HAL was built against 4.19, where **every**
+command was `_IOW/_IOWR('a', nr, struct ioctl_packet)` - a 4-byte header plus a
+64-byte payload union, 68 bytes in total.  The 6.6 tree had reshaped the packets
+(`common_packet` 8 bytes, `info_packet` 44, `cust_packet` 68, `debug_packet`
+24), which changed every ioctl number.  The HAL's startup traffic is
+`REGISTER_STATUS` and `READY_STATUS`, and it arrived as `0xc0446101` and
+`0xc0446108` - 68-byte `_IOWR('a',1)` and `_IOWR('a',8)` - matching no case in
+the driver's switch, which answered `Unknown command` for every one of them.
+
+Unions of each payload with the 4.19 `int8_t byte[64]` restore the size, the
+numbers and the data area at once (`sensor_info` is 40 bytes, `custom_cmd` 64,
+the debug packet 24, so all fit).  Round 41 verified it: **`Unknown command`
+dropped from continuous spam to zero**, and the HAL's startup exchange now
+reaches the driver - `hf_manager_ioctl_request_ready` runs instead of falling
+through.
+
+## The next layer down
+
+With the ABI fixed, the HAL gets an answer it can act on, and the answer is:
+
+    [hf_manager]Device:mtk_nanohub not ready        (repeating)
+
+`hf_manager_ioctl_request_ready()` walks its device list and fails the whole
+request if any registered device has `ready == false`.  That flag is set in
+`hf_manager.c` only after a device's support list has been processed, and the
+only thing that gets it there is `mtk_nanohub_create_manager()` - which is the
+**last step of `mtk_nanohub_power_up_loop()`** (mtk_nanohub.c:1968), after the
+reset, the firmware download, the wait for init and the config/sensor restore.
+
+The hub does log `[mtk_nanohub]init done` and `notify cmd SCP_INIT_DONE`, but the
+manager is never created, so the power-up loop is not reaching its last step.
+`/sys/class/sensordrv` and `/sys/class/oplus_sensor` stay empty on the port while
+stock has both, which is the same fact seen from userspace.
+
+Next: instrument or read `mtk_nanohub_power_up_loop()` to find which step it
+stalls on and make it complete.  Note `mtk_nanohub_create_manager()` also
+returns early once `create_manager_first_boot` is set, so a second call after a
+failed first one is a silent no-op.

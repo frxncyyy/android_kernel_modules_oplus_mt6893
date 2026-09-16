@@ -80,30 +80,55 @@ struct custom_cmd {
 struct common_packet {
 	uint8_t sensor_type;
 	uint8_t padding[3];
-	bool status;
+	union {
+		bool status;
+		int8_t byte[64];
+	};
 } __packed __aligned(4);
 
 struct info_packet {
 	uint8_t sensor_type;
 	uint8_t padding[3];
-	struct sensor_info info;
+	union {
+		struct sensor_info info;
+		int8_t byte[64];
+	};
 } __packed __aligned(4);
 
 struct cust_packet {
 	uint8_t sensor_type;
 	uint8_t padding[3];
-	struct custom_cmd cust_cmd;
+	union {
+		struct custom_cmd cust_cmd;
+		int8_t byte[64];
+	};
 } __packed __aligned(4);
 
 struct debug_packet {
 	uint8_t sensor_type;
 	uint8_t padding[3];
-	uint8_t *write_buffer;
-	uint32_t write_size;
-	uint8_t *read_buffer;
-	uint32_t read_size;
+	union {
+		struct {
+			uint8_t *write_buffer;
+			uint32_t write_size;
+			uint8_t *read_buffer;
+			uint32_t read_size;
+		};
+		int8_t byte[64];
+	};
 } __packed __aligned(4);
 
+/*
+ * Every command below is encoded with the packet size, so these layouts are
+ * ABI, not style: the vendor sensor HAL in this ROM was built against the 4.19
+ * kernel, where all commands used the 68-byte `struct ioctl_packet` (4-byte
+ * header plus a 64-byte payload).  The port's tree had reshaped each packet
+ * (common_packet was 8 bytes, info_packet 44, cust_packet 68) which changed
+ * every ioctl number: the HAL's REGISTER_STATUS/READY_STATUS arrived as
+ * _IOWR('a',1)/_IOWR('a',8) with size 68, matched no case, and the driver
+ * answered "Unknown command".  Each payload is therefore unioned with the
+ * 4.19 64-byte payload so the numbers and the data area match again.
+ */
 #define HF_MANAGER_REQUEST_REGISTER_STATUS  _IOWR('a', 1, struct common_packet)
 #define HF_MANAGER_REQUEST_BIAS_DATA        _IOW('a', 2, struct common_packet)
 #define HF_MANAGER_REQUEST_CALI_DATA        _IOW('a', 3, struct common_packet)
