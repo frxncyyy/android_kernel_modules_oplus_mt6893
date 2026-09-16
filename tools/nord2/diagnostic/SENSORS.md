@@ -572,3 +572,44 @@ watches, and whether `scpreg.cfgreg_ap_en` is set (the stock DT has no
 `scp-cfgreg-ap-en` property, so the else branch using the fixed SPM register is
 the one taken).  The calibration failure is a red herring for the reset loop,
 though making it non-fatal was still correct.
+
+
+## Round 17: the single-shot change exposed the real fault - the SCP is crash-looping
+
+Making the calibration attempt single-shot was the wrong move, and the
+measurement says so plainly (round 44 -> 45, same round script):
+
+    recovery success                      ~5 -> 239
+    scp_awake_lock: SCP A not enabled   2720 -> 13803
+    IPI_SENSOR transfer timeout            1 -> 23
+    continuing without it                  5 -> 239
+    start to reset scp                     1 -> 0
+
+With the 40 s retry loop in place the SCP recovered about every 42 s; with it
+gone the SCP recovers **239 times in one round**, roughly once a second.  So the
+loop was not merely wasting 40 s - it was *pacing* a crash loop.  The honest
+reading is that round 16's change removed a symptom (the cali-driven WDT reset)
+while masking the thing underneath, and round 17 removed the pacing.
+
+What is underneath is now visible: **the SCP cannot stay up.** It boots, sends
+ready, the recovery reports success, and then it dies again immediately - hundreds
+of times.  Each death clears `scp_ready`, so `scp_awake_lock()` refuses, so every
+AP-to-SCP transfer fails, so the sensor hub never comes up.
+
+The ULPOSC calibration is the obvious candidate for why it cannot stay up: the
+SCP's DVFS/watchdog needs a valid ULPOSC frequency, the AP is supposed to hand it
+calibration data, and on this port that handoff cannot happen because the fmeter
+cannot read:
+
+    [scp_dvfs]: [mt_scp_dts_fmeter_get] Can't read fmeter-args-u2-cali
+    [scp_dvfs]: [_get_ulposc_clk_by_fmeter_wrapper]: mt_get_fmeter_freq(36, 1) return 0
+
+Note the first line: the driver cannot read `fmeter-args-u2-cali` **from the DT**.
+The port boots the stock 4.19 DTB, and the 6.6 driver may well be looking for a
+property the 4.19 DTS never had - the same family of gap as the hf_manager ABI and
+the earlier SCP naming checks.  That is the next thing to read: `mt_scp_dts_fmeter_get()`
+in scp_dvfs.c against the SCP DVFS node in the 6.6 mt6893.dtsi, and then supply
+the property in the port's prepared DTB if it is genuinely missing.
+
+Do not tune the retry loop further before that is answered. Both variants are
+broken; the loop is a symptom either way.

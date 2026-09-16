@@ -743,60 +743,28 @@ static void scp_A_notify_ws(struct work_struct *ws)
 		scp_timeout_times = 0;
 
 	if (scp_dvfs_feature_enable()) {
-		uint32_t cali_times = 0;
-
-		while (!sync_ulposc_cali_data_to_scp()) {
-			/*
-			 * Although notify_ipi has been sent,
-			 * the scp seems stop again, try to wait WDT.
-			 */
-			pr_notice("[SCP] cali #%d fail\n", ++cali_times);
-			msleep(2000);
-			if (atomic_read(&scp_reset_status) == RESET_STATUS_START_WDT) {
-				pr_notice("[SCP] cali fail, do recovery\n");
-				atomic_set(&scp_reset_status, RESET_STATUS_START);
-				scp_send_reset_wq(RESET_TYPE_WDT);
-				return;
-			}
-			if (cali_times >= 20) {
-				/*
-				 * nord2: ULPOSC2 calibration cannot succeed on this
-				 * port.  The fmeter that feeds it cannot read
-				 * ("mt_get_fmeter_freq(36, 1) return 0, pls check
-				 * CCF configs"), so sync_ulposc_cali_data_to_scp()
-				 * returns false from its cali_failed flag forever and
-				 * this loop can never terminate on success.
-				 *
-				 * Resetting the SCP here is what broke the sensor
-				 * stack: the SCP is demonstrably alive (it is sending
-				 * ready IPIs throughout), the reset cleared scp_ready,
-				 * and every scp_awake_lock() after it failed, which
-				 * killed all AP-to-SCP IPI traffic.  Calibration only
-				 * refines DVFS accuracy, so carry on without it rather
-				 * than tearing down a working core.  A genuine SCP
-				 * death still takes the WDT branch above.
-				 */
-				pr_notice("[SCP] nord2: ULPOSC cali unavailable, continuing without it\n");
-				break;
-			}
-		}
-		/* release pll clock after scp ulposc calibration */
-		scp_pll_ctrl_set(PLL_DISABLE, CLK_26M);
-
 		/*
-		 * Calling sync_ulposc_cali_data_to_scp() will resets the frequency request
-		 * so we need to request freq again in recovery flow.
+		 * nord2: try the ULPOSC2 calibration handoff exactly once.
+		 *
+		 * It cannot succeed here - the fmeter that feeds it cannot read
+		 * ("mt_get_fmeter_freq(36, 1) return 0, pls check CCF configs"), so
+		 * ulposc_cali_process() sets cali_failed and
+		 * sync_ulposc_cali_data_to_scp() then returns false from that sticky
+		 * flag forever, immediately, without waiting for anything.
+		 *
+		 * The stock loop retries it twenty times with msleep(2000).  That
+		 * was actively harmful on this port: it held this work item for
+		 * ~40 s, during which an scp_awake_lock() elsewhere timed out waiting
+		 * for the SCP to acknowledge, reset the SCP, cleared scp_ready, and
+		 * started the whole cycle again every ~42 s.  Measured: the first
+		 * 'scp_awake_lock: start to reset scp...' lands at 44.6 s, one cali
+		 * loop after recovery.
+		 *
+		 * Calibration only refines DVFS accuracy, so give up at once and let
+		 * the SCP stay up.
 		 */
-		if (atomic_read(&scp_reset_status) != RESET_STATUS_STOP) {
-			scp_expected_freq = scp_get_freq();
-			scp_awake_lock((void *)SCP_A_ID);
-			scp_current_freq = readl(CURRENT_FREQ_REG);
-			scp_awake_unlock((void *)SCP_A_ID);
-			if (scp_request_freq()) {
-				pr_notice("[SCP] %s: req_freq fail\n", __func__);
-				WARN_ON(1);
-			}
-		}
+		if (!sync_ulposc_cali_data_to_scp())
+			pr_notice("[SCP] nord2: ULPOSC cali unavailable, continuing without it\n");
 	}
 
 		scp_dvfs_cali_ready = 1;
