@@ -65,3 +65,39 @@ Side note worth remembering: stock's `lux_aodhub` - the light sensor feed that
 gates AOD brightness - comes from this same stack.  Until the hub is up, AOD
 cannot react to ambient light, which is the remaining half of the AOD
 calibration item.
+
+
+## Round 40: the hub is reachable, the SCP itself is not up yet
+
+The four modules were built all along and simply never copied into the image.
+Shipping them (`mtk-scpsys.ko`, `scp.ko`, `hf_manager.ko`, `nanohub.ko`, in that
+order) changed the picture on the phone:
+
+* `/dev/scp` and `/dev/hf_manager` now exist.
+* `scp_ipidev (with 52 IPI) has registered.`
+* `[mtk_nanohub]init done, data_unit_t:44, SCP_SENSOR_HUB_DATA:48`
+* `dumpsys sensorservice` lists UNCALI_GYRO, UNCALI_ACC and the OPLUS Fusion
+  Light / Side Panel Fusion Light virtual sensors.
+* AOD did not regress: zero `ESD check failed` events in the round.
+
+But the four real sensors are still absent, and the log says why:
+
+    scp 10500000.scp: invalid resource (null)      (x10 at boot)
+
+That string comes from `lib/devres.c`, i.e. `devm_ioremap_resource()` was handed
+a NULL resource.  The caller is `init_scp()` in
+`drivers/soc/mediatek/mtk-scpsys.c`, which does
+`res = platform_get_resource(pdev, IORESOURCE_MEM, 0)` and gets nothing back.
+Until that resource resolves, the SCP never comes out of reset, the hub firmware
+never runs, and no lsm6dso / mmc5603 / tcs3701 ever appears.  The virtual
+sensors above are enumerated from the static sensor list, so their presence is
+not evidence of hardware.
+
+The `scp@10700000` DT node itself looks complete - `compatible =
+"mediatek,scp"`, `status = "okay"`, seven `reg`/`reg-names` pairs, seven
+interrupts, the send/recv tables, `scp_mem_key` pointing at the
+`mediatek,reserve-memory-scp_share` node which is present with a 0x320000 size.
+So the next step is to find which driver claims `mediatek,scp` on this tree and
+why `platform_get_resource(..., 0)` comes back NULL for it - the DT has the
+resources, so the mismatch is between that driver's expectations and this node's
+layout, not a missing node.
