@@ -56,6 +56,7 @@ python3 tools/nord2/tests/test_prepare_dtb.py
 python3 tools/nord2/tests/test_build_boot_dtb.py
 python3 tools/nord2/tests/test_i2c_fifo.py
 python3 tools/nord2/tests/test_nord2_power.py
+python3 tools/nord2/tests/test_key_reporting.py
 ```
 
 The build script merges, in order, GKI, `mgk_64_k66_defconfig`,
@@ -80,6 +81,17 @@ the manifest. Building the DMA-BUF test exporter does not load it on the phone.
 GPU bandwidth monitoring remains disabled on MT6893 in both Mali and GED until
 the SSPM QoS path is available; enabling only Mali's hooks left
 `qos_get_frame_nr` unresolved at modpost.
+
+The alert slider is built from its own `device_info/tri_state_key` Kbuild root
+the same way. `oplus_tri_key.c` is only a symbol provider for the two MXM1120
+hall IC drivers, so all three modules are built together and their hashes are
+recorded; `CONFIG_OPLUS_MTK_DRM_GKI_NOTIFY` is defined in `KCFLAGS` because the
+driver's fbdev notifier fallback is otherwise compiled but never referenced and
+this tree builds with `-Werror`. The power key and volume up are reported by
+`mtk-pmic-keys` from the PMIC interrupts, volume down by `mtk-kpd` from the
+`VOLUME_DOWN-eint` GPIO, and the keypad matrix is deliberately left switched off;
+see the [Android notes](diagnostic/ANDROID.md) for the module load order and the
+evidence that all four controls work.
 
 The Nord 2 profile selects the MT6893 DEVAPC architecture and excludes the
 incompatible legacy providers. The multi-platform defaults exported
