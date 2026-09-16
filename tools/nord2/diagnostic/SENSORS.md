@@ -176,3 +176,38 @@ Next: instrument or read `mtk_nanohub_power_up_loop()` to find which step it
 stalls on and make it complete.  Note `mtk_nanohub_create_manager()` also
 returns early once `create_manager_first_boot` is set, so a second call after a
 failed first one is a silent no-op.
+
+
+## Round 8: the AP to hub IPI direction is dead
+
+Tracing the power-up loop down one level puts the stall before the manager:
+
+    wait_event(power_reset_wait,
+               READ_ONCE(scp_system_ready) && READ_ONCE(scp_chre_ready));
+
+`scp_chre_ready` is set by the `SCP_INIT_DONE` IPI, and the port does log
+`[mtk_nanohub]notify cmd SCP_INIT_DONE`, so that half arrives.  `scp_system_ready`
+is set only in `mtk_nanohub_ready_event()` on `SCP_EVENT_READY` (registered with
+`scp_A_register_notify`).  There is **no `SCP power up` line in the whole round**,
+so the wait was never satisfied and the loop never ran - which is why
+`mtk_nanohub_create_manager()` never runs and `hf_manager` keeps answering
+`Device:mtk_nanohub not ready`.
+
+What the log shows instead is the interesting part:
+
+    [mtk_nanohub]notify event:1                      (repeated)
+    [mtk_nanohub_ipi] IPI_SENSOR transfer timeout!
+    [mtk_nanohub]mtk_nanohub_send_timestamp_wake_locked fail!
+
+So the hub-to-AP direction works - `SCP_INIT_DONE` reaches the driver - while the
+AP-to-hub direction does not: the sensor IPI never completes and the timestamp
+wake that rides it fails every time.  That asymmetry points at the **send**
+path: the mailbox/IPI the 6.6 driver picks for the sensor channel, not the hub
+firmware being absent.  The firmware is demonstrably alive, since it sent
+`SCP_INIT_DONE`.
+
+Next: compare the IPI/mailbox the driver selects for `SENSOR_HUB` against the
+`send_table`/`recv_table` in the DT node (the node carries both tables and
+`mbox_count = 5`), and against what the 4.19 driver used for the same firmware.
+`mtk_nanohub_send_timestamp_wake_locked()` is the cheapest place to start, since
+it fails on every attempt.
