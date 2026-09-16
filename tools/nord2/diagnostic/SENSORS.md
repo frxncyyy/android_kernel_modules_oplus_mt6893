@@ -211,3 +211,37 @@ Next: compare the IPI/mailbox the driver selects for `SENSOR_HUB` against the
 `mbox_count = 5`), and against what the 4.19 driver used for the same firmware.
 `mtk_nanohub_send_timestamp_wake_locked()` is the cheapest place to start, since
 it fails on every attempt.
+
+
+## Round 9: the naming theory is wrong, and that is worth knowing
+
+The obvious suspect looked perfect.  This ROM's DTB is the stock 4.19 one, which
+spells the SCP tables `send_table`, `recv_table` and `scp_mem_tbl`, while the
+6.6 tree's own `mt6893.dtsi` spells them `send-table`, `recv-table` and
+`scp-mem-tbl`, and 4.19 read the underscore forms.  That is the same class of
+mismatch as the hf_manager ABI, and the `scp_helper.c:2539` caller really does
+pass `"send-table"`.
+
+It is not the bug.  The `scp_dt_*` helpers in `scp_helper.h` all retry with an
+alternative name (`scp_dt_alt_name`) when the first lookup fails, so the
+underscore properties are found, and the driver would otherwise have printed
+`[SCP] scp send table not found`.  Round 41's log contains no such line - the
+only "table" message is Mali's unrelated OPP complaint.  The mailbox tables are
+being parsed; the IPI ids are mapped.
+
+So the AP-to-hub timeout is not a missing table.  What is left, in order of
+likelihood:
+
+* the IPI id nanohub sends `SENSOR_HUB` traffic on versus the id the hub
+  firmware services (`SCP_INIT_DONE` proves the firmware is up, but that message
+  may come from the SCP core rather than the sensor hub half);
+* whether the sensor hub part of the firmware is running at all, or only the SCP
+  core - the loader buffer the driver allocates is 8 KiB, far too small to be
+  the whole image, so something else brings the rest up;
+* the sensor share DRAM handshake (`scp_get_reserve_mem_virt(SENS_MEM_ID)`),
+  which the power-up loop touches before any IPI.
+
+`mtk_nanohub_send_timestamp_wake_locked()` remains the cheapest probe: it fails
+on every attempt, so instrumenting the send path there - which IPI id, which
+mailbox, and what the mbox registers say afterwards - separates "wrong channel"
+from "nothing listening".
