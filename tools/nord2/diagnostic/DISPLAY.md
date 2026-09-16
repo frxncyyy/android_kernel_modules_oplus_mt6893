@@ -115,11 +115,29 @@ Two intermediate builds bracket the design space:
   ULPS cycle after the bootloader's own bring-up is what killed TE in V13-V16.
   The owner confirmed the hand-over is seamless again, and the capture shows
   zero CMDQ timeouts, zero ESD TE timeouts, zero ESD recoveries, no `DDPAEE`,
-  `boot_completed` at 32.9 s, `present=true` on the gauge, and zero idle entries
-  for the whole round where the V17+ builds entered idle about 16 times in 42 s.
-  Idle power saving returns on the first screen off/on, which hands the panel to
-  the kernel; V24 exercises that transition with two scripted power-button
-  cycles.
+  `boot_completed` at 32.9 s and `present=true` on the gauge.
+
+The idle-manager half of that had to be measured with a trace, because the
+vendor's `[LP] enter idle` line is `DDPINFO` and clean builds filter it out - an
+earlier note here claimed "zero idle entries where V17+ had 16", which was in
+fact an artefact of the V17 instrumentation and is retracted. V25 promotes that
+one line to `DDPMSG` (temporarily, reverted before the commit) and shows the
+whole sequence: probe inherits LK's state at 1.43 s, the first idle entry is
+held off at 28.35 s (`idle entry held off, display still runs on LK's state`), a
+real blank/unblank at 42.94 s runs the kernel's own panel bring-up and clears
+the flag (`kernel owns the panel, idle cycles allowed`), and idle entries resume
+from 51.3 s - seven of them in the capture - with zero CMDQ timeouts and zero
+ESD TE timeouts throughout. Idle power saving therefore comes back on its own,
+which the earlier wording could only infer. V24 and V26 repeat the run with two
+scripted power-button cycles.
+
+That same V25 capture also removed the last piece of the original V20 attempt.
+Re-applying the remembered brightness after a panel re-init is unnecessary once
+the hand-over keeps the inherited frame, and on a real re-init it wrote a stale
+level 0 (`oplus_esd_backlight_recovery bl_tb0[1]=0, bl_tb0[2]=0`), which leaves
+the panel dark on screen-on until Android writes the backlight, so it is gone.
+Only a panel-bearing DSI may hold the idle manager off, and a slave DSI's flag
+now clears with its master's.
 
 The complete V11 guard capture contains 4,589 consecutive kernel records,
 with zero sequence gaps, recorded overruns or truncation. It contains zero
