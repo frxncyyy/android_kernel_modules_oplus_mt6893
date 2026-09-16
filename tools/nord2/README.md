@@ -139,6 +139,11 @@ kernel's symbol CRCs. See
 [Connectivity diagnostics](diagnostic/CONNECTIVITY.md) for module roles, load
 order, the firmware path and the remaining GPS/FM and MDDP work.
 
+System suspend is the next item. Round 30 showed the kernel is not the problem —
+its display and touch suspend paths run — while Android never issues a suspend
+request at all. [Suspend notes](diagnostic/SUSPEND.md) record the evidence and
+where to look next.
+
 ## Boot DTB
 
 The table behind the kernel is a 64-byte MediaTek header carrying exactly one
