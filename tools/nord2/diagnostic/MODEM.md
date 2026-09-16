@@ -224,3 +224,56 @@ round, in order:
 inserted.  "The SIM registers" is therefore not a usable acceptance test here.  A
 reachable target is the modem booting to a ready state and RIL coming up against
 it; a call would additionally need a SIM and a network.
+
+
+## Round 25: correction - those CCCI lines are benign, the layout init succeeds
+
+Round 24 said the kernel log "names exactly where it stops".  That was wrong, and
+reading the code and the rest of the sequence shows why.
+
+`mtk_ccci_md_smem_layout_init()` in `ccci_util_md_mem.c` starts with
+
+    s_md_gen = 6297;
+    ret = mtk_ccci_find_args_val("md_generation", &s_md_gen, sizeof(unsigned int));
+    if (s_md_gen < 6295) { pr_info("gen93 bypass init smem layout in util"); return 0; }
+    if (ret <= 0) pr_info("get md generation fail(%d)");
+
+so `s_md_gen` is **defaulted to 6297** and "get md generation fail(-1)" only says
+the optional `md_generation` boot arg is absent - it leaves a valid default.  The
+function then tries `get_md_smem_layout_tbl_from_lk_tag()` (which wants the
+`nc_smem_layout_num` / `c_smem_layout_num` / `nc_smem_layout` / `c_smem_layout`
+boot args), and on failure falls back to
+`get_md_smem_layout_tbl_from_lk_legacy_tag()`, which uses the **built-in static
+`gen6295_*` / `gen6297_*` tables**.  That fallback is the designed path for a
+board whose LK does not supply those args.
+
+And the log shows it running on past the lines I misread:
+
+    Key[md_bank0_base] not exist            -> bank0 base not found
+    Key[md_generation] not exist            -> get md generation fail(-1)
+    Key[nc_smem_layout_num] not exist       -> get nc_smem_num fail:-1
+                                            -> get md smem layout from tag directly not support(-1)
+    Key[smem_align_padding_size] not exist  -> using -1 as align padding size
+    ... smem amms pos size:0 ; dfd size:8388608 ; get_udc_nc_size using 0 as udc size
+    c_smem_info_parsing ccb: data:8b500000 data_size:33554432
+
+The last line is the legacy path parsing a real cacheable layout, so
+`mtk_ccci_md_smem_layout_init()` ran to completion and returned success.  The
+`Key[md1_sib_info] not exist` from `get_sib_info_from_tag()` is likewise
+non-fatal - it logs and returns.
+
+Two consequences:
+
+* The round-24 direction (diff the LK tag parsing, supply the layout via DT) was
+  chasing a non-problem.  The layout comes from the built-in tables and does not
+  need to be supplied.
+* There is a trap worth avoiding: `if (s_md_gen < 6295) ... return 0;` bypasses
+  the shared-memory initialisation entirely.  Forcing `md_generation` below 6295 -
+  which looks like an attractive way to silence the warnings - would skip the smem
+  mapping the modem needs.  Do not do that.
+
+So the modem's actual failure is **after** the CCCI utility initialisation, in the
+image load / FSM path, and that is where the next round should look.  What is now
+established from round 23 still stands and is the reliable part: the modules load,
+`/dev/ccci*` exists, the ccmni netdevices come up, and the modem reserved memory is
+claimed.
