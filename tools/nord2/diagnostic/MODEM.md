@@ -95,3 +95,37 @@ device: the `emi-dummy.ko` path in that script was wrong, and
 preflight never ran.  `work/private/android-v49/` should be treated as unusable -
 rebuild the bundle from `android-v47` (which is known good) and apply the module
 additions above.
+
+
+## Round 22: the guard walks the closure one layer at a time
+
+Two things happened.  First, the round-49 packaging failures were my own mistake,
+not a harness breakage: the packager runs `build_boot_dtb.py` with
+`work/tools/sysroot/usr/bin` prepended to PATH and needs `fdtget`, which comes
+from `. work/build-env.sh`; running the packager without sourcing the build env
+gives `fdtget ... exit status 127`.  Recorded so it is not misdiagnosed again -
+`work/private/android-v49/` was a casualty of it, not a real fault.
+
+With the build env sourced, the dependency guard accepted the three providers
+from round 21 (ccmni, mtk-dvfsrc, emi-dummy) and moved on to name exactly one
+more:
+
+    {'ccmni.ko': ['set_rps_map']},
+
+which is provided by
+
+    drivers/misc/mediatek/rps/rps_perf.ko
+
+So the closure is nearly complete.  The group to ship, providers first:
+
+    emi_dummy, mtk_dvfsrc, rps_perf, ccmni, ccci_util_lib, ccci_auxadc,
+    ccci_md_all, ccci_ccif, ccci_cldma, ccci_dpmaif, ccci_fsm_scp, mddp
+
+Nothing has been flashed for the modem yet.  The phone was rebooted back to
+ColorOS and verified (`sys.boot_completed=1`) after each rejected attempt, and
+the preflight is the reason no bad bundle ever reached the phone.
+
+Worth noting how differently this has gone from the sensor work: the dependency
+guard converts each missing provider into one named symbol per round instead of a
+boot loop to debug.  Rounds 21 and 22 cost two attempts and produced an exact
+list; the equivalent sensor detour cost roughly ten rounds.
