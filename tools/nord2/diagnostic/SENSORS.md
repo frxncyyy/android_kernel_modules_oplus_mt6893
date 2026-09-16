@@ -321,3 +321,46 @@ Next: identify which SCP register windows are NULL, by instrumenting the
 `devm_ioremap_resource()` sites or reading the resource indices they request, and
 confirm `scp_awake_lock()` is returning an error because of one.  That is now a
 much smaller and more concrete job than "the mailbox layer differs".
+
+
+## Round 12: scp_ready never gets set, so scp_awake_lock refuses
+
+Round 11 blamed the NULL register windows.  That was wrong, and the log says so
+plainly once the right string is searched for:
+
+    scp_awake_lock: SCP A not enabled
+    [SCP] scp_crash_dump: awake scp fail, scp id=0
+
+`scp_awake_lock()` fails at its *first* check:
+
+    if (is_scp_ready(scp_id) == 0) {
+            pr_notice("%s: %s not enabled\n", __func__, core_id);
+            return ret;              /* -1 */
+    }
+
+and `is_scp_ready()` is just `scp_ready[id]`.  The register windows are never
+touched, so the NULL ioremaps round 11 pointed at are not the cause of this.
+
+The full chain is now complete and every link is evidenced:
+
+1. the SCP firmware runs and talks to the AP - `SCP_INIT_DONE` reaches nanohub at
+   about 2.3 s;
+2. but the SCP's **notify** never reaches `scp_A_notify_ws()`
+   (scp_helper.c:713), which is the only place that sets
+   `scp_ready[SCP_A_ID] = 1` (scp_helper.c:739), so it stays 0;
+3. `scp_awake_lock()` returns -1 at `is_scp_ready()`;
+4. the tinysys IPI `pre_cb` fails - `Error: IPI [scp_ipidev_ipi#17] pre_cb fail`;
+5. every AP-to-hub transfer dies before it reaches the mailbox, which is why the
+   hub-to-AP direction works and outbound never does;
+6. nanohub's power-up loop never completes, `hf_manager` keeps answering
+   `Device:mtk_nanohub not ready`, and no sensor enumerates.
+
+`scp_A_notify_work` is scheduled from exactly one place, scp_helper.c:850-857,
+which also cancels the boot-timeout timer.  It sets `flags = 1` and calls
+`scp_schedule_work()`; the `if (scp_notify_flag)` guard in the work handler then
+takes the branch that sets `scp_ready`.
+
+Next: identify that function and why it never runs - which IPI id carries the SCP
+notify, whether the 6.6 driver registers that id, and whether the boot-timeout
+monitor fired first and put the SCP into the reset/crash-dump loop the same log
+lines hint at.
