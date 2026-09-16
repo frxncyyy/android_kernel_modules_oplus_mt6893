@@ -171,3 +171,51 @@ preserves whatever the phone owner had chosen:
 fix_aod=1     # save the current preference, clear it, restore it at the end
 aod_test=1    # additionally turn it on for a second window (the failing case)
 ```
+
+### What stock does that the port does not (round 37)
+
+A stock 4.19 dmesg during a real AOD cycle is the reference; the phone ran it
+while the stock vendor was up, so the same HAL, panel module and DTB were in
+play.  Its AOD enter/exit sequence is:
+
+```
+enter AOD, disable PMIC LPMODE
+debug for lcm panel_doze_enable
+debug for panel_doze_enable normal aod light mode
+oplus_panel_set_aod_light_mode, 0 to be 0
+debug for display panel backlight value,func:=lcm_setbacklight_cmdq,level :=1, mapped_level := 4
+enter aod mode, ignore set backlight to 1
+...
+debug for lcm panel_doze_disable, oplus_fp_notify_down_delay=0
+debug for lcm panel_doze_post_disp_on
+exit AOD, enable PMIC LPMODE
+```
+
+Against the port's unpatched AOD cycle (round 36 log) the differences are
+concrete and three:
+
+1. `pmic_ldo_vio18_lp` is live on stock for MT6893.  `mtk_drm_drv.c` calls it on
+   both AOD edges - `pmic_ldo_vio18_lp(SRCLKEN0, 0, 1, HW_LP)` and the SRCLKEN2
+   twin when entering, `(SRCLKEN0, 1, 0, HW_LP)` when leaving - so the display
+   I/O rail is handed to SRCLKEN control for AOD and handed back on exit.  The
+   port's `mediatek_v2/mtk_drm_drv.c` has the same four calls **commented out**
+   behind `priv->data->doze_ctrl_pmic`, and the function does not exist in the
+   6.6 tree at all (`pmic_lp_api.c` is absent; the 6.6 sibling comments name
+   `clk_buf_voter_ctrl_by_id(12, SW_BBLPM/SW_OFF)`, which is also absent).  The
+   6.6 tree does carry `drivers/misc/mediatek/srclken_rc/`, which is the
+   SRCLKEN side of the same thing.
+2. Stock's exit runs `panel_doze_post_disp_on` - the callback that turns the
+   panel back on after doze - and `oplus_fp_notify_down_delay`.  The port logs
+   neither (0 occurrences in the round-36 log).  `mediatek_v2/mtk_dsi.c` does
+   call `panel_funcs->doze_post_disp_on` unconditionally in its doze config
+   path, so the likely reason it never runs is that the port's panel module
+   leaves that pointer NULL in its `mtk_panel_ext`, or that the port reaches a
+   different doze path.
+3. Stock's AOD is accompanied by the sensor-hub path (`lux_aodhub`,
+   `chre_kthread`, `sensors@2.0-service`), which the port does not have at all
+   - the same missing MTK sensor stack as the sensors backlog item.
+
+The next round should test (2) first: it is the step that would literally turn
+the panel back on, it is a one-pointer question, and unlike (1) it needs no
+PMIC API that the 6.6 tree lacks.  (1) is the follow-up and is mostly a power
+question, since a rail left in its normal mode is more power, not less function.
