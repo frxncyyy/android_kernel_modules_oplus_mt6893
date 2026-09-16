@@ -5936,15 +5936,7 @@ static void mtk_output_dsi_enable(struct mtk_dsi *dsi,
 	}
 
 	if (dsi->panel) {
-		bool panel_reinit;
-
 		DDP_PROFILE("[PROFILE] %s panel init start\n", __func__);
-		/*
-		 * drm_panel_prepare() returns immediately when the panel is
-		 * already prepared, so remember whether this call really runs
-		 * the panel's power-on and init sequence.
-		 */
-		panel_reinit = !dsi->panel->prepared;
 		if (((!dsi->doze_enabled && !dsi->pending_switch) || force_lcm_update)
 			&& drm_panel_prepare(dsi->panel)) {
 			DDPPR_ERR("failed to prepare the panel\n");
@@ -5955,28 +5947,16 @@ static void mtk_output_dsi_enable(struct mtk_dsi *dsi,
 		mode_chg_index = mtk_crtc->mode_change_index;
 
 		/*
-		 * The panel power-on above resets the DDIC, which clears the
-		 * brightness LK programmed for the splash.  Android does not
-		 * write DCS 0x51 again until the boot animation starts, several
-		 * seconds later, so the panel would stay dark for the whole
-		 * hand-over.  Re-apply the level the panel driver remembers (or
-		 * its own default) as soon as the panel has been initialised.
-		 */
-		if (panel_reinit && dsi->ext && dsi->ext->funcs &&
-		    dsi->ext->funcs->esd_backlight_recovery) {
-			DDPMSG("%s: restore panel brightness after re-init\n",
-				__func__);
-			dsi->ext->funcs->esd_backlight_recovery(dsi,
-				mipi_dsi_dcs_write_gce2, NULL);
-		}
-
-		/*
 		 * The panel init above replaced LK's DDIC state with our own,
 		 * so the inherited state is gone: the display idle manager may
-		 * power-cycle the DSI again from here on.
+		 * power-cycle the DSI again from here on.  A slave DSI shares
+		 * this panel bring-up and does not always get its own enable
+		 * call, so clear its flag with ours.
 		 */
 		if (dsi->lk_adopted) {
 			dsi->lk_adopted = false;
+			if (dsi->slave_dsi)
+				dsi->slave_dsi->lk_adopted = false;
 			DDPMSG("%s: kernel owns the panel, idle cycles allowed\n",
 				__func__);
 		}
@@ -16099,10 +16079,11 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 					__func__, ret);
 		}
 		dsi->output_en = true;
-		dsi->lk_adopted = true;
 		if (dsi->panel) {
 			dsi->panel->prepared = true;
 			dsi->panel->enabled = true;
+			/* Only a panel-bearing DSI gates the idle manager. */
+			dsi->lk_adopted = true;
 		}
 		dsi->clk_refcnt = 1;
 		DDPMSG("%s: inherited LK's DSI and panel state\n", __func__);

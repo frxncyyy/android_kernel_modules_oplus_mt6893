@@ -1691,6 +1691,8 @@ static int mtk_drm_idlemgr_monitor_thread(void *data)
 	struct mtk_crtc_state *mtk_state = NULL;
 	struct drm_vblank_crtc *vblank = NULL;
 	int crtc_id = drm_crtc_index(crtc);
+	/* DDPMSG once, so a clean capture shows the gate without spamming. */
+	static bool lk_state_held_off;
 
 	msleep(16000);
 	while (1) {
@@ -1758,6 +1760,11 @@ static int mtk_drm_idlemgr_monitor_thread(void *data)
 		 */
 		if (mtk_dsi_lk_state_in_use(priv)) {
 			idlemgr_ctx->idlemgr_last_kick_time = sched_clock();
+			if (!lk_state_held_off) {
+				lk_state_held_off = true;
+				DDPMSG("%s: idle entry held off, display still runs on LK's state\n",
+					__func__);
+			}
 			DDP_MUTEX_UNLOCK_CONDITION(&mtk_crtc->lock, __func__,
 					__LINE__, false);
 			continue;

@@ -52,10 +52,17 @@ assert "dsi->ext->is_connected = mtk_dsi_lk_adopted(dsi, alias);" in probe
 
 enable = dsi[dsi.index("static void mtk_output_dsi_enable("):]
 assert "dsi->lk_adopted = false;" in enable
+# a slave DSI shares the master's panel bring-up and may never see its own
+# enable call, so the flag has to be cleared together with the master's
+assert "dsi->slave_dsi->lk_adopted = false;" in enable
 
 lowpower = (v2 / "mtk_drm_lowpower.c").read_text()
 assert "mtk_dsi_lk_state_in_use(priv)" in lowpower
+assert "idle entry held off" in lowpower
 assert "bool mtk_dsi_lk_state_in_use(struct mtk_drm_private *priv)" in dsi
+# only a panel-bearing DSI may hold the idle manager off
+assert "dsi->lk_adopted = true;" in probe
+assert probe.index("if (dsi->panel) {") < probe.index("dsi->lk_adopted = true;")
 
 harness = r'''
 #include <assert.h>
