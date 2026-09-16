@@ -536,3 +536,39 @@ on a sticky flag that cannot change (the parenthesised comment in the caller say
 as much: "the scp seems stop again, try to wait WDT" is the wrong reading when
 `cali_failed` is permanent), and find what resets the SCP immediately after that
 loop so `scp_ready` stops being cleared.
+
+
+## Round 16 addendum: the reset is initiated by scp_awake_lock() itself
+
+Grepping the recovery lines out of round 44 pins the remaining reset, and it is
+not the calibration and not the boot-timeout monitor:
+
+    t=3.2s   [SCP] recovery success
+    t=44.6s  scp_awake_lock: start to reset scp...
+    t=44.6s  [SCP] scp_sys_reset_ws(): remain 99999 times
+    t=44.6s  [SCP] scp_sys_reset_ws(): scp_extern_notify
+    t=44.6s  scp_awake_lock: scp resetting
+    t=44.7s  [SCP] scp_sys_reset_ws(): scp_reset_type 1
+    t=45.7s  [SCP] recovery success
+
+`scp_awake_lock: start to reset scp...` is inside `scp_awake_lock()`.  That
+function returns -1 early when `is_scp_ready()` is 0 (the round-12 finding), but
+at 44.6 s it gets *past* that check - so `scp_ready` was 1 - and then times out
+waiting for the SCP to acknowledge the awake request, whereupon its own timeout
+path calls `scp_send_reset_wq()`.
+
+So the real fault is the **awake handshake never completing**.  `scp_awake_lock()`
+writes `0xA0 | (1 << AP_AWAKE_LOCK)` to the INFRA IRQ set register (via
+`scp_lpm_req_infra()`, or through the scpsys regmap when `cfgreg_ap_en`) and then
+waits for the SCP to acknowledge; the SCP never does.  Everything else on the
+sensor path - the ready IPI, scp_ready, the notify work, the hub-to-AP direction -
+is working, which matches all the measurements above.
+
+That reframes the next step: the awake request is a power-management handshake
+between the AP and the SCP (INFRA/SPM side), so the things to check are whether
+the SPM/SPM-related setup the handshake depends on actually ran on the port, what
+`scp_lpm_req_infra()` writes and whether that register is the one this SoC's SCP
+watches, and whether `scpreg.cfgreg_ap_en` is set (the stock DT has no
+`scp-cfgreg-ap-en` property, so the else branch using the fixed SPM register is
+the one taken).  The calibration failure is a red herring for the reset loop,
+though making it non-fatal was still correct.
