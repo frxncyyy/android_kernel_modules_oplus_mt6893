@@ -364,3 +364,39 @@ Next: identify that function and why it never runs - which IPI id carries the SC
 notify, whether the 6.6 driver registers that id, and whether the boot-timeout
 monitor fired first and put the SCP into the reset/crash-dump loop the same log
 lines hint at.
+
+
+## Round 13: the ready handler looks correctly registered, so the likely fault is a race
+
+`scp_A_set_ready()` has exactly one caller in the rv build: `scp_A_ready_ipi_handler()`
+(scp_helper.c:889, calling at :895).  That handler is registered in two places,
+for `IPI_IN_SCP_READY_0` and `IPI_IN_SCP_READY_1`, each guarded by
+`mbox_check_recv_table()` and each logging `Dosen't support IPI_IN_SCP_READY_0/1`
+when the guard fails.
+
+Two comparisons came out clean:
+
+* `IPI_IN_SCP_READY_0 = 9` in **both** trees, identically (scp_rv.h), so the id
+  the driver listens on is the id stock listened on;
+* the probe block also has a legacy branch - `if
+  (mbox_check_recv_table(IPI_IN_SCP_MPOOL_0)) scp_legacy_ipi_init(); else
+  pr_info("Skip legacy ipi init");`.  The port logs neither `Skip legacy ipi
+  init` nor `Dosen't support IPI_IN_SCP_READY_0/1`, which is consistent with the
+  legacy branch being taken (that branch is silent) and with the ready handler
+  being registered successfully.
+
+So the handler is on the right id and is registered, and yet `scp_ready` never
+becomes 1.  That points at the notification being **missed rather than
+mishandled**, and there is a natural race: the SCP is already running when the
+kernel probes it (the same conclusion the `SCP_INIT_DONE` traffic at 2.3 s pushes
+towards), so a "ready" notification sent early can be delivered before the AP has
+registered the handler, and nothing re-sends it.  The boot-timeout monitor then
+fires, and the log's `scp_crash_dump: awake scp fail` and repeated
+`scp_awake_lock: SCP A not enabled` are the recovery loop that follows.
+
+This is a hypothesis, not a measurement.  The way to settle it is to log
+`scp_A_ready_ipi_handler()` entry and the `mbox_check_recv_table()` outcomes in
+`scp_ipi_table_init()` on the next flashing round, rather than reading more code.
+If the handler never fires while the SCP is demonstrably up, the fix is to treat
+"SCP already running at probe" as ready - the state stock evidently reached -
+instead of waiting for a notification that has already been and gone.
