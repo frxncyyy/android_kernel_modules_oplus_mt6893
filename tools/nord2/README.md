@@ -122,6 +122,23 @@ and the MT6991 audio card. The camera sensor list is intentionally empty until
 the actual Nord 2 sensors are ported. The inherited charging v2 framework does
 not implement this board's complete legacy MP2650/ZY0603 power path.
 
+## Connectivity
+
+Wi-Fi and Bluetooth run on the port. Round 29 completed the framework's first
+scan, associated to the owner's network, took a DHCP lease and passed 604 Tx
+packets, enabled Bluetooth, and recorded no UBSAN report and no panic. The
+change behind it is
+[`2a08123e2`](https://github.com/frxncyyy/android_kernel_oplus_op6893/commit/2a08123e2),
+which assigns `cfg80211_scan_request::n_channels` before the `__counted_by`
+annotation's bounds checks can read it; without it the first scan aborted the
+kernel and the phone boot looped. `tools/nord2/build-connsys.sh` builds the
+connsys stack, `tools/nord2/refresh-modules.py` re-stages the cached module sets
+after any kernel change (their vermagic carries the kernel commit hash) and
+`tools/nord2/check-modversions.py` checks every shipped module against the
+kernel's symbol CRCs. See
+[Connectivity diagnostics](diagnostic/CONNECTIVITY.md) for module roles, load
+order, the firmware path and the remaining GPS/FM and MDDP work.
+
 ## Boot DTB
 
 The table behind the kernel is a 64-byte MediaTek header carrying exactly one
