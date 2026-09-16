@@ -716,6 +716,8 @@ static void scp_A_notify_ws(struct work_struct *ws)
 		container_of(ws, struct scp_work_struct, work);
 	unsigned int scp_notify_flag = sws->flags;
 
+	pr_info("[SCP] nord2-dbg notify_ws running: flag=%u\n", scp_notify_flag);
+
 
 #if SCP_RECOVERY_SUPPORT
 	if (atomic_read(&scp_reset_status) == RESET_STATUS_START_WDT) {
@@ -864,6 +866,7 @@ static void scp_A_set_ready(void)
 #if SCP_BOOT_TIME_OUT_MONITOR
 static void scp_wait_ready_timeout(struct timer_list *t)
 {
+	pr_info("[SCP] nord2-dbg ready timeout fired: times=%d\n", scp_timeout_times);
 #if SCP_RECOVERY_SUPPORT
 	if (scp_timeout_times < 10)
 		scp_send_reset_wq(RESET_TYPE_TIMEOUT);
@@ -891,6 +894,8 @@ static int scp_A_ready_ipi_handler(unsigned int id, void *prdata, void *data,
 {
 	unsigned int scp_image_size = *(unsigned int *)data;
 
+	pr_info("[SCP] nord2-dbg ready_ipi fired: id=%u scp_ready=%d size=0x%x\n",
+		id, scp_ready[SCP_A_ID], scp_image_size);
 	if (!scp_ready[SCP_A_ID])
 		scp_A_set_ready();
 
@@ -3572,6 +3577,10 @@ static int __init scp_init(void)
 
 	INIT_WORK(&scp_A_notify_work.work, scp_A_notify_ws);
 
+	pr_info("[SCP] nord2-dbg recv_table: mpool0=%d ready0=%d ready1=%d\n",
+		mbox_check_recv_table(IPI_IN_SCP_MPOOL_0),
+		mbox_check_recv_table(IPI_IN_SCP_READY_0),
+		mbox_check_recv_table(IPI_IN_SCP_READY_1));
 	if (mbox_check_recv_table(IPI_IN_SCP_MPOOL_0))
 		scp_legacy_ipi_init();
 	else

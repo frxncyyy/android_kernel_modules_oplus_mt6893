@@ -400,3 +400,45 @@ This is a hypothesis, not a measurement.  The way to settle it is to log
 If the handler never fires while the SCP is demonstrably up, the fix is to treat
 "SCP already running at probe" as ready - the state stock evidently reached -
 instead of waiting for a notification that has already been and gone.
+
+
+## Round 14: measured - the ready path works, the SCP is in a reset loop
+
+Four `pr_info` probes went into `scp_helper.c` and a round was flashed to read
+them (`b1-scp-log-1.txt` is empty because adb shell cannot read `dmesg`; the guard's
+expdb log is where kernel console output actually lands, which is why all the
+earlier SCP evidence came from there).  The probes answer the round-13 question
+and kill its hypothesis:
+
+    [SCP] nord2-dbg recv_table: mpool0=1 ready0=1 ready1=1
+    [SCP] nord2-dbg ready_ipi fired: id=22 scp_ready=0 size=0x180000     t=3.2s
+    [SCP] nord2-dbg notify_ws running: flag=1
+    ...
+    [SCP] nord2-dbg ready_ipi fired: id=22 scp_ready=1 size=0x180000     t=106.8s
+    [SCP] nord2-dbg ready_ipi fired: id=22 scp_ready=0 size=0x180000     t=110.8s
+    [SCP] nord2-dbg ready timeout fired: times=0                          every ~50s
+
+So the notification is **not** missed and the handler is **not** badly registered:
+`scp_A_ready_ipi_handler()` fires, `scp_A_notify_ws()` runs with `flag=1`, and
+`scp_ready[SCP_A_ID]` really does reach 1.  Round 13's race hypothesis was wrong -
+recorded here so it is not revived.
+
+The real fault is that `scp_ready` does not *stay* 1.  It is set, then a reset
+clears it again, and the cycle repeats: the boot-timeout monitor fires every ~50
+seconds (`ready timeout fired: times=0`, and `scp_timeout_times` is reset to 0 by
+the notify work, so it never climbs toward its limit), each firing resets the SCP,
+and `scp_awake_lock: SCP A not enabled` at 43.5 s and 53.7 s lands inside one of
+those windows.  The `IPI_SENSOR transfer timeout` and `pre_cb fail` errors are
+downstream of this, not the cause.
+
+Also worth having measured: the ready IPI arrives as **id 22**, not id 9, even
+though the handler is registered on `IPI_IN_SCP_READY_0`.  All three
+`mbox_check_recv_table()` results are 1, so the legacy branch is taken exactly as
+round 13 inferred from the absence of `Skip legacy ipi init`.
+
+Next: find what resets the SCP every ~50 s.  Candidates are the boot-timeout
+monitor arming itself repeatedly (and never being cancelled because the
+`del_timer` sits behind `SCP_BOOT_TIME_OUT_MONITOR`), a genuine SCP watchdog
+timeout, or the recovery path re-arming.  `scp_send_reset_wq(RESET_TYPE_TIMEOUT)`
+in `scp_wait_ready_timeout()` is the call that fires, so that function's timer
+setup is the place to start.
