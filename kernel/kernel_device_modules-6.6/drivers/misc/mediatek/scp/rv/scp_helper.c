@@ -716,8 +716,6 @@ static void scp_A_notify_ws(struct work_struct *ws)
 		container_of(ws, struct scp_work_struct, work);
 	unsigned int scp_notify_flag = sws->flags;
 
-	pr_info("[SCP] nord2-dbg notify_ws running: flag=%u\n", scp_notify_flag);
-
 
 #if SCP_RECOVERY_SUPPORT
 	if (atomic_read(&scp_reset_status) == RESET_STATUS_START_WDT) {
@@ -743,28 +741,40 @@ static void scp_A_notify_ws(struct work_struct *ws)
 		scp_timeout_times = 0;
 
 	if (scp_dvfs_feature_enable()) {
+		uint32_t cali_times = 0;
+
+		while (!sync_ulposc_cali_data_to_scp()) {
+			/*
+			 * Although notify_ipi has been sent,
+			 * the scp seems stop again, try to wait WDT.
+			 */
+			pr_notice("[SCP] cali #%d fail\n", ++cali_times);
+			msleep(2000);
+			if (atomic_read(&scp_reset_status) == RESET_STATUS_START_WDT ||
+				cali_times >= 20) {
+				pr_notice("[SCP] cali fail, do recovery\n");
+				atomic_set(&scp_reset_status, RESET_STATUS_START);
+				scp_send_reset_wq(RESET_TYPE_WDT);
+				return;
+			}
+		}
+		/* release pll clock after scp ulposc calibration */
+		scp_pll_ctrl_set(PLL_DISABLE, CLK_26M);
+
 		/*
-		 * nord2: try the ULPOSC2 calibration handoff exactly once.
-		 *
-		 * It cannot succeed here - the fmeter that feeds it cannot read
-		 * ("mt_get_fmeter_freq(36, 1) return 0, pls check CCF configs"), so
-		 * ulposc_cali_process() sets cali_failed and
-		 * sync_ulposc_cali_data_to_scp() then returns false from that sticky
-		 * flag forever, immediately, without waiting for anything.
-		 *
-		 * The stock loop retries it twenty times with msleep(2000).  That
-		 * was actively harmful on this port: it held this work item for
-		 * ~40 s, during which an scp_awake_lock() elsewhere timed out waiting
-		 * for the SCP to acknowledge, reset the SCP, cleared scp_ready, and
-		 * started the whole cycle again every ~42 s.  Measured: the first
-		 * 'scp_awake_lock: start to reset scp...' lands at 44.6 s, one cali
-		 * loop after recovery.
-		 *
-		 * Calibration only refines DVFS accuracy, so give up at once and let
-		 * the SCP stay up.
+		 * Calling sync_ulposc_cali_data_to_scp() will resets the frequency request
+		 * so we need to request freq again in recovery flow.
 		 */
-		if (!sync_ulposc_cali_data_to_scp())
-			pr_notice("[SCP] nord2: ULPOSC cali unavailable, continuing without it\n");
+		if (atomic_read(&scp_reset_status) != RESET_STATUS_STOP) {
+			scp_expected_freq = scp_get_freq();
+			scp_awake_lock((void *)SCP_A_ID);
+			scp_current_freq = readl(CURRENT_FREQ_REG);
+			scp_awake_unlock((void *)SCP_A_ID);
+			if (scp_request_freq()) {
+				pr_notice("[SCP] %s: req_freq fail\n", __func__);
+				WARN_ON(1);
+			}
+		}
 	}
 
 		scp_dvfs_cali_ready = 1;
@@ -854,20 +864,8 @@ static void scp_A_set_ready(void)
 #if SCP_BOOT_TIME_OUT_MONITOR
 static void scp_wait_ready_timeout(struct timer_list *t)
 {
-	pr_info("[SCP] nord2-dbg ready timeout fired: times=%d\n", scp_timeout_times);
 #if SCP_RECOVERY_SUPPORT
-	/*
-	 * nord2: never reset an SCP that is already running.  scp_ready is the
-	 * evidence that it booted, and this monitor exists to catch a boot that
-	 * failed - not to police a healthy core.  Measured on the phone: the
-	 * monitor re-arms after every recovery, fires every SCP_READY_TIMEOUT,
-	 * and each firing reset the SCP and cleared scp_ready.  That is what
-	 * broke scp_awake_lock() ("SCP A not enabled"), and with it every
-	 * AP-to-SCP IPI transfer, and with that the sensor hub bring-up.
-	 */
-	if (scp_ready[SCP_A_ID])
-		pr_info("[SCP] nord2: SCP already ready, skipping boot-timeout reset\n");
-	else if (scp_timeout_times < 10)
+	if (scp_timeout_times < 10)
 		scp_send_reset_wq(RESET_TYPE_TIMEOUT);
 	else
 		__pm_relax(scp_reset_lock);
@@ -893,8 +891,6 @@ static int scp_A_ready_ipi_handler(unsigned int id, void *prdata, void *data,
 {
 	unsigned int scp_image_size = *(unsigned int *)data;
 
-	pr_info("[SCP] nord2-dbg ready_ipi fired: id=%u scp_ready=%d size=0x%x\n",
-		id, scp_ready[SCP_A_ID], scp_image_size);
 	if (!scp_ready[SCP_A_ID])
 		scp_A_set_ready();
 
@@ -3576,10 +3572,6 @@ static int __init scp_init(void)
 
 	INIT_WORK(&scp_A_notify_work.work, scp_A_notify_ws);
 
-	pr_info("[SCP] nord2-dbg recv_table: mpool0=%d ready0=%d ready1=%d\n",
-		mbox_check_recv_table(IPI_IN_SCP_MPOOL_0),
-		mbox_check_recv_table(IPI_IN_SCP_READY_0),
-		mbox_check_recv_table(IPI_IN_SCP_READY_1));
 	if (mbox_check_recv_table(IPI_IN_SCP_MPOOL_0))
 		scp_legacy_ipi_init();
 	else

@@ -731,3 +731,27 @@ the send/recv table naming (handled by `scp_dt_alt_name`), the mailbox layer,
 `scp_ready` handling, the ready-IPI race, the boot-timeout monitor, and the
 calibration retry loop itself.  Each was tested and excluded with evidence before
 the packaging gap was found.
+
+
+## Round 47: the diagnostic changes are reverted, and the fmeter fix alone is enough
+
+`scp_helper.c` is restored to `a06dc3a6` ("scp: bring the SCP up on this board"),
+which keeps the pre-existing op6893 bring-up patch and drops everything added
+during the investigation: the round-14 `nord2-dbg` probes, the round-15
+never-reset-a-ready-SCP guard, and the round-16/17 single-shot calibration call.
+
+Re-verified on the phone with the clean tree (round 47):
+
+    lsm6dso ACCELEROMETER / mmc5603 MAGNETOMETER / lsm6dso GYROSCOPE
+    tcs3701 PROXIMITY / tcs3701 LIGHT        - all enumerate
+    lsm6dso ACCELEROMETER: last 50 events    - streaming
+    nord2-dbg                                  0
+    scp_awake_lock: SCP A not enabled           0
+    Device:mtk_nanohub not ready                0
+    IPI_SENSOR transfer timeout                 0
+    recovery success                            1
+    cali fail, do recovery                      0
+
+So the shipped fix is exactly one thing - load `clk-fmeter-mt6893` before `scp` -
+and none of the diagnostic patches were load-bearing.  That is the state the
+sensor work is left in.
