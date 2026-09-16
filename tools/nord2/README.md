@@ -139,10 +139,17 @@ kernel's symbol CRCs. See
 [Connectivity diagnostics](diagnostic/CONNECTIVITY.md) for module roles, load
 order, the firmware path and the remaining GPS/FM and MDDP work.
 
-System suspend is the next item. Round 30 showed the kernel is not the problem —
-its display and touch suspend paths run — while Android never issues a suspend
-request at all. [Suspend notes](diagnostic/SUSPEND.md) record the evidence and
-where to look next.
+System suspend is the next item. Round 31 found that the diagnostic boot guard's
+own wake lock is the suspend blocker: the kernel exposes `freeze mem` with
+`[deep]` as the default memory sleep state, every needed wake source is
+registered, and the PMIC RTC (`rtc-mt6397.ko`) arms and fires alarms, so the next
+round can arm an alarm, drop the guard's lock and measure a real suspend.
+[Suspend notes](diagnostic/SUSPEND.md) record the evidence, what is still
+unproven about the PSCI-only deep path, and where to look next.
+
+The RTC joined the shipped module set in round 31: the boot DTB describes the
+MT6359 PMIC RTC as `mediatek,mt6359-rtc`, which `rtc-mt6397.ko` matches, and one
+of its wakeup sources is what makes an unattended suspend probe recoverable.
 
 ## Boot DTB
 

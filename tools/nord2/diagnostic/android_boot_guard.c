@@ -152,12 +152,77 @@ static int display_debug_command(const char *command)
     if (fd < 0) return -1;
     int ret = write_all(fd, command, strlen(command)); close(fd); return ret;
 }
+/* Power probe.  The diagnostic wake lock this launcher holds is exactly what
+ * keeps every round awake, so suspend can only be observed once it is dropped
+ * on purpose.  The probe is opt-in through a file in the ramdisk, read before
+ * switch_root replaces it, so ordinary rounds keep the wake lock throughout.
+ * CLOCK_BOOTTIME counts suspended time and CLOCK_MONOTONIC does not, so the
+ * difference between the two clocks measures any suspend that happened while
+ * this process was frozen. */
+static char probe_cfg[512];
+static unsigned long monotonic(void)
+{
+    struct timespec t = {0};
+    if (my_syscall2(__NR_clock_gettime, 1, &t) < 0) return 0;
+    return t.tv_sec;
+}
+static unsigned long value_of(const char *path)
+{
+    char buf[64] = {0};
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    return n > 0 ? (unsigned long)atol(buf) : 0;
+}
+static int value_write(const char *path, const char *value)
+{
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    int ret = write_all(fd, value, strlen(value));
+    close(fd);
+    return ret;
+}
+static char *decimal(char *out, unsigned long value)
+{
+    char digits[24];
+    int n = 0, i = 0;
+    do { digits[n++] = (char)('0' + value % 10); value /= 10; } while (value);
+    while (n) out[i++] = digits[--n];
+    out[i] = 0;
+    return out;
+}
+static unsigned long probe_value(const char *key)
+{
+    char needle[32];
+    strcpy(needle, key); append(needle, "=");
+    char *hit = contains(probe_cfg, needle);
+    return hit ? (unsigned long)atol(hit + strlen(needle)) : 0;
+}
+static void power_snapshot(void)
+{
+    snapshot_file("/sys/power/state");
+    snapshot_file("/sys/power/mem_sleep");
+    snapshot_file("/sys/power/wake_lock");
+    snapshot_file("/sys/power/suspend_stats/success");
+    snapshot_file("/sys/power/suspend_stats/fail");
+    snapshot_file("/sys/power/suspend_stats/last_failed_dev");
+    snapshot_file("/sys/power/suspend_stats/last_failed_errno");
+    snapshot_file("/sys/kernel/debug/wakeup_sources");
+    snapshot_file("/sys/class/rtc/rtc0/name");
+    snapshot_file("/sys/class/rtc/rtc0/since_epoch");
+    snapshot_file("/sys/class/rtc/rtc0/wakealarm");
+    snapshot_file("/sys/class/rtc/rtc0/hctosys");
+}
 static void watchdog(int proc1)
 {
     const unsigned long start = seconds();
     unsigned long last = 0, last_snapshot = 0;
+    unsigned long probe_at = probe_value("probe_at"), probe_alarm = probe_value("alarm_after");
+    unsigned long probe_drop = probe_value("drop"), probe_boot = 0, probe_mono = 0;
+    unsigned long probe_released = 0, probe_success = 0, probe_fail = 0;
     int requested = 0, armed = 0, reprobed = 0, metadata_log = 0, final_root = 0;
-    int awake = 0, debug_mounted = 0, display_logger = 0;
+    int awake = 0, debug_mounted = 0, display_logger = 0, probe_done = 0, probe_hold = 0;
     prctl(PR_SET_NAME, (unsigned long)"nord2-bootguard", 0, 0, 0);
     note("nord2-bootguard: started; Android timeout 240s, hard return 300s");
     for (;;) {
@@ -216,6 +281,53 @@ static void watchdog(int proc1)
                 if (fd >= 0) { write(fd, "1400e000.dsi", strlen("1400e000.dsi")); close(fd); }
             }
             reprobed = 1;
+        }
+        if (probe_at && !probe_done && now - start >= probe_at) {
+            char text[96];
+            probe_done = 1;
+            probe_boot = seconds(); probe_mono = monotonic();
+            probe_success = value_of("/sys/power/suspend_stats/success");
+            probe_fail = value_of("/sys/power/suspend_stats/fail");
+            note("nord2-power-probe: begin");
+            power_snapshot();
+            if (probe_alarm) {
+                unsigned long base = value_of("/sys/class/rtc/rtc0/since_epoch");
+                if (base) {
+                    decimal(text, base + probe_alarm);
+                    if (!value_write("/sys/class/rtc/rtc0/wakealarm", text)) {
+                        note("nord2-power-probe: RTC wake alarm armed");
+                        snapshot_file("/sys/class/rtc/rtc0/wakealarm");
+                    } else note("nord2-power-probe: RTC wake alarm write failed");
+                } else note("nord2-power-probe: no RTC device present");
+            }
+            if (probe_drop) {
+                if (!value_write("/sys/power/wake_unlock", "nord2-android-diagnostic")) {
+                    probe_hold = 1;
+                    note("nord2-power-probe: diagnostic wake lock released");
+                } else note("nord2-power-probe: wake lock release failed");
+            }
+            probe_released = now;
+            flush_log();
+        }
+        if (probe_hold) {
+            unsigned long success = value_of("/sys/power/suspend_stats/success");
+            unsigned long fail = value_of("/sys/power/suspend_stats/fail");
+            unsigned long boot = seconds(), mono = monotonic();
+            if (success != probe_success || fail != probe_fail ||
+                now - probe_released >= (probe_alarm ? probe_alarm + 20 : 25)) {
+                char text[128];
+                strcpy(text, "nord2-power-probe: success="); decimal(text + strlen(text), success);
+                append(text, " fail="); decimal(text + strlen(text), fail);
+                append(text, " boot_delta="); decimal(text + strlen(text), boot - probe_boot);
+                append(text, " mono_delta="); decimal(text + strlen(text), mono - probe_mono);
+                append(text, " (difference is suspended time)");
+                note(text);
+                power_snapshot();
+                if (!awake_write("/sys/power/wake_lock") && awake_held())
+                    note("nord2-power-probe: diagnostic wake lock reacquired");
+                probe_hold = 0;
+                flush_log();
+            }
         }
         if (now - start >= 40 && now - last_snapshot >= 40) {
             snapshot_file("/sys/class/power_supply/battery/uevent");
@@ -290,6 +402,14 @@ int main(int argc, char **argv, char **envp)
     if (getpid() != 1) { puts("Diagnostic launcher must be PID 1"); return 1; }
     mkdir("/proc", 0755);
     if (mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL)) return 1;
+    /* switch_root discards the ramdisk, so latch the power-probe settings now. */
+    int cfg = open("/nord2-power-probe", O_RDONLY | O_CLOEXEC);
+    if (cfg >= 0) {
+        ssize_t n = read(cfg, probe_cfg, sizeof(probe_cfg) - 1);
+        close(cfg);
+        if (n > 0) probe_cfg[n] = 0;
+        puts("nord2-bootguard: power probe settings latched");
+    }
     int proc1 = open("/proc/1", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (proc1 < 0) return 1;
     pid_t child = fork();
