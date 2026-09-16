@@ -175,3 +175,52 @@ Two harness slips, neither a port problem:
   ColorOS (`sys.boot_completed=1`).  A later manual restore attempt asserted
   `id -u == 0 && ro.product.device == denniz`, which is that script's safety guard
   refusing to operate on Android rather than a fault.
+
+
+## Round 24: the modem cannot learn its shared-memory layout
+
+The userspace half turns out **not** to be a port problem at all.  The port boots
+the stock vendor Android, and on stock the modem services are already present and
+running: `/vendor/bin/ccci_mdinit`, `ccci_rpcd`, `md_monitor`, `emdlogger`, with
+`init.svc.ccci_mdinit`, `init.svc.vendor.ccci_rpcd`, `init.svc.emdlogger` and
+`init.svc.vendor.ril-daemon-mtk` all **running**.  So there is no userspace to
+port; what matters is whether the stock userspace can talk to the 6.6 kernel's
+CCCI interface.
+
+The kernel log names exactly where it stops.  The CCCI driver cannot find the
+modem shared-memory layout:
+
+    ccci: mtk_ccci_md_smem_layout_init :get md generation fail(-1)
+    ccci: mtk_ccci_md_smem_layout_init :get md smem layout from tag directly not support(-1)
+    ccci: mtk_ccci_find_args_val(line:84): Key[md1_sib_info] not exist
+
+`mtk_ccci_find_args_val("md1_sib_info", ...)` is used at
+`ccci_util_lib_fo.c:401` and `ccci_util_md_mem.c:520`, and that file also carries
+`get_md_smem_layout_tbl_from_lk_tag()` and a `..._lk_legacy_tag()` variant.  So the
+6.6 driver expects the layout to arrive as an **LK boot tag**; this board's LK
+supplies it in a form the 6.6 driver reads as "not support", and no DT fallback
+covers it either - the port's `base.dtb`/`boot-table.dtb` contain no
+`md1_sib_info`/`md_smem`/`sib_info` strings, and neither does the stock DTB (nor
+the stock kernel command line).  The 4.19 driver evidently understood the tag
+this LK produces; the 6.6 driver does not.
+
+That is a specific, named incompatibility of the same family as the hf_manager
+ABI and the fmeter provider - not a mystery.  Candidate directions for the next
+round, in order:
+
+1. Read the 4.19 `ccci_util_md_mem.c` tag parsing against the 6.6 version and see
+   which tag structure the LK actually emits (`get_md_smem_layout_tbl_from_lk_tag`
+   vs the legacy variant, and the generation field that returns -1).
+2. If the layout can be supplied through the DT instead, add it to
+   `build_boot_dtb.py`'s `--power` path from values that can be read off the stock
+   device, rather than reverse-engineering the tag.
+3. `Key[md1_sib_info] not exist` is a boot-argument lookup: check whether the LK
+   boot table the port reuses simply does not carry it, and whether adding it is
+   possible from the prepared DTB.
+
+### Test-design constraint: this phone has no SIM
+
+`gsm.sim.state` reads `ABSENT,ABSENT` **on stock as well**, so there is no SIM
+inserted.  "The SIM registers" is therefore not a usable acceptance test here.  A
+reachable target is the modem booting to a ready state and RIL coming up against
+it; a call would additionally need a SIM and a network.
