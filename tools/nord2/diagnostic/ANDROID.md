@@ -22,7 +22,11 @@ port and Linux 6.6.30. They do not establish a usable Android port.
 | V16 | Trace the DSI enable/idle register state | `EXT_TE_EN` is correctly set (0x0001023c) after the idle cycle and TE still never arrives; the ESD workaround recovers at 36.4-36.7 s by unpreparing/repreparing the panel. The inherited panel/DSI state, not the register bit, is at fault. |
 | V17 | Keep the CRTC handoff, stop inheriting LK's DSI/panel state | 16 idle/power cycles between 32.3 s and 74.5 s with zero CMDQ timeouts, zero ESD TE timeouts, no ESD recovery, no DDPAEE or panic; boot completion unchanged; gauge healthy. |
 | V18 | Clean build of the same change (diagnostics removed) | Same healthy capture: zero CMDQ and zero ESD TE timeouts, boot completion unchanged, gauge healthy. |
-| V19 | Byte-identical rebuild of V18, watched by the owner | Owner reported a black interval of "almost 10 seconds" between splash and boot animation. The capture shows the kernel's panel re-init at 20.49-20.63 s and the first Android backlight write at 26.12 s, so the panel is dark for about 5.6 s: resetting the DDIC clears its brightness and nothing restores it until Android does. |
+| V19 | Byte-identical rebuild of V18, watched by the owner | Owner reported a black interval of "almost 10 seconds" between splash and boot animation. The capture shows the kernel's panel re-init at 20.49-20.63 s and the first Android backlight write at 26.12 s, so the panel is dark for about 5.6 s. |
+| V20 | Re-apply the remembered brightness (DCS `0x51`, 1023) right after the kernel's panel re-init | The write reaches the panel with zero CMDQ errors and the owner still sees the full interval, so the gap is missing content, not missing backlight. Both the V12 and V20 captures contain zero frame-completion events between 20.5 s and 26.0 s: the CRTC commits nothing across the hand-over, so only the frame LK left in the DDIC RAM can keep the screen lit. |
+| V21/V22 | Inherit LK's panel but let the kernel program the DSI | Panel never reset ("Skipping prepare of already prepared panel") yet TE dies immediately: 38-40 CMDQ timeouts from 20.27-20.38 s, because the trigger loop waits for `STREAM_EOF` forever. Inheriting both sides or neither is the only consistent choice. |
+| V23 | Inherit LK's DSI/panel state again and keep the idle manager off that DSI (`0c4fb0f7`) | Owner confirmed the hand-over seamless. Zero CMDQ timeouts, zero ESD TE timeouts, zero ESD recoveries, no `DDPAEE`, `boot_completed` at 32.9 s, gauge `present=true`, and zero idle entries for the whole round where V17+ entered idle about 16 times in 42 s. |
+| V24 | Byte-identical rebuild of V23 plus two scripted screen off/on cycles | Validates the transition that hands the panel to the kernel and lets idle power saving resume. |
 
 See [GPU notes](GPU.md) for the r49 fix and actual-header regression. The V2
 kernel capture contained no job-stride rejection, Mali fault or IOMMU
@@ -78,11 +82,9 @@ boot images and partition backups remain private.
 ## Remaining startup blockers
 
 - **Display validation:** V11 fixes the observed corruption, TE stalls and
-  inherited-framebuffer faults; V12 removed the black interval while the panel
-  was still LK's, and V17 keeps that hand-off without inheriting LK's DSI/panel
-  state, so the idle-manager TE stall is gone as well. The kernel's own panel
-  re-init then leaves the panel dark until Android writes the backlight 5.6 s
-  later, which is the remaining gap the owner saw on V19. See
+  inherited-framebuffer faults. V23 keeps the hand-off seamless and the display
+  healthy by inheriting LK's DSI/panel state and holding the idle manager off
+  that DSI until the kernel owns the panel; the owner confirmed it. See
   [display findings and checks](DISPLAY.md).
   Brightness calibration and AOD/HBM remain
   unvalidated. Screen off/on under the diagnostic wake lock is not system

@@ -11,8 +11,9 @@ See [diagnostic notes](diagnostic/README.md) for the tested environment.
 Read-only mounts of all 15 installed logical filesystems and 120 extent
 samples also pass; see [filesystem checks](diagnostic/FILESYSTEMS.md).
 The installed encrypted data mounts and Android reaches boot completion; the
-display keeps the bootloader splash and survives the display idle manager, but
-physical display and sustained operation still fail. See
+splash hands over to the boot animation with no black gap and the display
+survives the idle manager, both confirmed by the owner on V23. Sustained
+operation, brightness calibration and AOD/HBM still need validation. See
 [Android results](diagnostic/ANDROID.md) and [CPU/battery integration](diagnostic/CPU-POWER.md).
 
 ## Source baseline
