@@ -108,3 +108,53 @@ The startup path is slow: the framework is fully usable (Wi-Fi associated,
 Bluetooth on) well before `sys.boot_completed` appears, and the boot animation
 runs long. That is the same "why is Android not idle" question from the other
 end and belongs with this work.
+
+## Always-on display is broken on the port (rounds 34-36)
+
+The vendor always-on display is half-implemented on this kernel and must stay
+disabled. With `Setting_AodEnable=1` the screen blanks into `DOZE` correctly -
+`dumpsys display` reports `mState=DOZE`, `dozeScreenState=DOZE`, the OFP layer
+logs `aod state is true` and the panel runs its doze entry - but it never comes
+back. Pressing power again moves the framework to `mState=ON`,
+`mBrightnessState=5862`, and `leds-mtk` even programs the backlight
+(`Set lcd-backlight directly ... map:485`), yet the panel stays black. The
+backlight value a shell can read is therefore *not* evidence that the display
+recovered; only eyes on the panel are.
+
+With the preference clear the port is fine: blank and unblank both work, which
+is what the phone has been used with throughout bring-up.
+
+What the logs show at the failed wake (`guard-expdb.txt`, the raw `/dev/kmsg`
+copy):
+
+```
+[OFP] oplus_ofp_aod_off_status_handle:1618 - aod off status handle
+[OFP] oplus_ofp_set_aod_state:462 - oplus_ofp_aod_state: 0
+[DISP] mtk_dsi_encoder_enable doze status=1+
+[DISP] doze early set powerdown,data =0
+```
+
+`oplus_ofp_set_aod_state(0)` runs *before* the `!new_doze_state &&
+dsi->doze_enabled` block in `mtk_output_dsi_enable()`, so the OPLUS gate around
+`doze_disable()`/`oplus_doze_disable()` in `mediatek_v2/mtk_dsi.c` is already
+false and the LCM is never told to leave AOD. Round 36 replaced that gate with
+an unconditional call. The panel module does implement every hook
+(`doze_enable_start`, `doze_enable`, `oplus_doze_enable`, `doze_area`,
+`doze_disable`, `oplus_doze_disable` are all present in
+`oplus20615_samsung_ams643ye05_1080p_dsi_cmd.ko`), the call was made, and the
+screen still stayed black - so the missing step is further down the resume path
+(CRTC/DSI video restart, MM clocks, or a full panel unprepare/prepare cycle),
+not the call itself. That change was reverted; it is not in the tree.
+
+The stock 4.19 kernel runs the same panel, the same HAL and the same DTB (which
+also lacks an `AOD-SCP-ON` node, so `aod_scp_flag` is 0 there too) and its AOD
+does work, so the difference is in the 6.6 display build itself.
+
+Until that is understood, keep AOD off on the port. The guard can do it from a
+root context, which ColorOS denies to both adb and the vendor shell, and it
+preserves whatever the phone owner had chosen:
+
+```
+fix_aod=1     # save the current preference, clear it, restore it at the end
+aod_test=1    # additionally turn it on for a second window (the failing case)
+```

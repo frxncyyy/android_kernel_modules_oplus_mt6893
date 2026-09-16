@@ -117,6 +117,64 @@ static void request_recovery(void)
         execve(args[0], args, env); exit(127);
     }
 }
+/* A round enabled the vendor always-on display to see whether the port could
+ * honour it.  It cannot: entering doze leaves the panel dark and no later wake
+ * restores it, and because the preference lives in userdata the failure follows
+ * the phone back to ColorOS.  The setting must therefore be cleared from a root
+ * context; ColorOS denies the write to both adb and the vendor shell, while this
+ * launcher is root.  The child writes its answer to a file because its stdout is
+ * not this process's log. */
+static void run_aod_script(const char *script)
+{
+    pid_t pid = fork();
+    if (!pid) {
+        char *args[] = {"/system/bin/sh", "-c", (char *)script, NULL};
+        char *env[] = {"PATH=/system/bin:/vendor/bin", "ANDROID_ROOT=/system", "ANDROID_DATA=/data", NULL};
+        execve(args[0], args, env); exit(127);
+    }
+}
+static void run_aod_set(const char *value)
+{
+    char cmd[512];
+    strcpy(cmd, "{ for k in Setting_AodEnable Setting_AodSwitchEnable Setting_AodEnableImmediate; do "
+                 "settings put secure $k ");
+    append(cmd, value);
+    append(cmd, "; done; for k in Setting_AodEnable Setting_AodSwitchEnable; do echo -n \"$k=\"; "
+                 "settings get secure $k; done; } > /data/local/tmp/nord2-settings.txt 2>&1");
+    run_aod_script(cmd);
+}
+/* The round has to turn the vendor AOD on to exercise it, so the operator's own
+ * choice is saved first and put back at the end; clearing it for good would
+ * silently change their phone. */
+static void run_aod_save_and_clear(void)
+{
+    run_aod_script("{ settings get secure Setting_AodEnable; settings get secure Setting_AodSwitchEnable; } "
+                   "> /data/local/tmp/nord2-aod-orig.txt 2>&1; "
+                   "{ for k in Setting_AodEnable Setting_AodSwitchEnable Setting_AodEnableImmediate; do "
+                   "settings put secure $k 0; done; "
+                   "for k in Setting_AodEnable Setting_AodSwitchEnable; do echo -n \"$k=\"; "
+                   "settings get secure $k; done; } > /data/local/tmp/nord2-settings.txt 2>&1");
+}
+static void run_aod_restore(void)
+{
+    run_aod_script("{ read aod; read sw; settings put secure Setting_AodEnable ${aod:-0}; "
+                   "settings put secure Setting_AodSwitchEnable ${sw:-0}; "
+                   "for k in Setting_AodEnable Setting_AodSwitchEnable; do echo -n \"$k=\"; "
+                   "settings get secure $k; done; } < /data/local/tmp/nord2-aod-orig.txt "
+                   "> /data/local/tmp/nord2-settings.txt 2>&1");
+}
+static void show_aod_fix(void)
+{
+    char buf[512] = {0};
+    int fd = open("/data/local/tmp/nord2-settings.txt", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) { note("nord2-aod-fix: no result file"); return; }
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) { note("nord2-aod-fix: empty result"); return; }
+    buf[n] = 0;
+    note("nord2-aod-fix: settings now");
+    note(buf);
+}
 static void snapshot_file(const char *path)
 {
     char buf[8192];
@@ -249,6 +307,8 @@ static void watchdog(int proc1)
     unsigned long probe_drop = probe_value("drop"), probe_boot = 0, probe_mono = 0;
     unsigned long probe_released = 0, probe_success = 0, probe_fail = 0;
     unsigned long probe_open = probe_value("hold_open"), probe_cycles = 0;
+    unsigned long fix_aod = probe_value("fix_aod"), aod_test = probe_value("aod_test");
+    int fix1 = 0, fix2 = 0, fix3 = 0, show1 = 0, show2 = 0, show3 = 0, aod_on = 0;
     char probe_mem[16] = {0};
     probe_text("mem_sleep", probe_mem, sizeof(probe_mem));
     int requested = 0, armed = 0, reprobed = 0, metadata_log = 0, final_root = 0;
@@ -373,6 +433,21 @@ static void watchdog(int proc1)
             }
             flush_log();
         }
+        /* Vendor AOD preference housekeeping and the two blank/unblank windows
+         * the round measures: AOD off first, AOD on later, then restored. */
+        if ((fix_aod || aod_test) && !fix1 && now - start >= 45) {
+            fix1 = 1; note("nord2-aod-fix: saving and clearing vendor AOD preference"); flush_log();
+            run_aod_save_and_clear();
+        }
+        if ((fix_aod || aod_test) && fix1 && !show1 && now - start >= 58) { show1 = 1; show_aod_fix(); }
+        if (aod_test && !aod_on && now - start >= 150) {
+            aod_on = 1; note("nord2-aod-fix: enabling vendor AOD for the second window"); flush_log(); run_aod_set("1");
+        }
+        if (aod_test && aod_on && !show2 && now - start >= 162) { show2 = 1; show_aod_fix(); }
+        if ((fix_aod || aod_test) && !fix2 && now - start >= 205) {
+            fix2 = 1; note("nord2-aod-fix: restoring vendor AOD preference"); flush_log(); run_aod_restore();
+        }
+        if ((fix_aod || aod_test) && fix2 && !show3 && now - start >= 218) { show3 = 1; show_aod_fix(); }
         if (now - start >= 40 && now - last_snapshot >= 40) {
             snapshot_file("/sys/class/power_supply/battery/uevent");
             snapshot_file("/sys/class/power_supply/usb/uevent");

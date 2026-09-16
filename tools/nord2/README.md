@@ -13,7 +13,10 @@ samples also pass; see [filesystem checks](diagnostic/FILESYSTEMS.md).
 The installed encrypted data mounts and Android reaches boot completion; the
 splash hands over to the boot animation with no black gap and the display
 survives the idle manager, both confirmed by the owner on V23. Sustained
-operation, brightness calibration and AOD/HBM still need validation. See
+operation and HBM still need validation; the vendor always-on display is
+half-implemented and must stay disabled - with `Setting_AodEnable=1` the panel
+enters doze and never comes back, so rounds 34-36 keep it off (the guard can
+save/clear/restore it from root). See
 [Android results](diagnostic/ANDROID.md) and [CPU/battery integration](diagnostic/CPU-POWER.md).
 
 ## Source baseline
@@ -196,7 +199,9 @@ enables that provider and the board-information module used to choose the
 external OLED rail. The global 8191 normal-brightness convention is preserved
 from 4.19; mapping through the 6.6 Oplus display stack still needs runtime tests.
 The removed 4.19 fingerprint down-delay global has no direct 6.6 counterpart;
-HBM/AOD synchronization needs on-device validation through the OFP timing API.
+HBM synchronization needs on-device validation through the OFP timing API, and
+AOD is broken on the port: the panel's doze exit is called but the display never
+resumes (see [SUSPEND.md](diagnostic/SUSPEND.md)).
 
 Unlike the upstream PVT bring-up shim, this panel retains its imports from
 `mediatek-drm` for brightness, seed state and LCD notifications. Its final
