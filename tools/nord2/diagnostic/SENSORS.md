@@ -661,3 +661,73 @@ Next: find the fmeter clock driver in the 6.6 tree, check that it is in the port
 module set and load order, and compare its DT node between mt6893.dtsi and the
 prepared DTB.  `mt_get_fmeter_freq()` returning 0 with "pls check CCF configs" is
 a clock-provider complaint, and an absent provider would produce exactly it.
+
+
+## Round 46: SENSORS WORK - the fmeter provider module was never loaded
+
+**This is fixed.**  The whole sensor stack comes up and the chips enumerate:
+
+    0x00000001) lsm6dso ACCELEROMETER     | STMicro
+    0x00000002) mmc5603 MAGNETOMETER      | memsic
+    0x00000004) lsm6dso GYROSCOPE         | STMicro
+    0x00000008) tcs3701 PROXIMITY         | AMS
+    0x0000005b) tcs3701 LIGHT             | AMS
+    lsm6dso ACCELEROMETER: last 50 events
+    lsm6dso ACCELEROMETER (handle=0x00000001, connections=1) status: active
+
+and every symptom of the last ten rounds is gone in the same round (round 45 ->
+46, same script):
+
+    scp_awake_lock: SCP A not enabled   13803 -> 0
+    Device:mtk_nanohub not ready           20 -> 0
+    IPI_SENSOR transfer timeout            23 -> 0
+    recovery success                      239 -> 1
+    continuing without it                 239 -> 0
+    [ulposc_cali_process]: target: 195Mhz, calibrated = 195MHz
+
+### The actual root cause
+
+`clk-fmeter-mt6893.ko` - the module that registers MT6893's fmeter devices - was
+built in the tree but was in **no load manifest**.  `clk-common.ko` provides the
+`mt_get_fmeter_freq()` framework, and `clk-dbg-mt6893.ko` *consumes* it, but
+nothing loaded the provider, so `scp_dvfs`'s ULPOSC calibration read
+`mt_get_fmeter_freq(36, 1) == 0`, `ulposc_cali_process()` failed, the calibration
+data never reached the SCP, and the SCP could not stay up.
+
+The chain, now fully accounted for end to end:
+
+1. `clk-fmeter-mt6893.ko` not loaded -> no fmeter devices registered;
+2. `mt_get_fmeter_freq(36, 1)` returns 0 ("pls check CCF configs");
+3. `ulposc_cali_process()` fails, `cali_failed` sticky, `sync_ulposc_cali_data_to_scp()`
+   returns false forever;
+4. the recovery path fired WDT resets, then `scp_awake_lock()`'s own handshake
+   timed out and reset the core;
+5. each reset cleared `scp_ready`, so `is_scp_ready()` failed and **every** AP-to-SCP
+   IPI was refused or timed out;
+6. nanohub's power-up loop never completed (`Device:mtk_nanohub not ready`);
+7. no sensor enumerated.
+
+Fix: ship `clk-fmeter-mt6893.ko` and load it before `scp` (in the round harness's
+`package_v46.py`: an explicit copyfile plus `clk_fmeter_mt6893` inserted at the
+head of the `['mtk_scpsys','scp','hf_manager','nanohub']` group).  Note the round
+harness under `work/android-boot/` is not a git repo, so the durable record of the
+change is here plus the packaging script itself.
+
+### Cleanup notes for the tree
+
+`scp_helper.c` still carries the two diagnostic-era changes: the round-15 guard in
+`scp_wait_ready_timeout()` (never reset a ready SCP) and the round-16/17
+single-shot `sync_ulposc_cali_data_to_scp()` call.  Both are now moot - the
+calibration succeeds, so the stock retry loop would also succeed on its first
+iteration - and both are defensible to keep, but they are not what fixed this and
+should be considered for reverting for stock fidelity.  The `nord2-dbg` pr_info
+probes can also go.
+
+### What the ten rounds of elimination bought
+
+The wrong theories are recorded above so they are not re-walked: the hf_manager
+ABI (real, and fixed), the SCP resource/"invalid resource (null)" path (benign),
+the send/recv table naming (handled by `scp_dt_alt_name`), the mailbox layer,
+`scp_ready` handling, the ready-IPI race, the boot-timeout monitor, and the
+calibration retry loop itself.  Each was tested and excluded with evidence before
+the packaging gap was found.
