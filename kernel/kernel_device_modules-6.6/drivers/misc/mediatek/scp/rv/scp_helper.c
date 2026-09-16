@@ -868,7 +868,18 @@ static void scp_wait_ready_timeout(struct timer_list *t)
 {
 	pr_info("[SCP] nord2-dbg ready timeout fired: times=%d\n", scp_timeout_times);
 #if SCP_RECOVERY_SUPPORT
-	if (scp_timeout_times < 10)
+	/*
+	 * nord2: never reset an SCP that is already running.  scp_ready is the
+	 * evidence that it booted, and this monitor exists to catch a boot that
+	 * failed - not to police a healthy core.  Measured on the phone: the
+	 * monitor re-arms after every recovery, fires every SCP_READY_TIMEOUT,
+	 * and each firing reset the SCP and cleared scp_ready.  That is what
+	 * broke scp_awake_lock() ("SCP A not enabled"), and with it every
+	 * AP-to-SCP IPI transfer, and with that the sensor hub bring-up.
+	 */
+	if (scp_ready[SCP_A_ID])
+		pr_info("[SCP] nord2: SCP already ready, skipping boot-timeout reset\n");
+	else if (scp_timeout_times < 10)
 		scp_send_reset_wq(RESET_TYPE_TIMEOUT);
 	else
 		__pm_relax(scp_reset_lock);

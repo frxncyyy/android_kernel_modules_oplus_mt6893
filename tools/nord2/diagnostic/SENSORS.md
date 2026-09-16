@@ -442,3 +442,47 @@ monitor arming itself repeatedly (and never being cancelled because the
 timeout, or the recovery path re-arming.  `scp_send_reset_wq(RESET_TYPE_TIMEOUT)`
 in `scp_wait_ready_timeout()` is the call that fires, so that function's timer
 setup is the place to start.
+
+
+## Round 15: the fix attempt failed, and it named the real culprit
+
+The round-14 fix was to stop `scp_wait_ready_timeout()` resetting an SCP that is
+already up.  It did not fire: the log has no `nord2: SCP already ready, skipping
+boot-timeout reset` line, which means `scp_ready` is **already 0** by the time the
+monitor runs.  The monitor is a consequence, not the cause.  Recorded because the
+guard is still a defensible thing to have, but it does not fix this.
+
+Following the writers of `scp_ready[SCP_A_ID] = 0` gives the answer.  There are
+two, and the interesting one is `scp_sys_reset_ws()` (scp_helper.c:2190), reached
+only through `scp_send_reset_wq()`, which has three callers:
+
+* `RESET_TYPE_WDT` from `scp_A_notify_ws()` at :726 and :759
+* `RESET_TYPE_TIMEOUT` from the boot-timeout monitor at :883
+
+The TIMEOUT firings all come *after* the awake failures, so they are downstream.
+The reset that actually kills the session is the **WDT** one, and the code around
+it is specific: `scp_A_notify_ws()` sets `scp_ready[SCP_A_ID] = 1` at :739 and
+then, if `scp_dvfs_feature_enable()`, runs
+
+    while (!sync_ulposc_cali_data_to_scp()) {
+            pr_notice("[SCP] cali #%d fail\n", ++cali_times);
+            msleep(2000);
+            if (... || cali_times >= 20) {
+                    scp_send_reset_wq(RESET_TYPE_WDT);
+                    return;
+            }
+    }
+
+Twenty iterations of `msleep(2000)` is about **40 seconds**, and the first
+`scp_awake_lock: SCP A not enabled` lands at **43.5 s** - the SCP becomes ready,
+the ULPOSC calibration data fails to sync for ~40 s, the recovery path fires a
+WDT reset, the reset clears `scp_ready`, and from then on every
+`scp_awake_lock()` fails.  That is the whole sensor failure, measured end to end.
+
+So the culprit is `sync_ulposc_cali_data_to_scp()` failing on this port, not the
+IPI layer, not the mailbox, not `scp_ready` handling and not the timeout monitor.
+Next: read that function and find why the sync never completes - the DVFS/ULPOSC
+calibration source it depends on is the likely gap, since it is clearly not
+failing for a reason the SCP's liveness would explain (the SCP is up and sending
+ready IPIs throughout).  Making a calibration failure non-fatal is the fallback
+if the source cannot be brought up, but understanding it comes first.
