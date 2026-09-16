@@ -101,3 +101,35 @@ So the next step is to find which driver claims `mediatek,scp` on this tree and
 why `platform_get_resource(..., 0)` comes back NULL for it - the DT has the
 resources, so the mismatch is between that driver's expectations and this node's
 layout, not a missing node.
+
+
+## Round 6: the kernel side now matches stock
+
+Following the `invalid resource (null)` lead to the end changed the conclusion.
+
+* It is **not fatal to the SCP probe**.  The ten new lines come from
+  `devm_ioremap_resource()` in the SCP helper's register mappings, but the probe
+  never prints its own `[SCP] scpreg.sram error` and carries on: the log shows
+  `[SCP] scp_reg_base_phy = 0x10700000`, `[SCP] loader image mem: ...`,
+  `scp_dvfs probe done`, `scp_ipidev (with 52 IPI) has registered`.
+* The same string appears on SPMI and MCUPM, and it is **pre-existing** -
+  rounds 36 to 39 logged six of them (five `10027000.spmi`, one
+  `10301000.mcupm`) before any SCP module was shipped.  Round 40 added the ten
+  SCP ones and nothing else.  Those devices work, so the message alone says
+  nothing about health.
+* The port now exposes exactly what stock does.  Stock has `/dev/scp` and
+  `/dev/hf_manager` and a `10500000.scp` platform device with `mtk-scpsys`,
+  `scp` and `scp_dvfs` bound; the port now has `/dev/scp`, `/dev/hf_manager`
+  and the same device name.
+* The real defect in that window is a **shadow-call-stack unwinder warning** -
+  `WARNING: CPU: 7 at arch/arm64/kernel/patch-scs.c:144
+  scs_handle_fde_frame`, raised while unwinding out of
+  `mt_scp_dvfs_pdrv_probe` - not an SCP failure.  It is worth chasing on its own
+  (it fires for any trace that walks through these modules) but it does not stop
+  the SCP.
+
+So the remaining gap is above the kernel: `/sys/class/sensors` is still empty on
+the port while stock enumerates four chips, which means the hub firmware is not
+reporting its sensor list, or userspace is not reaching it.  The next check is
+whether the hub answers at all on the port - its firmware/version string, and
+the sensor list it hands back - rather than more work on the SCP driver.
