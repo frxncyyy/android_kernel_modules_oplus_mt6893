@@ -13,10 +13,12 @@ samples also pass; see [filesystem checks](diagnostic/FILESYSTEMS.md).
 The installed encrypted data mounts and Android reaches boot completion; the
 splash hands over to the boot animation with no black gap and the display
 survives the idle manager, both confirmed by the owner on V23. Sustained
-operation and HBM still need validation. The vendor always-on display is
-half-implemented - the panel enters the LCM doze mode and never leaves it - so
-round 37 makes the DSI report doze as inactive: a doze request falls through as
-an ordinary blank that always wakes, and only the AOD clock itself is lost. See
+operation and HBM still need validation. The vendor always-on display works on
+the port as of round 39: the panel driver registers the `doze_get_mode_flags`
+hook the display driver requires before it calls `doze_post_disp_on` (the `0x29`
+Display On that brings the panel back), returning the command-mode flags this
+port runs with - the stock video-mode values corrupted the panel on the AOD
+exit. See
 [Android results](diagnostic/ANDROID.md) and [CPU/battery integration](diagnostic/CPU-POWER.md).
 
 ## Source baseline

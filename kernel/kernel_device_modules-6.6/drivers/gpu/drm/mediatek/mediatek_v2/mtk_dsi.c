@@ -583,20 +583,10 @@ static void mtk_dsi_mask(struct mtk_dsi *dsi, u32 offset, u32 mask, u32 data)
 
 static bool mtk_dsi_doze_state(struct mtk_dsi *dsi)
 {
-	/*
-	 * This port has no usable always-on display.  When the panel is put into
-	 * the LCM AOD (doze) mode it never comes back: the framework returns to
-	 * ON and the backlight is reprogrammed, but the panel itself stays black
-	 * through every later wake.  The LCM doze path is only reachable through
-	 * this state, so report doze as inactive and let a doze request from the
-	 * framework fall through as an ordinary blank.  The panel then stays in
-	 * its normal mode, the OFP backlight filter still dims the screen, and
-	 * the next wake is an ordinary enable that does come back.  The CRTC
-	 * property and the framework's view of it are left untouched.
-	 * Remove this once the doze exit path is fixed.
-	 */
-	(void)dsi;
-	return false;
+	struct drm_crtc *crtc = dsi->encoder.crtc;
+	struct mtk_crtc_state *state = to_mtk_crtc_state(crtc->state);
+
+	return state->prop_val[CRTC_PROP_DOZE_ACTIVE];
 }
 
 static bool mtk_dsi_doze_status_change(struct mtk_dsi *dsi)

@@ -1033,10 +1033,31 @@ static int panel_doze_enable(struct drm_panel *panel, void *dsi, dcs_write_gce c
 	return 0;
 }
 
+static unsigned long panel_doze_get_mode_flags(struct drm_panel *panel, int doze_en)
+{
+	unsigned long mode_flags;
+
+	/*
+	 * This port drives the panel in command mode; its base configuration in
+	 * probe() is exactly MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS.
+	 * The 4.19 stock driver returned video/burst flags for the non-doze case,
+	 * but that is a different base: the display driver assigns dsi->mode_flags
+	 * straight from this callback (mediatek_v2/mtk_dsi.c, "Display mode
+	 * switch"), so returning video flags here switched the DSI to video burst
+	 * on the AOD exit and the panel came back corrupted - purple lines, a bad
+	 * 0x0A power-mode readback and a repeating ESD recovery.  Return the
+	 * command-mode flags this port already runs with for both edges.
+	 */
+	mode_flags = MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS;
+
+	pr_info("nord2-aod: doze_get_mode_flags doze_en=%d flags=0x%lx\n", doze_en, mode_flags);
+	return mode_flags;
+}
+
 static int panel_doze_post_disp_on(struct drm_panel *panel, void *dsi, dcs_write_gce cb, void *handle)
 {
 
-	pr_debug("debug for lcm %s\n", __func__);
+	pr_info("nord2-aod: panel_doze_post_disp_on sending 0x29 Display On\n");
 
 	char post_backlight_on0[] = {0xF0,0x5A,0x5A};
 	char post_backlight_on1[] = {0x29};
@@ -1389,6 +1410,7 @@ static struct mtk_panel_funcs ext_funcs = {
 	.doze_enable = panel_doze_enable,
 	.doze_disable = panel_doze_disable,
 	.doze_post_disp_on = panel_doze_post_disp_on,
+	.doze_get_mode_flags = panel_doze_get_mode_flags,
 	.set_hbm = lcm_set_hbm,
 	.panel_poweron = lcm_panel_poweron,
 	.panel_poweroff = lcm_panel_poweroff,

@@ -111,8 +111,8 @@ end and belongs with this work.
 
 ## Always-on display is broken on the port (rounds 34-36)
 
-The vendor always-on display is half-implemented on this kernel and must stay
-disabled. With `Setting_AodEnable=1` the screen blanks into `DOZE` correctly -
+The vendor always-on display was broken on this kernel; it is fixed now (see
+the end of this section), and the rounds below record how it was found. With `Setting_AodEnable=1` the screen blanks into `DOZE` correctly -
 `dumpsys display` reports `mState=DOZE`, `dozeScreenState=DOZE`, the OFP layer
 logs `aod state is true` and the panel runs its doze entry - but it never comes
 back. Pressing power again moves the framework to `mState=ON`,
@@ -150,7 +150,8 @@ The stock 4.19 kernel runs the same panel, the same HAL and the same DTB (which
 also lacks an `AOD-SCP-ON` node, so `aod_scp_flag` is 0 there too) and its AOD
 does work, so the difference is in the 6.6 display build itself.
 
-Round 37 contains it: `mtk_dsi_doze_state()` now reports doze as inactive, so
+Round 37 first contained it: `mtk_dsi_doze_state()` was made to report doze as
+inactive, so
 the panel is never put into the LCM doze mode at all.  The CRTC property and
 the framework's AOD state machine are untouched - Android still enters `DOZE`,
 `DOZE_SUSPEND` and `OFF` exactly as before - but a doze request now falls
@@ -219,3 +220,35 @@ The next round should test (2) first: it is the step that would literally turn
 the panel back on, it is a one-pointer question, and unlike (1) it needs no
 PMIC API that the 6.6 tree lacks.  (1) is the follow-up and is mostly a power
 question, since a rail left in its normal mode is more power, not less function.
+
+
+### Fixed: the panel was never told to display on after doze (rounds 38-39)
+
+Both halves of the bug are in the panel driver, not the display driver.
+
+`mediatek_v2/mtk_dsi.c` calls `panel_funcs->doze_post_disp_on` at the end of the
+doze status change in `mtk_output_dsi_enable()`, and that callback is what sends
+`0x29` (MIPI DCS Display On) so the panel shows something again.  The call is
+gated on `ext->funcs->doze_get_mode_flags` being non-NULL as well, and the
+panel driver for this port registered `doze_enable`, `doze_disable` and
+`doze_post_disp_on` but not `doze_get_mode_flags`.  So the pointer was NULL, the
+whole call was skipped, and the panel stayed dark after AOD - while AOD entry
+still worked, because the entry path reaches `doze_post_disp_on` unconditionally
+in the doze configuration function.
+
+Registering the hook is only half of it.  `mediatek_v2/mtk_dsi.c` assigns
+`dsi->mode_flags` straight from that callback ("Display mode switch"), and the
+4.19 stock function returns video/burst flags for the non-doze edge.  This port
+drives the panel in command mode (`MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS`,
+set in the panel's probe), so returning video flags switched the DSI into video
+burst on the AOD exit: the panel came back corrupted with purple lines, register
+`0x0A` read back `0x9d` instead of `0x9f`, and the ESD thread fired an endless
+recovery.  Round 38 logged 50 `ESD check failed` events that way; rounds 36 and
+37 logged none.
+
+The fix registers `doze_get_mode_flags` and returns the command-mode flags this
+port already runs with on both edges.  Round 39: AOD enters and wakes, mode
+flags are `0xc00` on entry and exit, `0x29 Display On` is sent on the exit, and
+`ESD check failed` / `esd recovery` are back to zero.  The two `pr_info` lines
+in the panel driver are the probes that proved the call sequence; they can be
+dropped once AOD has had more runtime.
