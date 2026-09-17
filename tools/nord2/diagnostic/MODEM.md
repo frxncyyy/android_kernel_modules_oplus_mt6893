@@ -987,3 +987,81 @@ Result: **0 ordering violations, 0 unresolved symbols**, and the display chain l
 
 **This did not stop the bootloop**, so module ordering was not its cause.  Recorded so the
 next attempt does not repeat the hypothesis.
+
+### Round 22: the full kernel log is available, and composer is the real blocker
+
+**Correction to round 21.** There was no regression and no working build to trace back from.
+The 21:29 image, which I had recorded as a success because adb answered, shows the same
+failure in its own capture:
+
+    nord2-svc[120s]: /system/bin/ls /sys/class/drm/ /dev/dri/  ->  ls: /dev/dri/: No such file or directory
+    [init.svc.surfaceflinger]: [restarting]
+    [init.svc.zygote]: [restarting]
+
+adb was answering on a device that was crash-looping, not booting. **No build has ever
+reached userspace.** Everything below was checked against that assumption.
+
+`ufs-mediatek-mod` was also tested and cleared: restoring it changed nothing, so it is not
+the cause of the bootloop.
+
+**The expdb holds the entire kernel log from t=0** - 26,869 lines, starting
+`Booting Linux on physical CPU 0x0`. Parse it as newline-delimited
+`<prio>,<seq>,<ts_ms>,-,caller=T<tid>;<message>` (not the NUL-delimited form, which matches
+nothing). This is the visibility the flash-and-wait loop was missing.
+
+What it shows, in order:
+
+  1. `mtk-wdt 10007000.watchdog: Watchdog enabled (timeout=31 sec, nowayout=0)` - so any
+     userspace hang is reset by hardware after 31 s. The bootloop is the watchdog, not a
+     panic.
+  2. zygote and surfaceflinger start at ~15 s and are killed at ~40 s
+     (`init: Sending signal 9 to service 'zygote' (pid 1812)`), then `zygote_secondary`
+     restarts every 5 s forever.
+  3. The reason is stated outright and repeats for the rest of the log:
+     ```
+     servicemanager: Caller(sid=u:r:surfaceflinger:s0) Could not find
+         android.hardware.graphics.composer3.IComposer
+     ```
+  4. And the HIDL side fails first, at ~20 s:
+     ```
+     init: Control message: Could not find
+         'android.hardware.graphics.composer@2.1::IComposer/default' for ctl.interface_start
+     ```
+
+**Stock for comparison**, same `/system` surfaceflinger and same stock `/vendor`:
+
+    ro.vendor.composer_version = 2.3
+    ro.hardware.hwcomposer     = mtk_common
+    vendor.debug.sf.hwc_pid    = 967      <- SF bound to hwcomposer pid 967
+    init.svc.vendor.hwcomposer-2-3 = running
+    composer3 mentions in dmesg: 0
+
+Stock's VINTF declares composer only as HIDL - v2.1 in `manifest.xml` and a v2.3 override in
+`manifest_hwcomposer.xml` - and ships no AIDL composer HAL binary at all.
+
+So surfaceflinger selects its composer from `ro.vendor.composer_version`, finds 2.3 on
+stock and uses it. On the port it takes the AIDL composer3 path instead, and when that is
+missing it dies and drags zygote with it. Why the port does not see 2.3 is **not yet
+established** and is the next thing to chase; the two candidates are the property not being
+readable when SF starts, and `hwservicemanager` failing to start composer 2.1 at all
+(which is the earlier of the two failures).
+
+**Leads checked and cleared, so they are not repeated:**
+
+  - `mtk-wdt: -ENXIO: IRQ index 0 not found` is handled, not fatal:
+    `if (irq > 0) {...} else { if (irq == -EPROBE_DEFER) return -EPROBE_DEFER;
+    info = &mtk_wdt_info; }`.  Stock's watchdog node also has no `interrupts` property.
+  - `spmi-mtk: error -ENXIO: IRQ pmif_p_irq not found` (and seven more) are logged but
+    never returned on; the driver continues.  Stock's spmi node is byte-identical
+    (`interrupt-names = "pmif_irq"`, one interrupt), though stock logs none of these.
+  - `apexd: apexd terminated by exit(1)` at the end of the log is the **shutdown** path, not
+    a failure.  apexd mounts fine earlier - `NetBpfLoad v0.46
+    (/apex/com.android.tethering/bin/netbpfload)` is running from a mounted APEX.
+  - The final `vdc volume abort_fuse` plus `init: Waiting for 127 pids to be reaped` is a
+    graceful teardown, not a crash.
+
+**Still true from round 21 and unverified end to end:** `mediatek-drm` is now named in
+`modules.load`, its 39-module closure loads, and `modules.load` is topologically sorted
+(0 inversions, 0 unresolved symbols). `/dev/dri/card0` was observed once on a direct flash
+and is absent in the captures. Since userspace dies at composer regardless, the DRM work
+cannot be credited or blamed until composer is fixed.
