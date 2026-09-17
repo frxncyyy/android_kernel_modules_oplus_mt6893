@@ -238,6 +238,19 @@ static void run_svc_dump(const char *tag)
     static const char *cmds[] = {
         "/system/bin/getprop | /system/bin/grep -E 'init.svc.(fuelgauged|vpud|fps_hal|wifisar|mnld|vendor\\.)'",
         "/system/bin/ls -la /data/tombstones",
+        /* v120: userspace never reaches sys.boot_completed, and the reason has to be told
+         * apart from a merely slow boot.  The framework stack comes up in a fixed order -
+         * servicemanager, hwservicemanager, the HALs, surfaceflinger, then zygote - so
+         * record how far each got and what surfaceflinger itself is complaining about.  On
+         * this port surfaceflinger asks servicemanager for
+         * android.hardware.graphics.composer3.IComposer, while stock's vendor only ever
+         * ships composer@2.3, so capture both sides of that. */
+        "/system/bin/getprop | /system/bin/grep -E 'sys.boot_completed|dev.bootcomplete|init.svc.(servicemanager|hwservicemanager|vndservicemanager|surfaceflinger|zygote|bootanim)'",
+        "for s in servicemanager hwservicemanager vndservicemanager surfaceflinger zygote bootanim; do echo \"$s=[$(/system/bin/getprop init.svc.$s)]\"; done",
+        "/system/bin/ls /vendor/bin/hw/ 2>/dev/null | /system/bin/grep -iE 'graphic|composer|allocator|memtrack'",
+        "/system/bin/ls -la /vendor/etc/init/ 2>/dev/null | /system/bin/grep -iE 'composer|graphic|allocator'",
+        "/system/bin/dmesg | /system/bin/grep -iE 'surfaceflinger|zygote|composer|IComposer|graphics.allocator|gralloc|bootanim' | /system/bin/tail -n 40",
+        "/system/bin/logcat -d -b all -t 300 2>/dev/null | /system/bin/grep -iE 'surfaceflinger|zygote|composer|IComposer|FATAL|avc: denied|unable to|failed to' | /system/bin/tail -n 40",
         /* v119: vpud starts and exits 0 within ~4ms, which is a deliberate early return
          * rather than a crash - init shows 'started service' then 'exited with status 0'
          * ~4ms later, on a 5s cycle.  Strace-style evidence is not available here, so test
@@ -250,6 +263,16 @@ static void run_svc_dump(const char *tag)
         "/system/bin/ls -la /dev/vcu /dev/vpu 2>&1",
         "/system/bin/ls /vendor/lib/libvpud_vcodec.so /vendor/lib/libvcodec_utility.so /system/lib/libion.so /vendor/lib/libaedv.so 2>&1",
         "/system/bin/dmesg | /system/bin/grep -iE 'ion|vpud|VCODEC|vcodec' | /system/bin/tail -n 20",
+        /* v120: the display DRM driver loads but registers no card, so /dev/dri never
+         * appears; that is what makes the vendor hwcomposer SIGSEGV.  The driver matches
+         * "mediatek,mt6885-mmsys", which dispsys_config@14116000 carries on stock and on
+         * the port alike, so the DT is not the difference - capture whether the device
+         * was created at all, whether it bound, and what the driver said while probing. */
+        "/system/bin/ls -d /sys/devices/platform/dispsys_config@14116000 2>&1; readlink /sys/devices/platform/dispsys_config@14116000/driver 2>/dev/null || echo NO_DRIVER",
+        "/system/bin/ls /sys/bus/platform/drivers/mediatek-drm/ 2>&1",
+        "/system/bin/cat /sys/kernel/debug/devices_deferred 2>/dev/null; echo ---end-deferred",
+        "/system/bin/dmesg | /system/bin/grep -iE 'mediatek-drm|mtk_drm|mtk-drm|dispsys|mmsys|component|drm_dev|drmm|ddp' | /system/bin/tail -n 40",
+        "/system/bin/ls /sys/class/drm/ /dev/dri/ 2>&1",
         "/system/bin/dmesg | /system/bin/grep -iE 'died|crash|fatal|signal|tombstone|avc: +denied' | /system/bin/tail -n 40",
         /* The fuel-gauge loader writes its own failure to /dev/kmsg as MTK_FG_FUEL, naming
          * exactly why it exited.  /vendor/bin/fuelgauged only dlopen()s
