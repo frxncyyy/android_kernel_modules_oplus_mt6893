@@ -1179,3 +1179,54 @@ Working build remains the step-2 set: 99 modules, boot=1, `/dev/dri/card0`, `/de
 haptics, TEE. `work/android-boot/flash_verified.sh` writes from recovery and sha256-verifies
 the partition before rebooting - use it, because a dd from normal boot fails silently (uid
 2000 cannot write /dev/block/*).
+
+### Round 25: the gz chain does create /dev/vcu, but composer still fails
+
+Traced the `mtk-vcu` bus stall to a missing supply chain, and fixed half of it.
+
+**The chain, established from sysfs on the broken build:**
+
+    16000000.vcu          needs iommu domain; defers
+    14116000.dispsys_config  supplier:10228000.gce_mbox_sec   <- waits on this
+    10228000.gce_mbox_sec    supplier:trusty:mtee             <- and this
+    trusty:mtee           compatible = "mediatek,trusty-mtee-v1"
+
+`trusty:mtee` **exists** as a device but had **no driver bound**, because the module that
+provides `mediatek,trusty-mtee-v1` is `gz_main_mod` (`geniezone/gz_main.c:1154`) and it was
+never staged or loaded. The packager staged only `gz_trusty_mod`, `gz_ipc_mod` and
+`gz_tz_system`.
+
+**Fix:** stage and load the whole geniezone set ahead of `mtk-vcu` -
+`gz_log_mod`, `gz_irq_mod`, `gz_virtio_mod`, `gz_main_mod`, `gz_trusty_mod`, `gz_ipc_mod`,
+`gz_tz_system`. Staged via the same `_rel` list that already carried the other gz modules.
+
+**What it fixed.** For the first time all of these coexist on one boot:
+
+    /dev/dri/card0      /dev/vcu      /dev/video0 .. /dev/video4
+    /dev/ion            /dev/awinic_haptic        /dev/mobicore
+
+`/dev/vcu` had never appeared before on any build.
+
+**What it did not fix.** The boot still does not complete and adb still dies, confirming the
+owner's observation. From the expdb capture of that boot:
+
+    init: Service 'surfaceflinger' (pid 782) received signal 9
+    servicemanager: Caller(sid=u:r:surfaceflinger:s0) Could not find ... SurfaceFlingerAIDL
+
+Same composer/surfaceflinger failure as before the fix. Having the DRM node is necessary but
+not sufficient, and the earlier assumption that card0 alone would unblock hwcomposer was
+wrong.
+
+**The next concrete lead**, from the same log:
+
+    [cmdq] cmdq_sec_probe
+    [cmdq] cmdq_sec_probe: pkvm enabled:0
+    [cmdq][err] link status 0 @cmdq_sec_probe,1937      (twice)
+
+`cmdq_sec_probe` now runs - the gz fix got it that far - but the secure link is never
+established, so `gce_mbox_sec` still cannot complete and `dispsys_config` still defers.
+Only 3 kernel warnings in the whole log and no panic, so this is a userspace boot failure,
+not a kernel crash.
+
+Working build restored and verified at the step-2 set (99 modules, boot=1, card0, ion,
+haptics, TEE).
