@@ -857,3 +857,101 @@ Two things remain true and are worth separating from the ION work:
     `expdb-before.img` are from an **earlier** boot (the file's mtime predates the ION
     flash, and the round timed out before its final capture), not from the ION image.  The
     authoritative check is the direct boot above.
+
+### Round 21: why userspace never started - a module that loads without its providers
+
+`sys.boot_completed` was never set because `surfaceflinger` never started, and it never
+started because the vendor hwcomposer died in its own static constructor:
+
+```
+#00 DrmModeCrtc::getPlaneNum()+0
+#01 DrmDevice::DrmDevice()+348
+#02 DrmDevice::getInstance()+76
+#03 getHwDevice()+8
+#04 HWCMediator::HWCMediator()+312
+...
+#06 _GLOBAL__sub_I_hwc2.cpp+8     <- runs during dlopen
+signal 11 (SIGSEGV), fault addr 0xef8, Cause: null pointer dereference
+```
+
+`DrmDevice::getInstance()` returned null, so `getPlaneNum()` dereferenced it. The reason it
+returned null is that **the kernel had no DRM card at all**: `/dev/dri` did not exist and
+`/sys/class/drm/` held only `version`. Stock, for comparison:
+
+```
+stock: /dev/dri/card0  crw-rw---- 226,0   and  card0, card0-DSI-1, card0-Writeback-1
+port : /dev/dri        No such file or directory
+```
+
+The chain down to the root:
+
+1. `mediatek-drm` was staged in the image since round 38 but **never named in
+   `modules.load`** - the packager copied the `.ko` and then built the load list by mapping
+   a separate `order` list through an index, and `mediatek-drm` was in neither. So the
+   display driver was shipped on every image and loaded on none.
+2. Naming it was not enough, because eight modules that *were* already named could never
+   load: a module that cannot resolve one symbol fails to load entirely, silently. Notably
+   `mtk_iommu`, which needs `mtk_iommu_set_ops` from `mtk_iommu_util` - not loaded.
+3. Without `mtk_iommu` there is no IOMMU on the platform bus, so `mtk_drm_bind()`
+   returns early:
+   ```c
+   if (mtk_drm_helper_get_opt(private->helper_opt, MTK_DRM_OPT_USE_M4U)) {
+           if (!iommu_present(&platform_bus_type)) {
+                   DDPINFO("%s, iommu not ready\n", __func__);
+                   return -EPROBE_DEFER;
+   ```
+   The kernel log names it outright: `platform 14116000.dispsys_config: deferred probe
+   pending`.
+4. That also explains a whole family of unrelated-looking faults: `oplus_bsp_tp_ft3518`
+   wanted 22 symbols from the focaltech touch stack, `pinctrl-mt6885` wanted 6 from
+   `pinctrl-mtk-v2`, `i2c-mt65xx` wanted one from `pinctrl-mtk-common-v2_debug` - which is
+   why `wl2868c` and `fan53870` never probed on i2c8/i2c9.
+
+Compute the providers **by symbol** (`llvm-nm -u` against the `__ksymtab_*` exports of
+every built module, skipping symbols already in `System.map`), not from `modinfo -F
+depends`, which is over-broad and drags in the camera and ISP stacks.
+
+Two further corrections were needed on top of that:
+
+  - **Ordering, not just presence.** `mtk_iommu` defers while any LARB device is missing
+    (`of_find_device_by_node(larbnode)` -> `-EPROBE_DEFER`), and `mtk-smi` is what creates
+    them. The frozen `modules.display` asset put `mtk_iommu` at line 4 and `mtk-smi` at
+    line 123, so the IOMMU probed before its provider existed and the bus only registered
+    if a deferred-probe retry happened to land late enough. That is why **the same image
+    produced `/dev/dri/card0` on one boot and none on the next**. The display chain is now
+    prepended in dependency order: `mtk-smi`, `mtk-smi-dbg`, `mtk_iommu_util`,
+    `iommu_secure`, `mtk_iommu`, then `mediatek-drm` last.
+  - **`rpmb` had to come out.** A naive symbol walk adds `ufs-mediatek-mod`, which is a leaf
+    that nothing imports from and which is the only thing pulling in `rpmb.ko`. `rpmb`
+    blocks a boot thread on the Trustonic daemon -
+    `rpmb_open: Trustonic TEE: request_send: daemon not connected after 80s, waiting` - and
+    stock has no separate rpmb module at all, because its `ufshcd-mtk` does RPMB in-driver
+    (`ufshcd-mtk 11270000.ufshci: rpmb rw_size: 64`). Both are now excluded deliberately,
+    and `preflight_v118.py` asserts that those two - and only those two - are unreachable.
+
+**TEE works on the port and did not need fixing.** Recorded because it was suspected:
+`mcDrvModule.ko` (the Trustonic MobiCore driver, built from `drivers/tee/gud/500`, named
+`mcDrvModule.ko` rather than `mobicore.ko`, which is why it looked absent) loads, and
+
+```
+/dev/mobicore        crw-------  system system 502,0
+/dev/mobicore-user   crw-rw-rw-  system system 502,1
+init.svc.tee-1-1     running          (service 'mobicore' -> /vendor/bin/mcDriverDaemon)
+init.svc.vendor.keymaster-4-1-trustonic  running
+init.svc.vendor.gatekeeper-1-0           running
+```
+
+The minor differs from stock (502 vs 482) only because it is dynamically allocated. The
+`rpmb` "daemon not connected" message is therefore not evidence of a broken TEE - it is
+`rpmb.ko` colliding with a daemon that had not started yet, which is another reason to
+leave that module out.
+
+Still missing on the port: `/dev/gz_kree` (stock has `crw-rw---- 10,55`), and
+`/dev/trusty*` / `/dev/tee*` nodes. `vendor.gatekeeper-1-0` and keymaster run regardless.
+
+**Not yet verified.** The ordering fix is packaged and preflight-clean but has not had a
+clean run: the last flash bootlooped before it could be inspected, and the device had to be
+recovered through fastboot. The next round has to confirm `/dev/dri/card0` appears
+**deterministically across several boots**, that `sys.boot_completed` reaches 1, and that
+`surfaceflinger` and `hwcomposer` stay up (tombstones were 64 while the crash loop ran, and
+the target is 0).
