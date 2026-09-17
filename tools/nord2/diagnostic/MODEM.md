@@ -695,3 +695,55 @@ failure the preflight rejects:
 but a symbol-level check shows they import zero gz/tee symbols from it - the name match came
 from symbols other modules happen to share.  The same was true of `mtk_sec_heap` and
 `trusted_mem`, which nothing packaged imports from at all.
+
+### Round 18 result: the kernel codec stack is live
+
+All five codec devices bind, and the v4l2 nodes match stock exactly:
+
+| Node | Port name | Stock name |
+| --- | --- | --- |
+| `/dev/video1` | `mtk-vcodec-dec` | `mtk-vcodec-dec` |
+| `/dev/video2` | `mtk-vcodec-enc` | `mtk-vcodec-enc` |
+| `/dev/video3`, `/dev/video4` | `mtk-jpeg-enc` | `mtk-jpeg-enc` |
+| `/dev/vcu` | (present) | (present) |
+
+Bound devices, matching stock device-for-device:
+
+```
+1602f000.vdec  -> mtk-vcodec-dec
+17020000.venc  -> mtk-vcodec-enc
+17030000.jpgenc, 17830000.jpgenc -> mtk-jpeg
+16000000.vcu   -> mtk_vcu
+```
+
+The probe log shows the full hardware path linked - SMMU `1411a000.m4u`, the `1602f000`/`17000000` syscons, and the vdec/venc SMI larbs - with **zero** codec errors in dmesg:
+
+```
+platform 1602f000.vdec: Linked as a consumer to 1411a000.m4u
+mtk-smi-larb 1600d000.smi_larb5: SMI5 CLK1:vdec-soc-larb
+mtk-smi-larb 17010000.smi_larb7: SMI7 CLK1:venc-set1
+```
+
+Both kernel codec threads are alive: `[mtk-vcodec-dec]` and `[mtk-vcodec-enc]`.
+
+The device names are unchanged from stock, so the DT was never the problem - the port's
+`vdec@16000000` / `venc@17000000` / `vcu@16000000` / `jpgenc@17030000` nodes carry the same
+compatibles as stock's (`mediatek,mt6885-vcodec-dec`/`-enc`, `mediatek-vcu`,
+`mediatek,jpgenc`), and `mt6885-vcodec-dec` is in the driver's own match table.  Two earlier
+readings in this investigation were wrong and are recorded here so they are not repeated:
+`dtc` cannot parse the boot image's DTB because it carries a 64-byte vendor-table prefix
+before the `d0 0d fe ed` magic, which made the codec nodes look absent when they were
+present; and an over-aggressive `grep -vE` on the driver directory made the devices look
+unbound when all five were bound.
+
+**Still open: `vpud` does not run on the port.**  Stock runs `/vendor/bin/vpud -f` as a
+`class main` service (`user media`, `group system media drmrpc`) and it is alive as PID 1470;
+on the port `init.svc.vpud` does not even exist.  The kernel side is therefore complete -
+the v4l2 nodes exist and the IPI protocol already speaks the 4.19 numbering this daemon
+expects (commit bdd9dfc0) - but nothing consumes them, so hardware encode/decode cannot
+complete a real workload yet.
+
+That is the same `/chosen/atag,devinfo` root cause that stops `fuelgauged`, not a codec
+fault: both are vendor `class main` services that the port's init never starts.  Fixing the
+atag nodes should start `vpud` as a side effect, so the atag work is the next step rather
+than any further codec change.
