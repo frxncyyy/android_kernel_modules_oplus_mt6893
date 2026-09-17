@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-2.0
+config ION
+	tristate "ION Memory Allocator (ported from 4.19)"
+	depends on DMA_SHARED_BUFFER
+	help
+	  ION is the memory allocator the vendor blobs on this device use.  It was
+	  removed from mainline after 4.19 in favour of dma-buf heaps, but the
+	  shipping userspace (vpud, libcodec2_vndk, libdpframework, libion_mtk)
+	  speaks the ION ioctl ABI and only ever opens /dev/ion, so the 4.19 driver
+	  is carried forward here.
+
+config ION_SYSTEM_HEAP
+	bool "ION system heap"
+	depends on ION
+	default y
+
+config ION_CARVEOUT_HEAP
+	bool "ION carveout heap"
+	depends on ION
+	default y
+
+config ION_CHUNK_HEAP
+	bool "ION chunk heap"
+	depends on ION
+	default y
+
+config ION_CMA_HEAP
+	bool "ION CMA heap"
+	depends on ION
+	default y
+
+config MTK_ION_SEC_HEAP
+	bool "MediaTek ION secure heap"
+	depends on ION && MTK_TEE_GP_SUPPORT
+	default n

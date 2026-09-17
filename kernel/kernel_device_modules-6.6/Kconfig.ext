@@ -34,6 +34,8 @@ source "$(KCONFIG_EXT_PREFIX)drivers/watchdog/Kconfig"
 
 source "$(KCONFIG_EXT_PREFIX)drivers/dma-buf/heaps/Kconfig"
 
+source "$(KCONFIG_EXT_PREFIX)drivers/staging/android/ion/Kconfig"
+
 source "$(KCONFIG_EXT_PREFIX)drivers/regulator/Kconfig"
 
 source "$(KCONFIG_EXT_PREFIX)drivers/leds/Kconfig"

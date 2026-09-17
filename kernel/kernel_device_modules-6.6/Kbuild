@@ -22,6 +22,10 @@ obj-y += drivers/ufs/
 
 obj-y += drivers/char/
 
+# ION, carried forward from 4.19: the shipping vendor blobs speak the ION ioctl
+# ABI and only open /dev/ion, which 6.6 does not provide (dma-buf heaps replaced it).
+obj-$(CONFIG_ION) += drivers/staging/android/ion/
+
 obj-y += drivers/clk/mediatek/
 
 obj-y += drivers/clocksource/
