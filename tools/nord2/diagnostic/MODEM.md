@@ -955,3 +955,35 @@ recovered through fastboot. The next round has to confirm `/dev/dri/card0` appea
 **deterministically across several boots**, that `sys.boot_completed` reaches 1, and that
 `surfaceflinger` and `hwcomposer` stay up (tombstones were 64 while the crash loop ran, and
 the target is 0).
+
+### Round 21b: modules.load is now topologically sorted
+
+While verifying the round-21 fix, three consecutive images bootlooped before reaching adb, so
+the ordering was examined properly rather than by hand.
+
+The ramdisk carries no `modprobe`, so modules are handed to `init_module` in the order they
+appear in `modules.load`, and a module whose provider has not been inserted yet fails to
+load outright.  **The curated list had 342 order inversions.**  Most were survivable because
+the module was incidental, but the display chain was not:
+
+    mtk-smi        needs aee_aed       (sat 42 lines later)
+    mtk-smi-dbg    needs emi           (sat 129 lines later)
+    mtk_iommu      needs iommu_debug   (sat 130 lines later)
+
+Patching this by hand made it worse in both directions: prepending `mtk-smi` satisfied its
+LARB obligation to `mtk_iommu` but broke `mtk-smi`'s own dependency on `aee_aed`, replacing
+one inversion with another.
+
+The packager now derives the order instead.  Kahn's algorithm over edges computed from
+`llvm-nm -u` against the `__ksymtab_*` exports of the staged modules, skipping symbols
+already in `System.map`, and taking the earliest-in-the-curated-list ready module at each
+step so the deliberate groupings (MDP, TEE, codec, touch) survive wherever they do not
+conflict with a real dependency.  A cycle is reported loudly rather than silently dropping
+modules.
+
+Result: **0 ordering violations, 0 unresolved symbols**, and the display chain lands as
+`mtk_iommu_util`(1) `iommu_secure`(2) `aee_aed`(15) `mtk-smi`(75) `emi`(81)
+`mtk-smi-dbg`(82) `iommu_debug`(99) `mtk_iommu`(100) `mediatek-drm`(126).
+
+**This did not stop the bootloop**, so module ordering was not its cause.  Recorded so the
+next attempt does not repeat the hypothesis.
