@@ -255,7 +255,16 @@ static void run_svc_dump(const char *tag)
         /* Codec: hardware encode/decode needs the vcodec/ION/SMI stack.  Stock has
          * VIDEO_MEDIATEK_VCODEC=y, MTK_ION=y and MTK_SMI_EXT=y; report whether the port's
          * kernel registered those devices at all, and what the codec HAL can see. */
-        "/system/bin/dmesg | /system/bin/grep -iE 'vcodec|vdec|venc|mtk-ion|ion_|smi-|smi_|mtk_iommu' | /system/bin/tail -n 30",
+        /* v119: the codec drivers load but nothing binds to them, so capture the probe
+         * result directly.  The driver defers (-EPROBE_DEFER) when the VCU device or the
+         * IOMMU domain is not ready, and a deferral leaves no error line at all - hence
+         * grepping for the deferral text and the driver's own debug output, and listing
+         * the bound devices so a successful probe is visible too. */
+        "/system/bin/dmesg | /system/bin/grep -iE 'vcodec|vdec|venc|jpgenc|mtk-ion|ion_|smi-|smi_|mtk_iommu|VCU|probe defer|EPROBE' | /system/bin/tail -n 40",
+        "for d in mtk-vcodec-dec mtk-vcodec-enc mtk-jpeg mtk_vcu mtk_iommu mtk-iommu mtk-iommu-v2; do echo \"$d: [$(/system/bin/ls /sys/bus/platform/drivers/$d/ 2>/dev/null | /system/bin/grep -vE '^(bind|unbind|uevent|module)$' | /usr/bin/tr '\\n' ' ')]\"; done",
+        "/system/bin/cat /sys/kernel/debug/devices_deferred 2>/dev/null | /system/bin/head -20",
+        "/system/bin/cat /proc/device-tree/vdec@16000000/status 2>/dev/null; echo; /system/bin/cat /proc/device-tree/venc@17000000/status 2>/dev/null; echo",
+        "/system/bin/ls /dev/video* /dev/jpeg* /dev/vcu* 2>/dev/null",
         "/system/bin/ls /dev/ | /system/bin/grep -iE 'mali|dri|ion|mtk|vcodec|venc|vdec|apusys|mdla|vpu|m4u|smi'",
     };
     for (unsigned i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {

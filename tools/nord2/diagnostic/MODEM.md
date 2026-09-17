@@ -647,3 +647,51 @@ Packaging notes that cost time and are worth remembering:
   `modules.load`, or they are packaged but never loaded.
 * `CONFIG_MTK_MDP_MTEE_SUPPORT` had to be disabled; see the commit for the dependency chain
   it dragged in.
+
+### Fix (round 18): package the hardware codec stack
+
+Hardware encode/decode was broken for the same reason MDP was: the drivers are configured
+and built, they were simply never staged into the boot image, so Android fell back to
+software codecs.
+
+The port already sets `CONFIG_DEVICE_MODULES_VIDEO_MEDIATEK_VCODEC=m`,
+`CONFIG_DEVICE_MODULES_VIDEO_MEDIATEK_JPEG=m` and `CONFIG_VIDEO_MEDIATEK_VCU=m`, and
+`mtk-vcodec-dec-v2.ko`, `mtk-vcodec-enc-v2.ko`, `mtk-vcodec-common.ko`, `mtk_jpeg.ko` and
+`mtk-vcu.ko` all build.  Stock runs the same drivers as platform devices (`mtk-vcodec-dec`,
+`mtk-vcodec-enc`, `mtk-jpeg`, `mtk_vcu`) built into the kernel, which is why its
+`/proc/modules` shows nothing for them while `/dev/video0-4` exist.
+
+So, as with MDP, this is a packaging fix and not a kernel change.
+
+The dependency analysis is the interesting part, because `modinfo -F depends` is actively
+misleading here and following it almost triples the image:
+
+* Modinfo lists a long roll-call of optional collaborators - fpsgo, sspm, the OPPO sched
+  and cpufreq modules, mtk_game, cm_mgr, the legacy and other-SoC devapc drivers.
+* `task_turbo` sits at the root of that subtree, so a transitive walk drags all of it in:
+  33 modules and 26.5MB unstripped.
+* But only mtk-vcodec-enc-v2 imports anything from task_turbo (`enforce_ct_to_vip`), and
+  `mtk-vcodec-common` exports that same symbol.  Task_turbo exports nothing else any
+  packaged module imports, so dropping it collapses the whole subtree and the list falls
+  from 33 modules to 9.
+
+The real closure is 9 modules: the five codec drivers plus a genuine TEE chain.
+`mtk-vcu` imports seven `cmdq_sec_*` symbols, so `cmdq-sec-drv` must ship and needs `KREE_*`
+from `gz_tz_system`, which needs TIPC from `gz_ipc_mod`, which needs `get_smcnr_dev` from
+`gz_trusty_mod`.  Unlike MDP, VCU's use of the secure path is not config-gated, so the chain
+has to come along rather than be disabled.
+
+Four more modules looked required but are not, and each would have caused a duplicate-export
+failure the preflight rejects:
+
+| Symbol | Already packaged provider | Rejected addition |
+| --- | --- | --- |
+| `register_devapc_vio_callback` | `device-apc-common` | legacy, mt6761, mt6765 |
+| `is_disable_map_sec` | `mtk-vcodec-common` | `iommu_gz` |
+| `mc_close_device` | `mcDrvModule` | `mcDrvModule-ffa` |
+| `enforce_ct_to_vip` | `mtk-vcodec-common` | `task_turbo` |
+
+`iommu_gz` is the instructive one: modinfo records it as a dependency of both codec drivers,
+but a symbol-level check shows they import zero gz/tee symbols from it - the name match came
+from symbols other modules happen to share.  The same was true of `mtk_sec_heap` and
+`trusted_mem`, which nothing packaged imports from at all.
