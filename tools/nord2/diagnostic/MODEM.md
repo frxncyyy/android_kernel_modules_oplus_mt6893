@@ -1125,3 +1125,57 @@ test, but it has **not** been confirmed as the cause.
     verify the partition sha256 before rebooting. `work/android-boot/flash_verified.sh`
     does this.
   - `sha256sum` on the 32 MB partition takes ~40 s; do not race it with a reboot.
+
+### Round 24: the culprit is mtk-vcu.ko alone, and it starves the whole platform bus
+
+Confirmed the owner's observation, and then reduced it to a single module.
+
+**With codecs enabled the display breaks exactly as described.** `/data/tombstones` fills with
+`android.hardware.graphics.composer@2.3-service`, same signature every time:
+
+    #00 DrmModeCrtc::getPlaneNum()+0
+    #01 DrmDevice::DrmDevice()+348
+    #02 DrmDevice::getInstance()+76
+    #06 _GLOBAL__sub_I_hwc2.cpp+8        <- during dlopen
+    signal 11 (SIGSEGV) SEGV_MAPERR, fault addr 0xef8, null pointer dereference
+
+and `/dev/dri/` does not exist at all - `/sys/class/drm/` has only `version`, no `card0`.
+
+Bisect from the good step-2 build (99 modules, boot=1, card0, ion, haptics):
+
+  step 3a  codecs without cmdq-sec-drv/gz chain  -> /dev/dri GONE, boot hangs
+  step 3b  mtk_vcodec_common + mtk_vcu           -> /dev/dri GONE, boot hangs
+  step 3c  **mtk-vcu.ko alone**                  -> /dev/dri GONE, boot hangs
+
+So the secure-GCE hypothesis was wrong: `cmdq_sec_drv`/`gz_*` are not involved. One module
+is sufficient and necessary.
+
+**What actually happens** is not that vcu breaks DRM; it is that loading `mtk-vcu.ko`
+stops the platform bus probing altogether:
+
+  - `mediatek-drm` and `mediatek-dispsys` drivers are both **registered**
+    (`/sys/bus/platform/drivers/` lists them) and bind **nothing**.
+  - `mtk_vcu` and `mtk_vcu_io` are likewise registered and bind **nothing** - vcu does not
+    even bind to its own `16000000.vcu`.
+  - `14116000.dispsys_config` has no `driver` symlink.
+  - dmesg has **zero** DRM lines (`grep -c` = 0), so the probe never even ran, and there is
+    no error anywhere.
+  - Bus-wide: **bound=123, unbound=493**.
+  - Four kernel threads sit in **D state**: `[cmdq_buffer_usage]`, `[tee_irq_bh]`,
+    `[scp_power_reset]`, `[ccci_poll]`. `cmdq_buffer_usage` is the GCE/CMDQ thread.
+
+`mtk_vcu` pulls in GCE/CMDQ and IOMMU (`#include <mailbox/cmdq-sec.h>`, `iommu_pseudo.h`,
+`io_domain_gcem`) and its probe appears to wedge the shared command-engine path, which
+serialises platform probing and starves every later driver - including the display.
+
+Load order is not the lever: `mediatek-drm.ko` is at line 1 and `mtk-vcu.ko` at line 100,
+so DRM is requested first and still never probes.
+
+**Not yet established** which call in `mtk_vcu_probe` deadlocks, and whether the D-state
+threads are cause or effect. Next step is to instrument `mtk_vcu_probe` directly, since the
+bus gives no diagnostic at all.
+
+Working build remains the step-2 set: 99 modules, boot=1, `/dev/dri/card0`, `/dev/ion`,
+haptics, TEE. `work/android-boot/flash_verified.sh` writes from recovery and sha256-verifies
+the partition before rebooting - use it, because a dd from normal boot fails silently (uid
+2000 cannot write /dev/block/*).
