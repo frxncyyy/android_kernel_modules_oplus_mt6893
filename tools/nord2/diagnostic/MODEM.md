@@ -329,3 +329,36 @@ round 26 corrects the pessimism that remained.  The recurring cause is reading a
 log's loudest lines instead of its whole sequence and the code behind it.  For
 anyone continuing: read the **end** of the CCCI sequence first, and treat
 `Key[...] not exist` lines as absent optional boot args rather than failures.
+
+## Round: post-revert guest boot with a SIM inserted — the modem comes up
+
+First round with a SIM in the device, and the modem brings itself up unaided. The FSM walks the full
+sequence and reaches the running state:
+
+    [ccci1/fsm]md_state change from 0 to 2      power on
+    [ccci1/mcd][POWER ON]md1_pmic_setting_on start / end
+    [ccci1/fsm]md_state change from 2 to 3
+    [MDPM] AP2MD1 section, 2G: 0x2b7cefbf0096be33, 3G: 0x1d08ca740012216c
+    [ccci1/fsm]md_state change from 3 to 4      running
+    [ccci1/fsm]md_state change from 4 to 7
+    [ccci1/fsm]md_state change from 7 to 1
+
+The `AP2MD1 section` line is the modem accepting the AP's boot configuration, which is the point at which the
+baseband is genuinely alive rather than merely powered. The AP<->MD data path is also moving: `dpmaif-rxq0`
+reports `received:84` (the previous round, without a SIM, reported `received:0`) and `dpmaif-txq` shows real
+write/read/release movement across queues 0-3.
+
+### The `ccci_fs open fail with EBUSY` flood is not a modem fault
+
+It is by far the loudest line in the log — **22,007 occurrences** in this round alone — and it is a red
+herring of exactly the kind this document keeps warning about. `ccci_fs` is opened by the AP side before the
+modem has finished coming up; each early attempt gets `-EBUSY` and is retried. The retries stop once
+`md_state` reaches 4. It does not indicate a failure, only impatience, and it dominates the ring buffer so
+thoroughly that it evicts almost everything else — which is the real cost, not the message itself.
+
+### State at this round
+
+- `md_state` 0 -> 2 -> 3 -> 4 (running) -> 7 -> 1, with the AP2MD section exchanged.
+- Modem data path active (`rxq0 received:84`, TX queues moving).
+- RF registration still cannot be verified from the kernel log alone; that needs a live Android userspace
+  with the radio HAL up, and the diagnostic round hands back to recovery before that point.
