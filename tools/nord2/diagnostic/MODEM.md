@@ -503,3 +503,106 @@ The `atag,*` nodes are injected by LK into the kernel DT at boot.  The port hand
 a different DT (`base.dtb` carries only `bootargs`/`kaslr-seed`/`phandle` under `/chosen`),
 so the injection point is lost.  Fixing this means letting LK's atag additions land on the
 port's `/chosen` - relevant to the flash/hand-off path, not to any module.
+
+---
+
+## GPU blur/transparency (round 16) - driver is fine, GED DT lookups fail
+
+The kernel GPU driver is **healthy** and is the right one for this hardware.  Measured on
+the running port:
+
+```
+/sys/class/misc/mali0/device/gpuinfo -> Mali-G77 9 cores r0p1 0x09000800
+dmesg: mali 13000000.mali: Kernel DDK version r49p1-03bet0
+dmesg: mali 13000000.mali: GPU identified as 0x0 arch 9.0.8 r0p1 status 1
+```
+
+`arch 9.0.8` is Valhall G77 and `status 1` means the driver bound successfully.  An earlier
+hypothesis - that the port ships the wrong Mali generation - is **wrong** and should not be
+revisited: the prebuilt `mali_kbase_mt6893_r49.ko` contains `arm,mali-valhall`, `Mali-G77`
+and the `valhall-1691526.wa` workaround name, and `mali_avalon/` is only MediaTek's
+directory name, not the GPU architecture.  The `valhall-1691526.wa` firmware the driver
+wants is shipped in the ramdisk, so the "WA blob missing - driver probe will be failed"
+path is not taken.
+
+`CONFIG_MTK_GPU_VERSION` is empty on the port while stock has `"mali valhall r32p1"`, so the
+source-tree driver is not built and the round falls back to the prebuilt r49 module.  That
+is a real difference, but it is **not** what breaks the compositor, because the prebuilt
+module drives the G77 correctly.
+
+### What IS wrong
+
+The GED (GPU Energy Driver) fails its device-tree lookups on the port, and stock does not:
+
+| | stock | port |
+|---|---|---|
+| `ged_pdrv_probe` | clean, no errors | ~10 errors |
+| `No gpueb node` | absent | present |
+| `No fdvfs node` | absent | present |
+| `fail to read APO policy (-22)` | absent | present |
+| `Failed to find gpu_dcs node` | absent | present |
+| `Failed to find async_dvfs_node` | absent | present |
+| `Failed to init core mask table` | absent | present |
+
+Stock's `/proc/device-tree` has `ged`, `gpufreq`, `gpueb`, `dvfsrc@10012000`,
+`mali_dvfs_hint@13fbb000` and `eemgpu_fsm@1100b000`.  The port's packaged `base.dtb` has
+**none** of them under `/`, yet the running kernel still drives Mali, which means the port
+boots with a MediaTek DT from the LK hand-off rather than from `base.dtb`.
+
+This is the same shape as the `atag,devinfo` problem: nodes the driver probes for are not
+present in the tree the port kernel ends up with.  GED drives GPU DVFS and core-mask
+selection, so a partial failure there is consistent with the symptom - basic rendering
+works, while features that change GPU workload shape (blur, layered transparency) do not.
+
+`ged_segment_id_init` logging `mt6985_efuse_segment_cell` is a **red herring**: the literal
+is shared across SoCs in `ged_main.c:665`, and the failure is handled gracefully by setting
+`g_ged_segment_id = NO_SEGMENT`.  It is not the cause.
+
+### Next step
+
+Diff the live `/proc/device-tree` between a stock boot and a port boot, focusing on
+`ged`, `gpueb`, `gpufreq`, `dvfsrc` and `mali_dvfs_hint`.  Whatever is missing there is what
+GED is failing to find, and it is the same fix that would supply `atag,devinfo` for the
+fuel-gauge services - so the two remaining items probably share one root cause.
+
+### Fix attempt (round 17): package the real MDP driver instead of the stub
+
+`mdp_drv_dummy.ko` (22KB) was the only MDP module in the round.  It exports just
+`mdp_dpc_register` and `mdp_set_resource_callback` and never creates the compositor's
+device nodes - while stock's own boot has both:
+
+```
+crw-r----- system system 245,  0 /dev/mtk_mdp
+crw-r----- system system  10, 54 /dev/mdp_sync
+```
+
+MDP is the MediaTek hardware compositor for blur, colour conversion and overlay blending, so
+a missing compositor matches the reported symptom exactly: ordinary rendering works, while
+blur and layered transparency silently do nothing.
+
+`mdp_drv_mt6893.ko` (2.9MB) already builds from `CONFIG_MTK_MDP_MT6893=m`, which the
+defconfig sets, so this is a packaging fix rather than a kernel change.  Round 31 kept the
+stub only to test whether removing it broke the boot; that experiment was never concluded,
+and nothing depends on the stub.  `cmdq_helper_inf` exports the same
+`mdp_set_resource_callback`, so the two cannot coexist and the stub had to be removed rather
+than kept alongside its replacement.
+
+Three things had to be right, each of which silently yields a packaged module that never
+loads:
+
+1. **Copy before `index` is built.**  `index` and `modules.load` are derived from `moddir`,
+   so a module copied later cannot be named in `modules.load` and stays unloaded.
+2. **Name it in `modules.load`.**  Presence in the ramdisk is not enough; the packager only
+   loads what `order` lists.
+3. **Know which "dependencies" to skip.**  `modinfo -F depends` lists `cmdq-sec-drv` and
+   `mtk_sec_heap`, but both are optional secure-memory providers whose own symbols
+   (`KREE_*`, `trusted_mem_api_*`, `is_pkvm_enabled`, `tmem_type2sec_id`) resolve from
+   neither the kernel nor any packaged module.  A symbol-level check confirms MDP imports
+   none of them, so including them would add two modules that cannot load while
+   contributing nothing.  Every symbol MDP does import resolves cleanly.
+
+The 2.78MB driver also pushed the boot image 0.25MB past its 32MB limit.  The 8.90MB
+`/nord2-late` camera staging paid for it: those modules are from the abandoned camera
+bring-up, a full port boot references neither the directory nor any of the module names, and
+the block's own comment recorded that the round-60 probe found the directory unreadable
+("nord2-late dir FAIL, 0 bytes read").  Image is now 28.04MB with room to spare.
