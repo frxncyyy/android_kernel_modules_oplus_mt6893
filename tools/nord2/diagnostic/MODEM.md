@@ -1065,3 +1065,63 @@ readable when SF starts, and `hwservicemanager` failing to start composer 2.1 at
 (0 inversions, 0 unresolved symbols). `/dev/dri/card0` was observed once on a direct flash
 and is absent in the captures. Since userspace dies at composer regardless, the DRM work
 cannot be credited or blamed until composer is fixed.
+
+### Round 23: bisected. The regression is the codec group, and it is vpud.
+
+**The port reaches full userspace.** The bisect baseline boots with `sys.boot_completed=1`,
+`surfaceflinger=running`, `/dev/dri/card0`, the whole `mediatek-drm` pipeline bound, and
+`/dev/mobicore` up. So DRM and TEE never needed the round-21 additions - those were pure
+regression. The one thing that baseline lacks is `/dev/ion`.
+
+Bisect, each step flashed and verified by sha256 against the partition:
+
+  step 0  baseline, 95 modules   boot=1  card0  TEE         (no /dev/ion)
+  step 1  +haptics, 98           boot=1  card0  TEE  /dev/awinic_haptic
+  step 2  +mtk_ion, 99           boot=1  card0  TEE  /dev/ion (refcount 9)   <- GOOD
+  step 3  +TEE chain +codecs     ** boot never completes **
+
+Step 3 does not crash the kernel and does not drop adb. It hangs userspace: with
+`surfaceflinger=running` and `zygote=running`, `init.svc.vpud` is `restarting`, and
+`sys.boot_completed` never becomes 1. adb answers for ~200 s and then the box resets, which
+is the "newer builds never reach adb" symptom.
+
+vpud's own log is unambiguous:
+
+    VPUD: vpud without fuse
+    VPUD: open /dev/vpu ok
+    VPUD: vpud threads exited g_ctx_s.fd 0
+    VPUD: vpud exited                      <- every 5 s, forever
+    /dev/vcu:    No such file or directory
+    /dev/video*: No such file or directory
+
+So the fix needed is to get the vcodec devices created. What was established about that:
+
+  - All codec modules load and link correctly (`mtk_vcu` 81920, `mtk_vcodec_dec_v2`,
+    `mtk_vcodec_enc_v2`, `mtk_jpeg`, `cmdq_sec_drv` -> `mtk_vcu`, `gz_tz_system` ->
+    `cmdq_sec_drv`, `gz_ipc_mod` -> `gz_tz_system`).
+  - The platform devices exist: `16000000.vcu`, `16020000.vdec`, `1602f000.vdec`,
+    `17020000.venc`, `17820000.venc`.
+  - The drivers are registered: `mtk_vcu`, `mtk_vcu_io`, `mtk-vcodec-dec`,
+    `mtk-vcodec-enc` all present under `/sys/bus/platform/drivers/`.
+  - `16000000.vcu` has **no `driver` symlink**, and nothing is bound to any of the four
+    codec drivers.
+  - The compatible matches: the DTB has `mediatek-vcu` on `vcu@16000000` and
+    `mtk_vcu.c:3473` matches `mediatek-vcu`.
+  - The supplier is ready: `16000000.vcu` has
+    `supplier:platform:10228000.gce_mbox`, and `10228000.gce_mbox` **is** bound to
+    `mtk_cmdq_mbox`, with `mtk_cmdq_drv_ext` loaded.
+  - dmesg contains **no codec probe output at all** - not even a failure.
+
+That last point is the open question: probe-less, error-less non-binding is not explained
+yet. `CONFIG_VIDEO_MEDIATEK_VCODEC_V2=y` alongside `CONFIG_VIDEO_MEDIATEK_VCU=m` and
+`CONFIG_DEVICE_MODULES_VIDEO_MEDIATEK_VCODEC=m` is a suspicious split and the next thing to
+test, but it has **not** been confirmed as the cause.
+
+**Method notes that mattered:**
+
+  - The adb shell user is uid 2000 in normal boot and **cannot** write `/dev/block/*`. A
+    `dd` issued from normal mode fails silently, and several bisect steps earlier in the
+    session were wasted flashing images that never landed. Always write from recovery, and
+    verify the partition sha256 before rebooting. `work/android-boot/flash_verified.sh`
+    does this.
+  - `sha256sum` on the 32 MB partition takes ~40 s; do not race it with a reboot.
