@@ -238,6 +238,18 @@ static void run_svc_dump(const char *tag)
     static const char *cmds[] = {
         "/system/bin/getprop | /system/bin/grep -E 'init.svc.(fuelgauged|vpud|fps_hal|wifisar|mnld|vendor\\.)'",
         "/system/bin/ls -la /data/tombstones",
+        /* v119: vpud starts and exits 0 within ~4ms, which is a deliberate early return
+         * rather than a crash - init shows 'started service' then 'exited with status 0'
+         * ~4ms later, on a 5s cycle.  Strace-style evidence is not available here, so test
+         * the hypothesis directly: vpud dlopens libvpud_vcodec.so, which calls ion_share,
+         * and stock's libion.so only ever opens /dev/ion.  Stock has CONFIG_ION=y and
+         * CONFIG_MTK_ION=y with /dev/ion (10,60); the 6.6 tree has no ION driver at all.
+         * Record whether the node exists, whether the library is loadable, and whether the
+         * codec devices vpud needs are present. */
+        "/system/bin/ls -la /dev/ion /dev/dma_heap 2>&1",
+        "/system/bin/ls -la /dev/vcu /dev/vpu 2>&1",
+        "/system/bin/ls /vendor/lib/libvpud_vcodec.so /vendor/lib/libvcodec_utility.so /system/lib/libion.so /vendor/lib/libaedv.so 2>&1",
+        "/system/bin/dmesg | /system/bin/grep -iE 'ion|vpud|VCODEC|vcodec' | /system/bin/tail -n 20",
         "/system/bin/dmesg | /system/bin/grep -iE 'died|crash|fatal|signal|tombstone|avc: +denied' | /system/bin/tail -n 40",
         /* The fuel-gauge loader writes its own failure to /dev/kmsg as MTK_FG_FUEL, naming
          * exactly why it exited.  /vendor/bin/fuelgauged only dlopen()s

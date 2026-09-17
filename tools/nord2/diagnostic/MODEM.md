@@ -747,3 +747,57 @@ That is the same `/chosen/atag,devinfo` root cause that stops `fuelgauged`, not 
 fault: both are vendor `class main` services that the port's init never starts.  Fixing the
 atag nodes should start `vpud` as a side effect, so the atag work is the next step rather
 than any further codec change.
+
+### Round 19: why vpud dies - the kernel has no ION
+
+`vpud` is **not** missing on the port.  An earlier reading in this file said `init.svc.vpud`
+did not exist; that was wrong, and the expdb capture from round 15 shows the truth:
+
+```
+init: ... started service 'vpud' has pid 1784
+init: Service 'vpud' (pid 1784) exited with status 0
+```
+
+`init.svc.vpud` reads `restarting`, and init kills and restarts it on a ~5.00s cycle -
+exactly like `fuelgauged`.  So vpud starts, and returns **status 0 about 4ms later**.
+A clean, immediate exit like that is a deliberate early return, not a crash.
+
+The cause is a missing kernel driver, not the service definition.  `vpud` pulls in
+`libvpud_vcodec.so`, which calls `ion_share`/`ion_import`; those live in `libion.so`,
+whose only failure path is:
+
+```
+open /dev/ion failed: %s
+```
+
+Stock has the node and the port does not:
+
+| | stock | port |
+| --- | --- | --- |
+| `/dev/ion` (10,60) | present | **absent** |
+| `/dev/vcu` (487,0) | present | present |
+| `/dev/vpu` | absent | absent (not needed) |
+| `libion.so` `/system/lib` | present | present |
+| `libion_mtk.so` `/vendor/lib` | present | present |
+| `libvpud_vcodec.so` | present | present |
+| `vpud` process | running (pid 1449) | restarting |
+
+Every userspace piece is already on the device.  The one missing thing is the kernel side:
+stock is `CONFIG_ION=y` with `CONFIG_MTK_ION=y`, while the port has **no ION at all** -
+neither `CONFIG_ION` nor `CONFIG_MTK_ION` appears in the port config, and no `ion` directory
+exists in the 6.6 tree (`drivers/staging/android/` there holds only `ashmem.c`).
+
+This is not an oversight in the port so much as the shape of the upstream kernel: ION was
+removed from mainline and replaced by dma-buf heaps, which the port does have
+(`CONFIG_DMABUF_HEAPS=y`, `DEVICE_MODULES_DMABUF_HEAPS_SYSTEM=m`).  But the two are not
+interchangeable here - `vpud` and `libion_mtk.so` speak the ION ioctl ABI
+(`ION_IOC_{ALLOC,FREE,MAP,SHARE,IMPORT,SYNC,CUSTOM}` on magic `'I'`), which dma-buf heaps
+does not implement, and stock's `libion.so` only ever opens `/dev/ion`.
+
+The MTK ION driver does exist in this workspace, but only for 4.19:
+`work/src/kernel-4.19/drivers/staging/android/{ion,mtk_ion,aosp_ion}` - 36 files, ~628KB of
+source, of which `mtk_ion` alone is 32 files.  Bringing that to 6.6 is the work item.
+
+So: `vpud` is blocked on a kernel driver that has to be ported, not on packaging, and not on
+the `atag,devinfo` issue that stops `fuelgauged` - those are two separate faults that happen
+to present as the same 5-second restart loop.  The atag work will not fix vpud.
