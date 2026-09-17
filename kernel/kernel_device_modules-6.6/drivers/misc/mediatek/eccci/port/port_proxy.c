@@ -313,8 +313,18 @@ int port_dev_open(struct inode *inode, struct file *file)
 	}
 
 	if (port->rx_ch != CCCI_CCB_CTRL && atomic_read(&port->usage_cnt)) {
-		CCCI_ERROR_LOG(0, CHAR,
-			"port %s open fail with EBUSY\n", port->name);
+		/* Ratelimited deliberately.  This is a benign startup race - two clients
+		 * reach the same port before the first has finished registering - and the
+		 * retry succeeds, but it fires tens of thousands of times during an Android
+		 * boot: one measured diagnostic round logged 21,899 copies of this line, which
+		 * was 53.6% of the entire captured boot log and evicted the output of the very
+		 * services whose crashes the round was trying to diagnose.  Logging the first
+		 * few occurrences per boot keeps the signal without DDoSing the ring buffer.
+		 */
+		static atomic_t busy_logged = ATOMIC_INIT(0);
+		if (atomic_inc_return(&busy_logged) <= 8)
+			CCCI_ERROR_LOG(0, CHAR,
+				"port %s open fail with EBUSY\n", port->name);
 		return -EBUSY;
 	}
 

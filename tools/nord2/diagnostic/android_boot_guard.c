@@ -108,6 +108,39 @@ static void follow_root(int proc1)
     if (!my_syscall1(__NR_fchdir, root)) { chroot("."); chdir("/"); }
     close(root);
 }
+static char *decimal(char *out, unsigned long value);
+
+/* The stock firmware trees are intentionally left alone.
+ *
+ * init mounts /odm (dm-5) and /vendor (dm-1) at about 9s, and the firmware loader reads
+ * in init's mount namespace (kernel_read_file_from_path_initns,
+ * firmware_loader/main.c:612), so everything under /odm/firmware - 893 AW8697/RTP
+ * waveforms at the root plus the per-panel tp/ trees - becomes reachable without help.
+ * That is what haptics needs, and an earlier build that embedded a handful of files in
+ * the ramdisk could not cover it (~267 MB against a 32 MB boot image).
+ *
+ * Touch is the one driver that must NOT be allowed to consume these files, and an
+ * earlier round masked /odm/firmware/tp here to achieve that.  That mask is no longer
+ * needed: the FT3518 driver itself now refuses to flash the on-disk image
+ * (ft3518_driver.c: fts_fw_update skips any image whose version byte is 0x7e), because
+ * that image is the wrong one for this panel and reflashing with it leaves the
+ * controller answering 0x00ef instead of 0x5452.  Fixing the driver is the right layer -
+ * it holds whether or not the file is reachable and survives future changes to the
+ * firmware search path - so this function is deliberately a no-op and the trees stay
+ * mounted for every other subsystem.
+ */
+static int firmware_paths_ok(void)
+{
+    struct stat st;
+    if (stat("/odm/firmware", &st)) {
+        note("nord2-fw: /odm/firmware not present yet");
+        return 0;
+    }
+    note("nord2-fw: /odm and /vendor are mounted by init; firmware left reachable "
+         "(touch is guarded in the FT3518 driver, not by hiding the tree)");
+    return 1;
+}
+
 static void request_recovery(void)
 {
     pid_t pid = fork();
@@ -187,6 +220,65 @@ static void snapshot_file(const char *path)
         record(buf, n);
     }
     close(fd); note("nord2-snapshot: end");
+}
+
+/* Collect the evidence that identifies a crashing ColorOS service.
+ *
+ * Run from the guard's own process so the shell inherits the guard's place in init's
+ * mount namespace and can see /system, /vendor and /odm.  Output is captured through a
+ * pipe rather than a file: the ramdisk is read-only and /data is not mounted during a
+ * diagnostic boot, so there is nowhere to stage an intermediate file.  Each command's
+ * output is folded into the log with a tag, so a later reading can tell which dump a
+ * line came from.
+ */
+static void run_svc_dump(const char *tag)
+{
+    /* A crashing service shows up in init's own property state, in the tombstone
+     * directory, and in the logd buffer for the crash itself.  Ask for all three. */
+    static const char *cmds[] = {
+        "/system/bin/getprop | /system/bin/grep -E 'init.svc.(fuelgauged|vpud|fps_hal|wifisar|mnld|vendor\\.)'",
+        "/system/bin/ls -la /data/tombstones",
+        "/system/bin/dmesg | /system/bin/grep -iE 'died|crash|fatal|signal|tombstone|avc: +denied' | /system/bin/tail -n 40",
+        /* The fuel-gauge loader writes its own failure to /dev/kmsg as MTK_FG_FUEL, naming
+         * exactly why it exited.  /vendor/bin/fuelgauged only dlopen()s
+         * /vendor/lib/libfgauge_gm30.so and exits 0 when libfgauge_setup or its init fails
+         * ("load 'libfgauge_setup' error", "init failed, return!"), so this line is the whole
+         * diagnosis - and it does not match the crash keywords above, which is why the first
+         * capture missed it. */
+        "/system/bin/dmesg | /system/bin/grep -iE 'MTK_FG_FUEL|fgauge|fuelgauge|GM3' | /system/bin/tail -n 30",
+    };
+    for (unsigned i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        int fds[2];
+        if (pipe(fds)) continue;
+        pid_t pid = fork();
+        if (!pid) {
+            close(fds[0]);
+            dup2(fds[1], 1);
+            close(fds[1]);
+            char *args[] = {"/system/bin/sh", "-c", (char *)cmds[i], NULL};
+            char *env[] = {"PATH=/system/bin:/vendor/bin", "ANDROID_ROOT=/system",
+                           "ANDROID_DATA=/data", NULL};
+            execve(args[0], args, env);
+            my_syscall1(__NR_exit, 127);
+        }
+        close(fds[1]);
+        char b[256];
+        strcpy(b, "nord2-svc[");
+        append(b, tag);
+        append(b, "]: ");
+        append(b, cmds[i]);
+        note(b);
+        char buf[1024];
+        ssize_t n;
+        int total = 0;
+        while ((n = read(fds[0], buf, sizeof(buf) - 1)) > 0 && total < 6000) {
+            buf[n] = 0;
+            record(buf, (size_t)n);
+            total += (int)n;
+        }
+        close(fds[0]);
+        note("nord2-svc: end");
+    }
 }
 static int awake_write(const char *path)
 {
@@ -312,6 +404,8 @@ static void watchdog(int proc1)
     char probe_mem[16] = {0};
     probe_text("mem_sleep", probe_mem, sizeof(probe_mem));
     int requested = 0, armed = 0, reprobed = 0, metadata_log = 0, final_root = 0;
+    int fw_masked = 0, tries = 0;
+    int svc_probe1 = 0, svc_probe2 = 0, svc_probe3 = 0;
     int awake = 0, debug_mounted = 0, display_logger = 0, probe_done = 0, probe_hold = 0;
     prctl(PR_SET_NAME, (unsigned long)"nord2-bootguard", 0, 0, 0);
     note("nord2-bootguard: started; Android timeout 240s, hard return 300s");
@@ -328,6 +422,13 @@ static void watchdog(int proc1)
         if (final_root && !debug_mounted &&
             (!mount("debugfs", "/sys/kernel/debug", "debugfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) || errno == EBUSY)) {
             debug_mounted = 1; note("nord2-bootguard: debugfs available for display snapshots");
+        }
+        /* Note once that init's firmware mounts are up.  Nothing is masked: the FT3518
+         * driver refuses the bad image itself, so /odm/firmware stays reachable for
+         * haptics while touch is safe. */
+        if (final_root && !fw_masked && tries < 12 && now - start >= 8) {
+            tries++;
+            if (firmware_paths_ok()) fw_masked = 1;
         }
         if (debug_mounted && !display_logger && now - start >= 18 &&
             !display_debug_command("logger:on")) {
@@ -462,11 +563,45 @@ static void watchdog(int proc1)
             last_snapshot = now;
         }
         if (now != last) { flush_log(); last = now; }
-        if (!requested && (now - start >= 240 || (!awake && now - start >= 30))) {
+
+        /* Service-crash diagnostics.
+         *
+         * ColorOS services die during the port's boot in a way stock does not reproduce,
+         * and the ring buffer made this hard to see: 53.6% of one captured log was the
+         * repeated ccci_fs EBUSY line (now ratelimited in port_proxy.c), which evicted the
+         * dying services' own output.  With that noise gone, snapshot the evidence that
+         * names a crashing service and its reason:
+         *
+         *   /sys/fs/pstore         kernel oops/panic records, if any survived
+         *   init's service states   which units are in "restarting" and how often
+         *   the tombstones          native crashes, with the signal and backtrace head
+         *
+         * Sampled twice so the difference shows what died after Android settled rather
+         * than only what was mid-flight at one instant.
+         */
+        if (!svc_probe1 && now - start >= 120) {
+            svc_probe1 = 1;
+            note("nord2-svc: ---- service state at 120s (Android userspace up) ----");
+            snapshot_file("/sys/fs/pstore/console-ramoops");
+            snapshot_file("/proc/loadavg");
+            run_svc_dump("120s");
+        }
+        if (!svc_probe2 && now - start >= 210) {
+            svc_probe2 = 1;
+            note("nord2-svc: ---- service state at 210s ----");
+            run_svc_dump("210s");
+        }
+        if (!svc_probe3 && now - start >= 300) {
+            svc_probe3 = 1;
+            note("nord2-svc: ---- service state at 300s (steady state) ----");
+            run_svc_dump("300s");
+        }
+
+        if (!requested && (now - start >= 360 || (!awake && now - start >= 30))) {
             note("nord2-bootguard: requesting normal Android recovery shutdown");
             flush_log(); request_recovery(); requested = 1;
         }
-        if (now - start >= 300 || (!awake && now - start >= 45)) {
+        if (now - start >= 420 || (!awake && now - start >= 45)) {
             note("nord2-bootguard: hard recovery return"); flush_log();
             my_syscall0(__NR_sync);
             my_syscall4(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,

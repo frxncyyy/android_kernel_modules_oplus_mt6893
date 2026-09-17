@@ -362,3 +362,78 @@ thoroughly that it evicts almost everything else — which is the real cost, not
 - Modem data path active (`rxq0 received:84`, TX queues moving).
 - RF registration still cannot be verified from the kernel log alone; that needs a live Android userspace
   with the radio HAL up, and the diagnostic round hands back to recovery before that point.
+
+---
+
+## Service restart loops (round 11) - `fuelgauged` and `vpud`
+
+`fuelgauged` and `vpud` restart every 5.00s on the port and are stable on stock.  Measured
+on stock in the same session, with the device fully booted:
+
+| service      | stock              | port                        |
+|--------------|--------------------|-----------------------------|
+| `fuelgauged` | running, 0 kills   | restarting, 105 kills       |
+| `vpud`       | running, 0 kills   | restarting, 88 kills        |
+| `fps_hal`    | running            | restarting                  |
+
+The interval is an exact 5.00s (5.00, 5.02, 5.01, 4.99, 5.03 measured across a run), which
+is a restart loop, not a crash.
+
+### What actually happens
+
+The service does not crash - it exits cleanly and immediately:
+
+```
+init: starting service 'fuelgauged'...
+init: ... started service 'fuelgauged' has pid 2001
+init: Service 'fuelgauged' (pid 2001) exited with status 0
+init: Sending signal 9 to service 'fuelgauged' (pid 2001) process group...
+```
+
+`status 0` ruled out a fault, so the cause had to be inside the program.  `/vendor/bin/fuelgauged`
+is a 5084-byte ELF that is only a loader: it `dlopen`s `/vendor/lib/libfgauge_gm30.so`, resolves
+`libfgauge_setup`, and exits 0 on any failure, logging to `/dev/kmsg` as `MTK_FG_FUEL`.  The
+relevant strings are `load 'libfgauge_setup' error: %s` and `init failed, return!`, so an
+exit 0 is that error path.
+
+The library is present and loads; its own dependencies include `libmtk_drvb.so` (present) and
+`libbh_gm30.so`, which exists nowhere on the device - **including stock, where fuelgauged runs
+fine** - so that absence is not the differentiator.
+
+`ft3518`-style hardware problems were ruled out: the kernel side is healthy on the port.
+`/sys/class/power_supply/battery/capacity` reads 98 and `voltage_now` 4371, matching stock,
+and the `battery_thread` (pid 381) keeps printing normal `GM3log` records.
+
+### SELinux denials are present on BOTH builds - not the cause
+
+`fuelgauged` logs `GM3 disable, nl handler rev data` and takes netlink denials:
+
+```
+avc: denied { create } for comm="fuelgauged" tclass=netlink_socket permissive=1
+avc: denied { bind }   for comm="fuelgauged" tclass=netlink_socket permissive=1
+```
+
+Stock shows the same 4 denials and the same 2 `GM3 disable` messages, so this is normal
+behaviour on this device and not the regression.  Beware of it as a red herring: it looks
+like a policy bug, but it is identical on the working build.
+
+### Method note - why this was invisible before
+
+53.6% of one captured boot log was the single repeated line
+`[ccci1/chr]port ccci_fs open fail with EBUSY` (21,899 of 40,834 lines), which evicted the
+services' own output from the ring buffer.  `port_proxy.c:315` logged every occurrence at
+`CCCI_ERROR_LOG` level; it is a benign startup race (two clients reach a port before the
+first finishes registering, and the retry succeeds).  Ratelimiting it to the first 8 per
+boot cut its share to 20%, and that is what let the 5s loop become visible at all.
+
+Second method note: the guard's recovery window was 240s, which cut the boot off before
+userspace settled.  Extending it to 360s with service-state dumps at 120s/210s/300s is what
+produced the `getprop` states above.  A conclusion drawn at 120s is premature.
+
+### Still open
+
+The exact reason `libfgauge_setup` fails on the port is not yet identified.  The next step is
+to run the loader with its logging visible during a port boot (`MTK_FG_FUEL` writes to
+`/dev/kmsg`, so it should appear in the expdb capture) - the round-11 capture did not contain
+those lines, so the guard needs to grep for `MTK_FG_FUEL`/`fgauge` explicitly rather than
+relying on the default message set.

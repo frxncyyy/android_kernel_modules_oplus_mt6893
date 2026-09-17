@@ -1702,9 +1702,43 @@ static fw_update_state fts_fw_update(void *chip_data, const struct firmware *fw,
 	buf = (u8 *)fw->data;
 	len = (int)fw->size;
 
+	/* Refuse to reflash the panel with the filesystem firmware.
+	 *
+	 * The FT3518 ships two different images under the same name, and only one of them
+	 * is correct for this panel:
+	 *
+	 *   /odm/firmware/tp/<panel>/FW_FT3518_SAMSUNG.img  -> version byte 0x7e  (wrong)
+	 *   the image Android's bspFwUpdate daemon supplies through the request_firmware
+	 *   sysfs fallback                                  -> version byte 0x30  (correct)
+	 *
+	 * Stock never reads the on-disk file: its own boot logs show the filesystem load
+	 * failing with -2 and the sysfs fallback supplying the real image, after which the
+	 * update verifies (ecc e6/e6) and the chip reports 0x5452.  A diagnostic boot has no
+	 * bspFwUpdate daemon, so an image reaching this function from the filesystem is the
+	 * 0x7e one, and fts_upgrade() with it erases the controller and leaves it answering
+	 * 0x00ef ("boot id:0x545c, fw abnormal") - damage written into the panel that
+	 * survives reboots and can only be repaired by booting stock.
+	 *
+	 * The panel's own firmware is already correct, so leave it alone: skip the reflash
+	 * for the known-bad images and keep the controller as-is, which is the state that has
+	 * working touch.  Doing this here rather than relying on the file being absent makes
+	 * correctness independent of the firmware search path, so a future change to
+	 * firmware_class.path cannot reintroduce the corruption.
+	 *
+	 * The check is on the image itself, not on the caller, so a genuinely correct image
+	 * (should one ever be supplied at runtime, as stock's bspFwUpdate supplies 0x30) still
+	 * takes the normal update path below.
+	 */
 	if ((len < 0x120) || (len > (116 * 1024))) {
 		TPD_INFO("fw_len(%d) is invalid", len);
 		return FW_UPDATE_ERROR;
+	}
+
+	if (buf[OFFSET_FW_DATA_FW_VER] == 0x7e) {
+		TPD_INFO("fw update skipped: the on-disk image carries fwver 0x7e, which "
+			 "corrupts the FT3518; only the 0x30 image from bspFwUpdate is safe "
+			 "to flash.  Leaving the panel firmware untouched.");
+		return FW_NO_NEED_UPDATE;
 	}
 
 	if (force || (buf[OFFSET_FW_DATA_FW_VER] != ts_data->fwver)) {
