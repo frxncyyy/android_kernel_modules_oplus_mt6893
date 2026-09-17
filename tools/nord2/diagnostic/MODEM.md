@@ -606,3 +606,44 @@ The 2.78MB driver also pushed the boot image 0.25MB past its 32MB limit.  The 8.
 bring-up, a full port boot references neither the directory nor any of the module names, and
 the block's own comment recorded that the round-60 probe found the directory unreadable
 ("nord2-late dir FAIL, 0 bytes read").  Image is now 28.04MB with room to spare.
+
+### Round 17 result: the compositor is live
+
+`mdp_drv_mt6893` loads and stays loaded, with `mediatek_drm` depending on it:
+
+```
+mdp_drv_mt6893        512000  2
+cmdq_helper_inf        49152  2 mdp_drv_mt6893,mediatek_drm
+mtk_cmdq_drv_ext      397312 17 mdp_drv_mt6893,mediatek_drm,cmdq_helper_inf,...
+```
+
+Both compositor device nodes now exist, and `dmesg` has **no** MDP errors:
+
+```
+crw-r----- system system  10, 114 /dev/mdp_sync
+crw-r----- system system 489,   0 /dev/mtk_mdp
+```
+
+Stock's own nodes are `245,0` for `/dev/mtk_mdp` and `10,54` for `/dev/mdp_sync`; the major
+numbers differ because they are dynamically allocated, which is expected and not meaningful.
+
+The GPU side is unchanged and healthy: `Mali-G77 9 cores r0p1 0x09000800`, and zero
+GED failures in dmesg - so the earlier GED errors were a symptom of the missing compositor
+rather than an independent fault.
+
+Two things this round did NOT fix, both still open:
+
+* `fuelgauged` and `vpud` still restart on their 5s cycle (`init.svc.*` = `restarting`).  That
+  is the separate `/chosen/atag,devinfo` root cause, not MDP.
+* Blur and transparency need on-device visual confirmation.  The nodes existing proves the
+  compositor is registered and reachable, which is necessary but not sufficient - only the
+  owner can confirm the control-centre blur actually renders.
+
+Packaging notes that cost time and are worth remembering:
+
+* `mdp_drv_dummy.ko` had to be removed rather than kept alongside the real driver, because
+  both export `mdp_set_resource_callback`.
+* The modules must be copied into `moddir` *before* `index` is built, and named in
+  `modules.load`, or they are packaged but never loaded.
+* `CONFIG_MTK_MDP_MTEE_SUPPORT` had to be disabled; see the commit for the dependency chain
+  it dragged in.

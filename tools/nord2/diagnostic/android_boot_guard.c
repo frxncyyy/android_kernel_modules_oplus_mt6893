@@ -246,6 +246,17 @@ static void run_svc_dump(const char *tag)
          * diagnosis - and it does not match the crash keywords above, which is why the first
          * capture missed it. */
         "/system/bin/dmesg | /system/bin/grep -iE 'MTK_FG_FUEL|fgauge|fuelgauge|GM3' | /system/bin/tail -n 30",
+        /* GPU: the kernel driver must bind and report the same GPU the userspace blob was
+         * built for.  The port ships a prebuilt mali_kbase_mt6893_r49.ko (the source tree's
+         * own driver is not built because CONFIG_MTK_GPU_VERSION is empty), so ask the
+         * driver what it found and whether the Valhall workaround blob loaded. */
+        "/system/bin/dmesg | /system/bin/grep -iE 'mali|kbase|gpu' | /system/bin/tail -n 40",
+        "/system/bin/cat /sys/class/misc/mali0/device/gpuinfo 2>/dev/null",
+        /* Codec: hardware encode/decode needs the vcodec/ION/SMI stack.  Stock has
+         * VIDEO_MEDIATEK_VCODEC=y, MTK_ION=y and MTK_SMI_EXT=y; report whether the port's
+         * kernel registered those devices at all, and what the codec HAL can see. */
+        "/system/bin/dmesg | /system/bin/grep -iE 'vcodec|vdec|venc|mtk-ion|ion_|smi-|smi_|mtk_iommu' | /system/bin/tail -n 30",
+        "/system/bin/ls /dev/ | /system/bin/grep -iE 'mali|dri|ion|mtk|vcodec|venc|vdec|apusys|mdla|vpu|m4u|smi'",
     };
     for (unsigned i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
         int fds[2];
