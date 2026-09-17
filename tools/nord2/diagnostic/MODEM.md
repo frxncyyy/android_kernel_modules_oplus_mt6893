@@ -801,3 +801,59 @@ source, of which `mtk_ion` alone is 32 files.  Bringing that to 6.6 is the work 
 So: `vpud` is blocked on a kernel driver that has to be ported, not on packaging, and not on
 the `atag,devinfo` issue that stops `fuelgauged` - those are two separate faults that happen
 to present as the same 5-second restart loop.  The atag work will not fix vpud.
+
+### Round 20: ION ported to 6.6 - /dev/ion exists, vpud still exits
+
+The 4.19 MediaTek ION driver is now built into the port as `mtk_ion.ko` and it works:
+
+```
+crw-rw-rw- 1 system graphics 10, 113 /dev/ion
+mtk_ion 49152 refcount=2
+```
+
+Verified by booting the image directly (not through the round harness) and querying the
+running kernel:
+`uname -r` = `6.6.30-4k-g2a08123e2d84`, `/dev/ion` present with the same device class and
+mode as stock (`system graphics`, `crw-rw-rw-`), and `mtk_ion` loaded.  The minor differs
+(113 vs stock's 60) only because misc minors are allocated dynamically.
+
+Ported from `work/src/kernel-4.19/drivers/staging/android/{aosp_ion,uapi}`.  What 6.6 needed:
+
+| 4.19 | 6.6 |
+| --- | --- |
+| module `ion.o` | renamed `mtk_ion.ko`; kbuild cannot have the composite module `ion.o` list `ion.c`'s own `ion.o` |
+| `register_shrinker(&s)` | `register_shrinker(&s, "ion-%s", name)` |
+| `totalram_pages` | `totalram_pages()` |
+| `dma_buf_ops.map/.unmap` | `.vmap/.vunmap` over `struct iosys_map` (removed in 5.11) |
+| `plist_add()` | not exported; reimplemented locally, because `ion_ioctl()` picks a heap by walking the priority order |
+| `dentry_path()` | not exported; dropped, it only prettied an error message |
+| `ptr_to_hashval()` | not exported; hash locally in the tracepoint |
+| - | `MODULE_IMPORT_NS(DMA_BUF)` required for `dma_buf_export/fd/put` |
+| `mtk_ion.h` stub fn | made `static inline` (a plain function in a header collides) |
+
+Wired into `Kbuild`, `Kconfig.ext` (beside `drivers/dma-buf/heaps`) and
+`nord2_bringup.config`; packaged into the boot image and named in `modules.load`.
+
+This is not only about vpud.  Stock's vendor blobs open `/dev/ion` from
+`libcodec2_vndk`, `libdpframework`, `libmmagent`, `libapusys`, `libcamdrv_imem`,
+`libdip_imem`, the `lib3a.*` camera stack and `libandroid_runtime`, so the port unblocks
+those paths too.
+
+**vpud still exits, so ION alone was not the whole story.**  With `/dev/ion` present vpud
+survives longer (~50ms versus ~4ms) but init still restarts it.  The remaining suspect is
+`/dev/vcu`: `libvpud_vcodec.so` opens both `/dev/ion` and `/dev/vcu`, and on the port
+`/dev/vcu` does not exist even when the codec modules are loaded - it appears only once the
+v4l2 stack is up, which on this port happens late or not at all.  So vpud is still waiting
+on a device that arrives after it gives up.
+
+Two things remain true and are worth separating from the ION work:
+
+  - **The port's framework does not reach `sys.boot_completed`.**  All three recent rounds
+    end with "Monitor timed out" at ~17-19s and `zygote`/`surfaceflinger` restarting, and a
+    direct boot left the system in a crash loop that fell back to recovery.  This is **not**
+    caused by ION: the rounds before the ION build behaved identically.  It is the reason
+    vpud cannot settle, since `/dev/vcu` depends on that userspace coming up.
+  - The guard's captured `/dev/ion: No such file or directory` lines in
+    `expdb-before.img` are from an **earlier** boot (the file's mtime predates the ION
+    flash, and the round timed out before its final capture), not from the ION image.  The
+    authoritative check is the direct boot above.
