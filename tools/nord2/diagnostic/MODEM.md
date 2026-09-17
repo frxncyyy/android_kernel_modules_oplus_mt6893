@@ -437,3 +437,69 @@ to run the loader with its logging visible during a port boot (`MTK_FG_FUEL` wri
 `/dev/kmsg`, so it should appear in the expdb capture) - the round-11 capture did not contain
 those lines, so the guard needs to grep for `MTK_FG_FUEL`/`fgauge` explicitly rather than
 relying on the default message set.
+
+### Root cause found (round 11/15): the port kernel never receives the LK `atag,*` DT nodes
+
+The gauge and vpu services run stable on stock and restart every 5.00s on the port because
+the port kernel cannot see the bootloader's `atag,*` device-tree nodes.  Measured directly:
+
+Stock `/proc/device-tree/chosen` contains the bootloader-injected nodes (16 of them),
+including the 884-byte `atag,devinfo`, plus `atag,boot`, `atag,chipid`, `atag,masp`,
+`atag,ptp`, `atag,mem`, `atag,mdinfo`, `atag,imix_r`, `atag,fg_swocv_i/v`, and
+`atag,shutdown_time`.
+
+The port's `/chosen` has only `bootargs`, `kaslr-seed` and `phandle` - none of the `atag,*`
+nodes.  The port's own boot log names the miss from both sides:
+
+```
+ufshcd-mtk 11270000.ufshci: cannot find atag,ufs
+ufshcd-mtk 11270000.ufshci: failed to get atag,boot
+```
+
+`atag,devinfo` appears **0** times anywhere in the port's captured boot.
+
+### Why that stops `fuelgauged`
+
+`libmtk_drvb.so` (identical binary on stock and port - it ships in `/vendor/lib`, which is
+the same image in both) reads exactly one thing:
+
+```
+/proc/device-tree/chosen/atag,devinfo
+```
+
+and exposes it as `sec_drv_base_check` / `sec_drv_info_update`.  `libfgauge_gm30.so` imports
+both symbols, so the chain is:
+
+```
+fuelgauged (5084B loader)
+  -> dlopen /vendor/lib/libfgauge_gm30.so
+  -> needs sec_drv_base_check / sec_drv_info_update from libmtk_drvb.so
+  -> reads /proc/device-tree/chosen/atag,devinfo   (ABSENT on the port)
+  -> init fails -> loader exits 0 ("init failed, return!")
+  -> init restarts it -> 5.00s loop
+```
+
+An exit status of 0 with an immediate exit is the loader's own error path, which is why this
+is a restart loop and not a crash - and why searching for a signal or tombstone found nothing.
+
+### What is NOT the cause (each verified)
+
+- **SELinux.** Stock shows the same 4 netlink denials for `fuelgauged` and the same 2
+  `GM3 disable` messages.  Identical on the working build, so not the regression.
+- **A missing `libbh_gm30.so`.** It exists nowhere on the device, including stock, where the
+  service runs - the loader tolerates it.
+- **`/mnt/vendor/nvcfg/fg`.** The library references it, but it is absent on stock too.
+- **The kernel battery path.** Healthy on the port: `capacity` 98 and `voltage_now` 4371,
+  matching stock, with `battery_thread` logging normal `GM3log` records.
+- **The binaries.** `libfgauge_gm30.so` and `libmtk_drvb.so` are byte-identical between
+  stock and port (`1af80685...`, `493e7ba7...`); both live on `/vendor`.
+
+This also explains `vpud` and `fps_hal` restarts, which share the same `libmtk_drvb` /
+atag-based device-identity path rather than a per-service fault.
+
+### Where this fits in the port
+
+The `atag,*` nodes are injected by LK into the kernel DT at boot.  The port hands the kernel
+a different DT (`base.dtb` carries only `bootargs`/`kaslr-seed`/`phandle` under `/chosen`),
+so the injection point is lost.  Fixing this means letting LK's atag additions land on the
+port's `/chosen` - relevant to the flash/hand-off path, not to any module.
