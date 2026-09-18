@@ -249,4 +249,4 @@ static int __init cmdq_platform_init(void)
 }
 module_init(cmdq_platform_init);
 
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

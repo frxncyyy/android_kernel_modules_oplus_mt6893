@@ -97,6 +97,54 @@ def check(source, power, usb_role):
     return compatible
 
 
+
+# The device DTB is the stock 4.19 tree, so its smi_larb* nodes name the second clock with
+# 4.19-era names ("venc-set1", "vdec-larb", "cam-larb13", ...).  The 6.6 clock drivers in
+# this tree register the same gates under new names (ven1_cke0_larb, vde1_larb1_cken,
+# cam_m_larb13, ...).  mtk-smi.c treats a failed devm_clk_get as fatal:
+#
+#     larb->smi.clks[i] = devm_clk_get(dev, name);
+#     if (IS_ERR(...)) { dev_info(dev, "CLK%d:%s get failed\n", i, name); return PTR_ERR(...); }
+#
+# so every affected LARB fails to probe, SMI never comes up, dispsys_config never completes
+# and the boot does not finish.  Rename the property in place; the clock *index* is
+# unchanged, so only the name string needs to move.
+LARB_CLOCK_ALIASES = {
+    'venc-set1': 'ven1_cke0_larb',
+    'venc-c1-set1': 'ven2_cke0_larb',
+    'vdec-larb': 'vde1_larb1_cken',
+    'vdec-soc-larb': 'vde2_larb1_cken',
+    'ipe-subcom': 'ipe_smi_subcom',
+    'img1-larb9': 'imgsys1_larb9',
+    'img2-larb11': 'imgsys2_larb9',
+    'cam-larb13': 'cam_m_larb13',
+    'cam-larb14': 'cam_m_larb14',
+    'cam-larb15': 'cam_m_larb15',
+    'cam-rawa-larb': 'cam_ra_larbx',
+    'cam-rawb-larb': 'cam_rb_larbx',
+    'cam-rawc-larb': 'cam_rc_larbx',
+}
+
+
+def fix_larb_clocks(staged):
+    """Rewrite 4.19-era smi_larb clock-names to the names the 6.6 drivers register."""
+    changed = []
+    for node in fdtget('-l', str(staged), '/').splitlines():
+        if not (node.startswith('smi_larb') or node.startswith('ipe_smi_subcom')):
+            continue
+        path = '/' + node
+        try:
+            names = fdtget('-t', 's', str(staged), path, 'clock-names').split()
+        except subprocess.CalledProcessError:
+            continue
+        new = [LARB_CLOCK_ALIASES.get(n, n) for n in names]
+        if new != names:
+            subprocess.run(['fdtput', '-t', 's', str(staged), path,
+                            'clock-names', *new], check=True)
+            changed.append((node, names, new))
+    return changed
+
+
 def build(device_dtb, backing_table, base_output, table_output,
           power=True, usb_role='peripheral'):
     """Write the prepared device tree and its boot table."""
@@ -119,6 +167,7 @@ def build(device_dtb, backing_table, base_output, table_output,
         if usb_role:
             subprocess.run(['fdtput', '-t', 's', str(staged),
                             '/usb0@11201000', 'dr_mode', usb_role], check=True)
+        fix_larb_clocks(staged)
         check(staged, power, usb_role)
         base = staged.read_bytes()
         table = join_table(header, base)

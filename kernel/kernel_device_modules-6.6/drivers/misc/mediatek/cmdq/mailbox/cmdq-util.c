@@ -1331,6 +1331,18 @@ u8 cmdq_util_track_ctrl(void *cmdq, phys_addr_t base, bool sec)
 	else
 		util.cmdq_mbox[util.mbox_cnt++] = cmdq;
 
+	/* cmdq_util_set_fp() ran from cmdq-platform-mt6893's module_init, before any mailbox
+	 * existed, so its "for (i = 0; i < util.mbox_cnt; i++) cmdq_mbox_set_hw_id(...)" loop
+	 * did nothing and util_hw_id was left NULL:
+	 *     [cmdq] cmdq_util_get_hw_id cmdq_platform->util_hw_id is NULL
+	 *     [cmdq][err] channel request fail:-19 idx:0 @cmdq_mbox_create,504
+	 * cmdq_platform is set by then, so the NULL is never repaired and every channel
+	 * request fails with -19, which is what keeps 16000000.vcu from binding.  Apply it
+	 * now that there is a mailbox to apply it to.
+	 */
+	if (cmdq_platform && cmdq_platform->util_hw_id && !sec)
+		cmdq_mbox_set_hw_id(cmdq);
+
 	return (u8)cmdq_util_get_hw_id((u32)base);
 }
 EXPORT_SYMBOL(cmdq_util_track_ctrl);

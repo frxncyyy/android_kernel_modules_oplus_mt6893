@@ -15,6 +15,16 @@
 static char pending[LOG_LIMIT];
 static unsigned long used, persisted, kmsg_overruns, dropped_bytes;
 static int sink = -1, kmsg = -1, misc = -1;
+/* expdb stays open as a permanent mirror even after the primary sink migrates to a file on
+ * /metadata.  Boots that die in early userspace (the codec/vcu work) never reach the
+ * metadata mount, and /metadata is a different filesystem that a recovery-side read cannot
+ * see at all, so a mirror that is always written is the only log that survives every
+ * outcome.  It lives at EXPDB_MIRROR_OFF, far above the primary region, so the two never
+ * interfere. */
+#define EXPDB_MIRROR_OFF (32UL * 1024 * 1024)
+#define EXPDB_MIRROR_MAGIC "NORD2-EXPDB-MIRROR-V1"
+static int mirror = -1;
+static unsigned long mirror_persisted;
 static void append(char *to, const char *s) { strcpy(to + strlen(to), s); }
 static char *contains(char *s, const char *needle)
 {
@@ -52,6 +62,20 @@ static void record(const char *s, size_t n)
     memcpy(pending + used, s, n); used += n;
 }
 static void note(const char *s) { record(s, strlen(s)); record("\n", 1); }
+/* cmdq-platform-mt6893 has no of_device_id table and no platform_driver: it only runs
+ * module_init -> cmdq_util_set_fp(&platform_fp), which is what installs cmdq_platform and
+ * therefore cmdq_platform->util_hw_id.  Every other module in this port is pulled in by a
+ * device probe, so nothing ever loads it, and cmdq-util.c:239 then leaves cmdq_platform
+ * NULL:
+ *
+ *     [cmdq] cmdq_util_get_hw_id cmdq_platform->util_hw_id is NULL
+ *     [cmdq][err] channel request fail:-19 idx:0 @cmdq_mbox_create,504
+ *
+ * 16000000.vcu binds through 10228000.gce_mbox_sec, so that failure is what keeps the vcu
+ * and codec stack down.  Load it here, as PID 1, before Android init starts probing.
+ * The list is dependency-ordered; a module already loaded returns EEXIST and is skipped.
+ */
+static char *decimal(char *out, unsigned long value);
 static int flush_log(void)
 {
     char header[4096] = {0};
@@ -64,6 +88,24 @@ static int flush_log(void)
     memcpy(header + 48, &dropped_bytes, sizeof(dropped_bytes));
     if (lseek(sink, 0, SEEK_SET) != 0 || write_all(sink, header, sizeof(header)) || fsync(sink)) return -1;
     persisted = used;
+    /* Mirror to expdb unconditionally.  A short write or a full mirror must never fail the
+     * primary flush, so the result is deliberately ignored. */
+    if (mirror >= 0 && used > mirror_persisted) {
+        if (lseek(mirror, EXPDB_MIRROR_OFF, SEEK_SET) == EXPDB_MIRROR_OFF &&
+            !write_all(mirror, EXPDB_MIRROR_MAGIC, 21)) {
+            unsigned long off = EXPDB_MIRROR_OFF + 4096;
+            if (lseek(mirror, off, SEEK_SET) == (off_t)off &&
+                !write_all(mirror, pending, used)) {
+                char mh[4096] = {0};
+                memcpy(mh, EXPDB_MIRROR_MAGIC, 21);
+                memcpy(mh + 32, &used, sizeof(used));
+                if (lseek(mirror, EXPDB_MIRROR_OFF, SEEK_SET) == EXPDB_MIRROR_OFF &&
+                    !write_all(mirror, mh, sizeof(mh)))
+                    mirror_persisted = used;
+                fsync(mirror);
+            }
+        }
+    }
     return 0;
 }
 static int arm(int fd)
@@ -466,6 +508,9 @@ static void watchdog(int proc1)
     note("nord2-bootguard: started; Android timeout 240s, hard return 300s");
     for (;;) {
         unsigned long now = seconds();
+        /* Must run before follow_root(): that chroots into init's root, where /lib/modules
+         * does not exist, so finit_module would resolve the path in the wrong namespace and
+         * fail with ENOENT.  The ramdisk root is the one that carries the modules. */
         if (!final_root) {
             follow_root(proc1);
             struct stat init;
@@ -495,6 +540,10 @@ static void watchdog(int proc1)
         if (sink < 0) {
             sink = block("sdc8", "expdb", "/dev/nord2-expdb", EXPDB_BYTES);
             if (sink >= 0) note("nord2-bootguard: backed-up expdb log opened");
+        }
+        if (mirror < 0) {
+            mirror = block("sdc8", "expdb", "/dev/nord2-expdb-mirror", EXPDB_BYTES);
+            if (mirror >= 0) note("nord2-bootguard: expdb mirror opened");
         }
         /* Android's crash collector also uses expdb. Move the complete RAM
          * log to a private regular file as soon as metadata is mounted. */
@@ -617,7 +666,12 @@ static void watchdog(int proc1)
             snapshot_file("/sys/kernel/debug/pinctrl/10005000.pinctrl/pinmux-pins");
             last_snapshot = now;
         }
-        if (now != last) { flush_log(); last = now; }
+        /* Flush every pass, not once per second.  The loop sleeps 100ms, so a once-per-second
+         * cadence leaves up to a full second unwritten - and the codec/vcu boot dies about
+         * 500ms after the last module loads, which fell entirely inside that blind window.
+         * The mirror overwrites in place at a fixed offset, so this costs one small write. */
+        flush_log();
+        last = now;
 
         /* Service-crash diagnostics.
          *
