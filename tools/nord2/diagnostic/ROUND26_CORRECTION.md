@@ -74,3 +74,59 @@ The whole deferred-probe cascade that rounds 21-25 chased is resolved, and `/dev
 `init.svc.vendor.hwcomposer-2-3` stay empty.  With DRM bound and card0 present, the
 surfaceflinger failure is now a *separate, downstream* problem rather than a DRM
 consequence.
+
+## Round 26 final: what the gz_main_mod "bootloop" actually was
+
+The owner reported that adding `gz_main_mod` bootlooped both normal mode and recovery.
+Correct, and the cause is now proven from the 6.6 kernel's own console, recovered via
+**ramoops** from the stock 4.19 recovery:
+
+    # /sys/fs/pstore/console-ramoops-0, 182032 bytes
+    [    2.527689][    T1] gz_main_mod: Unknown symbol ssmr_offline (err -2)
+    [    2.527713][    T1] gz_main_mod: Unknown symbol ssmr_online  (err -2)
+
+`ssmr_online`/`ssmr_offline` are defined in `trusted_mem/trusted_mem.ko`, which was staged
+but never loaded, so `gz_main_mod` could not load at all.  A module with one unresolved
+symbol does not load **and does not say so anywhere userspace can see** - the only record is
+this console line.  In round 25 I checked symbols against the running kernel's kallsyms,
+but that check was run while the phone sat in recovery (stock 4.19), so it validated against
+the wrong kernel entirely.
+
+## Method that works (and the one that does not)
+
+`/tmp/ksyms.txt` from a recovery-mode shell is **stock 4.19**, not 6.6.  Do not use it to
+validate port modules.
+
+`llvm-nm` does not exist at `tools/sysroot/usr/bin/llvm-nm`; every "0 undefined symbols"
+result it produced was an empty output from a missing binary.  Use instead:
+
+    readelf -s -W MODULE.ko | awk '$7=="UND" && $8!="" {print $8}'   # imports
+    readelf -x .ksymtab_strings -W MODULE.ko | grep SYMBOL           # real exports
+
+Grep for a bare symbol name across a `.ko` matches the import as well as the export and
+gave repeated false positives (`iommu_secure` looked like it exported `mtk_iommu_sec_init`;
+it does not).
+
+`mtk_iommu_sec_init` is defined in `iommu/iommu_pseudo.c` with `EXPORT_SYMBOL_GPL`, but it
+appears in neither `Module.symvers` nor any staged `.ko` `__ksymtab_strings`, so nothing in
+the current image can supply it.
+
+## Where the port actually stands
+
+The working baseline is the **99-module step-2 image**: `boot=1`, `/dev/dri/card0`,
+`/dev/ion`, haptics, TEE.  It already contains `gz_main_mod`, `trusted_mem`,
+`iommu_secure`, `cmdq-sec-drv`, `mtk-vcodec-common` and `mtk-vcu` **as staged files**;
+the extra `order+=` entries added in rounds 25-26 are what produced every bootloop.
+
+All round-25/26 packager additions have been reverted and the exact baseline re-flashed and
+verified: `6.6.30-4k`, `boot=1`, `card0`, `/dev/ion`.
+
+## The real blocker for /dev/vcu
+
+`16000000.vcu` needs `10228000.gce_mbox_sec`, which needs `trusty:mtee`, which needs a driver
+matching `mediatek,trusty-mtee-v1` (= `gz_main_driver` in `geniezone/gz_main.c`), which needs
+`gz_main_mod` to load, which needs `ssmr_online`/`ssmr_offline` from `trusted_mem`, which
+needs `mtk_iommu_sec_init`, **which nothing in the image currently exports**.
+
+That last link is the one to close next: either build `iommu_pseudo` such that it exports
+into `Module.symvers`, or find the config that makes the symbol available.
