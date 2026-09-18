@@ -39,3 +39,38 @@ What remains true and evidenced:
 
 Verify `uname -r` reports `6.6.30-4k-g2a08123e2d84` before recording any measurement, and
 re-verify it after any reset.  A stock boot is reachable and looks superficially similar.
+
+## Round 26 result: the vcu closure, found by symbol resolution
+
+The real blocker was **unresolved symbols**, not the trusty/gz chain order.  Resolving all 126
+undefined symbols of `mtk-vcu.ko` against the running kernel's kallsyms left 16 that do not
+resolve, and a module with even ONE unresolved symbol fails to load entirely **and silently**:
+
+    cmdq_sec_mbox_enable, cmdq_sec_mbox_disable, cmdq_sec_mbox_switch_normal,
+    cmdq_sec_pkt_set_data, cmdq_sec_pkt_set_mtee, cmdq_sec_pkt_set_secid,
+    cmdq_sec_pkt_write_reg        <- cmdq-sec-drv.ko
+    mtk_vcodec_vcp, vcu_func, dmabuf_to_secure_handle,
+    is_disable_map_sec            <- mtk-vcodec-common.ko
+
+`gz_main_mod.ko` registers platform driver `gz_main` against compatible
+`mediatek,trusty-mtee-v1` (`geniezone/gz_main.c`), which is what the `trusty:mtee` device
+asks for; it has **zero** unresolved symbols.
+
+Load order appended after `mtk_ion`:
+
+    gz_main_mod -> cmdq-sec-drv -> mtk-vcodec-common -> mtk-vcu     (103 modules)
+
+**Result, verified on the device:**
+
+    14116000.dispsys_config -> mediatek-drm     BOUND   (previously UNBOUND)
+    10228000.gce_mbox_sec   -> cmdq_sec_mbox    BOUND   (previously UNBOUND)
+    16000000.vcu            -> mtk_vcu          BOUND   (previously UNBOUND)
+    /dev/dri/card0  /dev/vcu  /dev/video0  /dev/ion
+
+The whole deferred-probe cascade that rounds 21-25 chased is resolved, and `/dev/vcu`,
+`/dev/video0` and a working `card0` now coexist for the first time.
+
+**Still open:** `sys.boot_completed` is never set; `init.svc.surfaceflinger` and
+`init.svc.vendor.hwcomposer-2-3` stay empty.  With DRM bound and card0 present, the
+surfaceflinger failure is now a *separate, downstream* problem rather than a DRM
+consequence.
